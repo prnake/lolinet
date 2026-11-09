@@ -1,0 +1,42 @@
+# lolinet 节点清单示例。复制成 nodes.yaml（或者用 LOLINET_NODES 指过去）再改。
+# 结构和 lo-li mesh（https://join.edge.lo-li.co）一样：6 台 relay、10.188.0.0/16；域名、SNI、设备换成了示例值。
+# 运行时的值（relay 公网地址、端口、实例 id、密钥）不写在这里，只放 $LOLINET_HOME/state/（见 README）。
+network:
+  name: loli
+  cidr: 10.188.0.0/16
+  sni: speedtest.example.com  # 设备经 wss 443 连 relay 时 ClientHello 里的 SNI（patches/easytier-v2.7.0-wss-sni.patch 的 ?sni=）
+  easytier: v2.7.0+sni        # 上游 v2.7.0 + WSS SNI 覆盖补丁
+  secure_mode: true           # 凭据入网：每台设备一条控制台签的凭据，可以单独吊销
+  private_mode: true          # relay 不给外部网络中继
+  local_suffix: -local.edge.example.com  # <名字>.edge.example.com 公网入口 -> <名字>-local.edge.example.com（overlay IP，DNS only）
+  edge_zone: edge.example.com # <relay>.edge.example.com -> relay 公网地址
+  join: join.edge.example.com # 准入站（Cloudflare Worker）；环境变量 LOLINET_BASE_URL 可以覆盖
+  console: https://console-local.edge.example.com  # easytier-web 控制台，只在 overlay 上
+  issuer: surtr               # 签发凭据、跑控制台的 relay
+  device_peers: [surtr, hoshiguma, gavial]  # pair.py 和配对页给设备默认连的 relay
+
+# join/deploy.py：Worker、KV、R2 的名字和挂在哪个 zone；redirects = 准入站之外的 <名字>.<edge_zone> 跳转页
+cloudflare:
+  zone: example.com
+  worker: lolinet-join
+  kv: lolinet-pairing
+  bucket: lolinet-dist
+  redirects: [console]
+
+relay_defaults:
+  instance_type: ecs.c9i.xlarge   # 公开探针卡片上显示的规格
+
+# relay 用干员名。region 决定公开页面上的城市和地球上的位置（web/src/data/regions.ts）；net = relay 所在 VPC 10.<net>.0.0/16
+relays:
+  - {name: chen,      region: cn-beijing,     zone: cn-beijing-l,    net: 111, overlay_ip: 10.188.0.11, wss_port: 443}
+  - {name: hoshiguma, region: cn-shanghai,    zone: cn-shanghai-l,   net: 112, overlay_ip: 10.188.0.12, wss_port: 443}
+  - {name: saria,     region: cn-shenzhen,    zone: cn-shenzhen-d,   net: 113, overlay_ip: 10.188.0.13, wss_port: 443}
+  - {name: surtr,     region: cn-hongkong,    zone: cn-hongkong-c,   net: 114, overlay_ip: 10.188.0.14, wss_port: 443}
+  - {name: gavial,    region: ap-southeast-1, zone: ap-southeast-1d, net: 115, overlay_ip: 10.188.0.15, wss_port: 443}
+  - {name: silence,   region: us-west-1,      zone: us-west-1b,      net: 116, overlay_ip: 10.188.0.16, wss_port: 443}
+
+# 地址段：10.188.0.0/24 relay，10.188.1.0/24 服务主机，10.188.16.0/20 人用电脑（TUN），10.188.32.0/20 无 TUN 客户端
+devices:
+  - {name: laptop, os: macos-arm64, mode: tun, overlay_ip: 10.188.16.10, peers: [surtr, hoshiguma, gavial]}
+  # 没有 sudo 的 NAS：Docker 版官方 EasyTier 没有 SNI 补丁，走 tcp；pair.py --transport tcp --out 直接出配置
+  - {name: nas, os: linux-docker, mode: tun, overlay_ip: 10.188.1.10, peers: [chen, hoshiguma, saria], transport: tcp}

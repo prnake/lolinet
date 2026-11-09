@@ -1,0 +1,179 @@
+/* 公开探针页面（join.edge.lo-li.co 首页）。没有侧栏：顶栏 + 单列，最宽 1240px。只引用 tokens.css 的变量。 */
+
+.probe { min-height: 100vh; }
+
+.probe__top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 max(var(--s-6), calc((100vw - 1240px) / 2));
+  background: var(--glass);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border-bottom: 1px solid var(--line);
+}
+.probe__brand { display: flex; align-items: center; gap: 10px; }
+.probe__name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.probe__brand .cap { margin-left: 4px; }
+.probe__right { display: flex; align-items: center; gap: var(--s-3); }
+
+.probe__main { max-width: 1240px; margin: 0 auto; padding: var(--s-8) var(--s-6) var(--s-12); }
+.probe__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-4);
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: var(--s-5) var(--s-6) var(--s-10);
+  border-top: 1px solid var(--line);
+  font-size: var(--t-cap);
+  color: var(--fg-4);
+}
+.probe__foot a { color: var(--fg-3); }
+.probe__foot a:hover { color: var(--fg); }
+
+/* ---------- 接入点卡片（哪吒式） ---------- */
+.rcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--s-4); }
+.rcard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-5);
+  border-radius: var(--r-lg);
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  transition: border-color var(--d-2) var(--ease), opacity var(--d-2);
+  scroll-margin-top: 80px;
+}
+.rcard.is-focused { border-color: var(--eye-line); }
+.rcard.is-off { border-color: var(--bad-line); }
+.rcard.is-off .rcard__rows, .rcard.is-off .avail { opacity: 0.45; }
+.rcard__head { display: flex; align-items: center; gap: 12px; }
+.rcard__id { flex: 1; min-width: 0; }
+.rcard__name { font-size: var(--t-lg); font-weight: 500; letter-spacing: -0.01em; }
+.rcard__where { font-size: var(--t-xs); color: var(--fg-3); }
+.rcard__state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-xs); color: var(--fg-2); white-space: nowrap; }
+.rcard__state.is-off { color: var(--bad); }
+.rcard__rows { display: flex; flex-direction: column; gap: 9px; }
+.rcard__row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); }
+.rcard__row--line { grid-template-columns: 44px minmax(0, 1fr); }
+.rcard__row--line .rcard__v { text-align: left; }
+.rcard__k { font-size: var(--t-xs); color: var(--fg-3); }
+.rcard__gauge .meter { width: 100%; height: 4px; }
+.rcard__v { font-size: var(--t-xs); color: var(--fg-2); text-align: right; white-space: nowrap; }
+.rcard__dim { color: var(--fg-4); }
+.rcard__io { display: inline-block; min-width: 9.5em; }
+.rcard__foot { display: flex; justify-content: space-between; gap: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--line); font-size: var(--t-cap); color: var(--fg-4); }
+
+/* 30 天可用率：满格是墨色，不满才出状态色，没数据是空框 */
+.avail { display: flex; flex-direction: column; gap: 8px; }
+.avail__head { display: flex; align-items: center; justify-content: space-between; }
+.avail__read { font-size: var(--t-xs); color: var(--fg-2); }
+.avail__bars { display: flex; gap: 2px; height: 22px; }
+.avail__bar { flex: 1; border-radius: 2px; transition: transform var(--d-1) var(--ease); }
+.avail__bar.is-ok { background: rgb(var(--tint) / 0.28); }
+.avail__bar.is-warn { background: var(--warn); }
+.avail__bar.is-bad { background: var(--bad); }
+.avail__bar.is-none { box-shadow: inset 0 0 0 1px var(--line-2); }
+.avail__bar.is-hot { transform: scaleY(1.18); }
+
+/* ---------- 24 小时延迟 ---------- */
+.lchart { display: flex; flex-direction: column; gap: var(--s-3); }
+.lchart--empty { min-height: 220px; display: grid; place-items: center; padding: var(--s-6); text-align: center; color: var(--fg-3); font-size: var(--t-xs); border: 1px dashed var(--line-2); border-radius: var(--r-md); }
+.lchart__legend { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; font-size: var(--t-xs); color: var(--fg-2); }
+.lchart__key { display: inline-flex; align-items: center; gap: 6px; }
+.lchart__read { margin-left: auto; color: var(--fg-3); }
+.lchart__svg { display: block; width: 100%; height: auto; cursor: crosshair; }
+.lchart__grid { stroke: var(--line); stroke-width: 1; }
+.lchart__tick { font: 400 10.5px var(--font-mono); fill: var(--fg-3); }
+.lchart__cross { stroke: var(--fg-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.lchart__dot { stroke: var(--ink-1); stroke-width: 2; }
+
+.probe__join { padding-top: var(--s-6); border-top: 1px solid var(--line); }
+/* 公开页没有「当前步骤」：三步一样亮，不用猫眼绿 */
+.probe__join .steps__item { border-top-color: var(--line-2); }
+.probe__join .steps__num { color: var(--fg-3); }
+.probe__join .steps__title { color: var(--fg); }
+.probe__join .steps__body { color: var(--fg-3); }
+.probe__join .cmd { max-width: 720px; }
+
+@media (max-width: 760px) {
+  .probe__brand .cap, .probe__right .top__fresh { display: none; }
+  .probe__main { padding: var(--s-6) var(--s-4) var(--s-10); }
+  .rcards { grid-template-columns: minmax(0, 1fr); }
+  .steps { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- 设备卡片：只有硬件和位置，比接入点卡片轻 ---------- */
+.dcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--s-4); }
+.dcard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-5);
+  border-radius: var(--r-lg);
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+}
+.dcard.is-off .dcard__spec { opacity: 0.5; }
+.dcard__head { display: flex; align-items: center; gap: 12px; }
+.dcard__id { flex: 1; min-width: 0; }
+.dcard__name { display: flex; align-items: center; gap: 8px; font-size: var(--t-md); font-weight: 500; }
+.dcard__where { font-size: var(--t-xs); color: var(--fg-3); }
+.dcard__spec { display: flex; flex-direction: column; gap: 7px; margin: 0; }
+.dcard__row { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: var(--s-3); align-items: baseline; }
+.dcard__row dt { font-size: var(--t-xs); color: var(--fg-3); }
+.dcard__row dd { margin: 0; font-size: var(--t-xs); color: var(--fg-2); overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .dcards { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- 地球拓扑（viz/GlobeTopology） ---------- */
+.globe-wrap { position: relative; }
+.globe { width: 100%; height: clamp(420px, 52vw, 640px); cursor: grab; }
+.globe:active { cursor: grabbing; }
+.globe__loading { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+/* 节点：零尺寸锚点，光标尖正好落在坐标上，文字往右（is-left 往左） */
+.gnode {
+  position: relative;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition: opacity var(--d-2) var(--ease);
+}
+.gnode__cursor { position: absolute; left: -3px; top: -3px; overflow: visible; filter: drop-shadow(0 1px 2px var(--cursor-shadow)); }
+.gnode--device .gnode__cursor { transform: scale(0.8); transform-origin: 3px 3px; }
+.gnode__text {
+  position: absolute;
+  left: 16px;
+  top: -1px;
+  display: flex;
+  flex-direction: column;
+  white-space: nowrap;
+  text-align: left;
+  pointer-events: none;
+}
+.gnode.is-left .gnode__text { left: auto; right: 8px; text-align: right; }
+.gnode__name { font: 500 12.5px var(--font-sans); color: var(--fg); text-shadow: 0 0 3px var(--halo-text), 0 0 6px var(--halo-text); }
+.gnode--device .gnode__name { font-size: 11.5px; color: var(--fg-2); }
+.gnode__sub { font: 400 10.5px var(--font-mono); color: var(--fg-3); text-shadow: 0 0 3px var(--halo-text); }
+.gnode.is-dim { opacity: 0.45; }
+.gnode.is-on .gnode__name { color: var(--eye-fg); }
+.gnode:focus-visible { outline: none; }
+.gnode:focus-visible .gnode__name { text-decoration: underline; text-decoration-color: var(--eye-fg); }
+
+.dcard.is-focused, .rcard.is-focused { border-color: var(--eye-line); }
+.dcard { scroll-margin-top: 80px; }
+.dcard__link { white-space: nowrap; }
+.dcard__note { font-size: var(--t-xs); color: var(--fg-3); line-height: 1.6; }
+/* 设备挤在接入点旁边：默认只画光标，悬停、键盘聚焦或选中才出文字，免得压住城市名 */
+.gnode--device .gnode__text { opacity: 0; transition: opacity var(--d-2) var(--ease); }
+.gnode--device:hover .gnode__text, .gnode--device:focus-visible .gnode__text, .gnode--device.is-on .gnode__text { opacity: 1; }
+.gnode:hover, .gnode.is-on { z-index: 2; }
+.globe__views { position: absolute; top: 4px; right: var(--s-5); z-index: 3; }

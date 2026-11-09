@@ -1,0 +1,62 @@
+diff --git a/easytier/src/tunnel/websocket.rs b/easytier/src/tunnel/websocket.rs
+index 8cc7c7f..250deb6 100644
+--- a/easytier/src/tunnel/websocket.rs
++++ b/easytier/src/tunnel/websocket.rs
+@@ -362,6 +362,37 @@ impl easytier_core::socket::SocketListener for WsTunnelListener {
+     }
+ }
+ 
++/// SNI override for a WSS connection: the URL's `sni` query parameter, then the `ET_WSS_SNI`
++/// environment variable. Peer URLs learned from other nodes carry no query, so hole punching and
++/// relay connections rely on the environment default.
++fn wss_sni_override(url: &url::Url) -> Option<String> {
++    url.query_pairs()
++        .find(|(k, _)| k == "sni")
++        .map(|(_, v)| v.into_owned())
++        .or_else(|| std::env::var("ET_WSS_SNI").ok())
++        .filter(|s| !s.is_empty())
++}
++
++/// URL used for the WebSocket request: drops the `sni` parameter and, with an override, sends the
++/// same name in the Host header so the HTTP and TLS layers agree.
++fn ws_request_url(url: &url::Url, sni_override: Option<&str>) -> url::Url {
++    let mut out = url.clone();
++    let rest: Vec<(String, String)> = url
++        .query_pairs()
++        .filter(|(k, _)| k != "sni")
++        .map(|(k, v)| (k.into_owned(), v.into_owned()))
++        .collect();
++    if rest.is_empty() {
++        out.set_query(None);
++    } else {
++        out.query_pairs_mut().clear().extend_pairs(rest);
++    }
++    if let Some(name) = sni_override {
++        let _ = out.set_host(Some(name));
++    }
++    out
++}
++
+ pub(crate) async fn upgrade_connected<S>(
+     stream: S,
+     remote_url: url::Url,
+@@ -387,12 +418,17 @@ where
+         ),
+     };
+ 
+-    let client = ClientBuilder::from_uri(http::Uri::try_from(remote_url.to_string()).unwrap())
++    let sni_override = if is_wss { wss_sni_override(&remote_url) } else { None };
++    let request_url = ws_request_url(&remote_url, sni_override.as_deref());
++    let client = ClientBuilder::from_uri(http::Uri::try_from(request_url.to_string()).unwrap())
+         .max_headers(128);
+     let stream: MaybeTlsStream<S> = if is_wss {
+         init_crypto_provider();
+         let tls = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
+-        let sni = remote_url.domain().unwrap_or("localhost").to_owned();
++        let sni = sni_override
++            .clone()
++            .or_else(|| remote_url.domain().map(str::to_owned))
++            .unwrap_or_else(|| "localhost".to_owned());
+         let server_name = rustls::pki_types::ServerName::try_from(sni)
+             .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_owned()))?;
+         MaybeTlsStream::Rustls(tls.connect(server_name, stream).await?)

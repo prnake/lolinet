@@ -1,0 +1,643 @@
+{
+ "fetched_at": 1794148386,
+ "rpc": "demo",
+ "node": {
+  "peer_id": "2123890274",
+  "hostname": "laptop",
+  "ipv4_addr": "10.188.16.10/16",
+  "version": "2.7.0-6aed7bd1~",
+  "udp_nat_type": "SymmetricEasyInc",
+  "tcp_nat_type": "Symmetric",
+  "listeners": [],
+  "peer_uris": [
+   "wss://203.0.113.14/?sni=speedtest.example.com",
+   "wss://203.0.113.12/?sni=speedtest.example.com",
+   "wss://203.0.113.15/?sni=speedtest.example.com"
+  ],
+  "socks5": "socks5://0.0.0.0:18082",
+  "no_tun": true,
+  "latency_first": true,
+  "private_mode": true,
+  "secure_mode": true,
+  "credential_peer": true
+ },
+ "peers": [
+  {
+   "cidr": "10.188.16.10/16",
+   "ipv4": "10.188.16.10",
+   "hostname": "laptop",
+   "cost": "Local",
+   "lat_ms": "-",
+   "loss_rate": "-",
+   "rx_bytes": "-",
+   "tx_bytes": "-",
+   "tunnel_proto": "-",
+   "nat_type": "SymmetricEasyInc",
+   "id": "2123890274",
+   "version": "2.7.0-6aed7bd1~"
+  },
+  {
+   "cidr": "",
+   "ipv4": "",
+   "hostname": "surtr",
+   "cost": "relay(2)",
+   "lat_ms": "60.00",
+   "loss_rate": "0.0%",
+   "rx_bytes": "0 B",
+   "tx_bytes": "0 B",
+   "tunnel_proto": "",
+   "nat_type": "PortRestricted",
+   "id": "1292617981",
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "cidr": "10.188.0.11/16",
+   "ipv4": "10.188.0.11",
+   "hostname": "chen",
+   "cost": "p2p",
+   "lat_ms": "12.27",
+   "loss_rate": "0.0%",
+   "rx_bytes": "1.53 kB",
+   "tx_bytes": "2.37 kB",
+   "tunnel_proto": "tcp",
+   "nat_type": "PortRestricted",
+   "id": "3902060759",
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "cidr": "10.188.0.12/16",
+   "ipv4": "10.188.0.12",
+   "hostname": "hoshiguma",
+   "cost": "p2p",
+   "lat_ms": "37.09",
+   "loss_rate": "0.0%",
+   "rx_bytes": "314.54 MB",
+   "tx_bytes": "181.00 MB",
+   "tunnel_proto": "wss",
+   "nat_type": "PortRestricted",
+   "id": "1527596297",
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "cidr": "10.188.0.13/16",
+   "ipv4": "10.188.0.13",
+   "hostname": "saria",
+   "cost": "p2p",
+   "lat_ms": "49.37",
+   "loss_rate": "0.0%",
+   "rx_bytes": "5.47 kB",
+   "tx_bytes": "7.24 kB",
+   "tunnel_proto": "tcp",
+   "nat_type": "PortRestricted",
+   "id": "4050015376",
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "cidr": "10.188.0.14/16",
+   "ipv4": "10.188.0.14",
+   "hostname": "surtr",
+   "cost": "p2p",
+   "lat_ms": "464.95",
+   "loss_rate": "0.0%",
+   "rx_bytes": "2.49 MB",
+   "tx_bytes": "2.97 MB",
+   "tunnel_proto": "wss",
+   "nat_type": "PortRestricted",
+   "id": "1854333749",
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "cidr": "10.188.0.15/16",
+   "ipv4": "10.188.0.15",
+   "hostname": "gavial",
+   "cost": "p2p",
+   "lat_ms": "479.83",
+   "loss_rate": "0.0%",
+   "rx_bytes": "700 B",
+   "tx_bytes": "715 B",
+   "tunnel_proto": "wss",
+   "nat_type": "PortRestricted",
+   "id": "3638049663",
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "cidr": "10.188.0.16/16",
+   "ipv4": "10.188.0.16",
+   "hostname": "silence",
+   "cost": "p2p",
+   "lat_ms": "311.04",
+   "loss_rate": "0.0%",
+   "rx_bytes": "1.49 kB",
+   "tx_bytes": "1.73 kB",
+   "tunnel_proto": "tcp",
+   "nat_type": "PortRestricted",
+   "id": "2526649629",
+   "version": "2.7.0-8b7f1f01"
+  }
+ ],
+ "routes": [
+  {
+   "ipv4": "10.188.16.10/16",
+   "hostname": "laptop",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "-",
+   "next_hop_hostname": "Local",
+   "next_hop_lat": 0.0,
+   "path_len": 0,
+   "path_latency": 0,
+   "next_hop_ipv4_lat_first": "-",
+   "next_hop_hostname_lat_first": "Local",
+   "path_len_lat_first": 0,
+   "path_latency_lat_first": 0,
+   "version": "2.7.0-6aed7bd1~"
+  },
+  {
+   "ipv4": "",
+   "hostname": "surtr",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "10.188.0.13/16",
+   "next_hop_hostname": "saria",
+   "next_hop_lat": 49.368,
+   "path_len": 2,
+   "path_latency": 60,
+   "next_hop_ipv4_lat_first": "10.188.0.13/16",
+   "next_hop_hostname_lat_first": "saria",
+   "path_len_lat_first": 2,
+   "path_latency_lat_first": 60,
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "ipv4": "10.188.0.11/16",
+   "hostname": "chen",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "DIRECT",
+   "next_hop_hostname": "DIRECT",
+   "next_hop_lat": 12.27,
+   "path_len": 1,
+   "path_latency": 11,
+   "next_hop_ipv4_lat_first": "DIRECT",
+   "next_hop_hostname_lat_first": "DIRECT",
+   "path_len_lat_first": 1,
+   "path_latency_lat_first": 11,
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "ipv4": "10.188.0.12/16",
+   "hostname": "hoshiguma",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "DIRECT",
+   "next_hop_hostname": "DIRECT",
+   "next_hop_lat": 37.091,
+   "path_len": 1,
+   "path_latency": 35,
+   "next_hop_ipv4_lat_first": "DIRECT",
+   "next_hop_hostname_lat_first": "DIRECT",
+   "path_len_lat_first": 1,
+   "path_latency_lat_first": 35,
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "ipv4": "10.188.0.13/16",
+   "hostname": "saria",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "DIRECT",
+   "next_hop_hostname": "DIRECT",
+   "next_hop_lat": 49.368,
+   "path_len": 1,
+   "path_latency": 45,
+   "next_hop_ipv4_lat_first": "DIRECT",
+   "next_hop_hostname_lat_first": "DIRECT",
+   "path_len_lat_first": 1,
+   "path_latency_lat_first": 45,
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "ipv4": "10.188.0.14/16",
+   "hostname": "surtr",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "DIRECT",
+   "next_hop_hostname": "DIRECT",
+   "next_hop_lat": 464.951,
+   "path_len": 1,
+   "path_latency": 462,
+   "next_hop_ipv4_lat_first": "10.188.0.13/16",
+   "next_hop_hostname_lat_first": "saria",
+   "path_len_lat_first": 2,
+   "path_latency_lat_first": 62,
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "ipv4": "10.188.0.15/16",
+   "hostname": "gavial",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "DIRECT",
+   "next_hop_hostname": "DIRECT",
+   "next_hop_lat": 479.832,
+   "path_len": 1,
+   "path_latency": 473,
+   "next_hop_ipv4_lat_first": "10.188.0.13/16",
+   "next_hop_hostname_lat_first": "saria",
+   "path_len_lat_first": 3,
+   "path_latency_lat_first": 97,
+   "version": "2.7.0-8b7f1f01"
+  },
+  {
+   "ipv4": "10.188.0.16/16",
+   "hostname": "silence",
+   "proxy_cidrs": "",
+   "next_hop_ipv4": "DIRECT",
+   "next_hop_hostname": "DIRECT",
+   "next_hop_lat": 311.04,
+   "path_len": 1,
+   "path_latency": 305,
+   "next_hop_ipv4_lat_first": "DIRECT",
+   "next_hop_hostname_lat_first": "DIRECT",
+   "path_len_lat_first": 1,
+   "path_latency_lat_first": 305,
+   "version": "2.7.0-8b7f1f01"
+  }
+ ],
+ "graph": [
+  {
+   "node_id": "1292617981",
+   "hostname": "surtr",
+   "ipv4": "",
+   "direct_peers": [
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 33
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 1
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 147
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 39
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 65
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 18
+    }
+   ]
+  },
+  {
+   "node_id": "1527596297",
+   "hostname": "hoshiguma",
+   "ipv4": "10.188.0.12/16",
+   "direct_peers": [
+    {
+     "node_id": "1292617981",
+     "hostname": "surtr",
+     "ipv4": "",
+     "latency_ms": 33
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 35
+    },
+    {
+     "node_id": "2123890274",
+     "hostname": "laptop",
+     "ipv4": "10.188.16.10/16",
+     "latency_ms": 36
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 152
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 63
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 29
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 26
+    }
+   ]
+  },
+  {
+   "node_id": "1854333749",
+   "hostname": "surtr",
+   "ipv4": "10.188.0.14/16",
+   "direct_peers": [
+    {
+     "node_id": "1292617981",
+     "hostname": "surtr",
+     "ipv4": "",
+     "latency_ms": 1
+    },
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 35
+    },
+    {
+     "node_id": "2123890274",
+     "hostname": "laptop",
+     "ipv4": "10.188.16.10/16",
+     "latency_ms": 462
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 145
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 35
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 52
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 19
+    }
+   ]
+  },
+  {
+   "node_id": "2123890274",
+   "hostname": "laptop",
+   "ipv4": "10.188.16.10/16",
+   "direct_peers": [
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 35
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 462
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 305
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 473
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 11
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 45
+    }
+   ]
+  },
+  {
+   "node_id": "2526649629",
+   "hostname": "silence",
+   "ipv4": "10.188.0.16/16",
+   "direct_peers": [
+    {
+     "node_id": "1292617981",
+     "hostname": "surtr",
+     "ipv4": "",
+     "latency_ms": 147
+    },
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 176
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 145
+    },
+    {
+     "node_id": "2123890274",
+     "hostname": "laptop",
+     "ipv4": "10.188.16.10/16",
+     "latency_ms": 299
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 168
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 278
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 217
+    }
+   ]
+  },
+  {
+   "node_id": "3638049663",
+   "hostname": "gavial",
+   "ipv4": "10.188.0.15/16",
+   "direct_peers": [
+    {
+     "node_id": "1292617981",
+     "hostname": "surtr",
+     "ipv4": "",
+     "latency_ms": 39
+    },
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 63
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 35
+    },
+    {
+     "node_id": "2123890274",
+     "hostname": "laptop",
+     "ipv4": "10.188.16.10/16",
+     "latency_ms": 466
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 168
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 77
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 65
+    }
+   ]
+  },
+  {
+   "node_id": "3902060759",
+   "hostname": "chen",
+   "ipv4": "10.188.0.11/16",
+   "direct_peers": [
+    {
+     "node_id": "1292617981",
+     "hostname": "surtr",
+     "ipv4": "",
+     "latency_ms": 65
+    },
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 29
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 52
+    },
+    {
+     "node_id": "2123890274",
+     "hostname": "laptop",
+     "ipv4": "10.188.16.10/16",
+     "latency_ms": 12
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 232
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 97
+    },
+    {
+     "node_id": "4050015376",
+     "hostname": "saria",
+     "ipv4": "10.188.0.13/16",
+     "latency_ms": 40
+    }
+   ]
+  },
+  {
+   "node_id": "4050015376",
+   "hostname": "saria",
+   "ipv4": "10.188.0.13/16",
+   "direct_peers": [
+    {
+     "node_id": "1292617981",
+     "hostname": "surtr",
+     "ipv4": "",
+     "latency_ms": 15
+    },
+    {
+     "node_id": "1527596297",
+     "hostname": "hoshiguma",
+     "ipv4": "10.188.0.12/16",
+     "latency_ms": 26
+    },
+    {
+     "node_id": "1854333749",
+     "hostname": "surtr",
+     "ipv4": "10.188.0.14/16",
+     "latency_ms": 17
+    },
+    {
+     "node_id": "2123890274",
+     "hostname": "laptop",
+     "ipv4": "10.188.16.10/16",
+     "latency_ms": 45
+    },
+    {
+     "node_id": "2526649629",
+     "hostname": "silence",
+     "ipv4": "10.188.0.16/16",
+     "latency_ms": 220
+    },
+    {
+     "node_id": "3638049663",
+     "hostname": "gavial",
+     "ipv4": "10.188.0.15/16",
+     "latency_ms": 61
+    },
+    {
+     "node_id": "3902060759",
+     "hostname": "chen",
+     "ipv4": "10.188.0.11/16",
+     "latency_ms": 40
+    }
+   ]
+  }
+ ],
+ "errors": []
+}

@@ -1,0 +1,182 @@
+/*
+ * 猫眼 Catseye —— lo-li mesh 的固定美学。规范见 web/DESIGN.md，活样张在 #/design。
+ * 只改这里的值，不在组件里写死颜色、字号、圆角和时长。
+ */
+:root {
+  color-scheme: dark;
+
+  /* 底：纯黑虚空，面板一层比一层亮一点 */
+  --void: #000;
+  --ink-1: #0a0a0c;
+  --ink-2: #111114;
+  --ink-3: #18181c;
+  --ink-4: #222228;
+  --line: rgb(255 255 255 / 0.07);
+  --line-2: rgb(255 255 255 / 0.12);
+  --line-3: rgb(255 255 255 / 0.22);
+  /* 「墨」的原色：叠加层（热力图、点阵、渐变）用 rgb(var(--tint) / a)，日间自动反过来 */
+  --tint: 255 255 255;
+
+  /* 字 */
+  --fg: #f2f2f3;
+  --fg-2: rgb(255 255 255 / 0.64);
+  --fg-3: rgb(255 255 255 / 0.42);
+  --fg-4: rgb(255 255 255 / 0.24);
+  /* 白胶囊主按钮：底和字。日间换成黑胶囊 */
+  --solid: #f2f2f3;
+  --solid-hover: #fff;
+  --solid-ink: #000;
+
+  /* 猫眼绿：全站唯一的强调色。只给「在线 / 本机 / 当前焦点与主操作」三件事用。
+     --eye 是填充（点、按钮、路径），--eye-fg 是写成字和细线时用的那一个：夜间两者相同，日间 --eye-fg 换成橄榄色 */
+  --eye: #ceff1c;
+  --eye-2: #b8e60f;
+  --eye-fg: #ceff1c;
+  --eye-ink: #0c0f00;
+  --eye-wash: rgb(206 255 28 / 0.08);
+  --eye-line: rgb(206 255 28 / 0.32);
+  --eye-glow: rgb(206 255 28 / 0.28);
+  --eye-flash: rgb(232 255 160 / 0.42);
+
+  /* 状态色：只在出问题时出现 */
+  --warn: #ffb224;
+  --warn-wash: rgb(255 178 36 / 0.08);
+  --warn-line: rgb(255 178 36 / 0.3);
+  --bad: #ff5c49;
+  --bad-ink: #000;
+  --bad-wash: rgb(255 92 73 / 0.1);
+  --bad-line: rgb(255 92 73 / 0.4);
+
+  /* 光标群：节点身份色。0–5 按 nodes.yaml 顺序给 relay，6–9 按名字哈希给设备；绿色留给猫眼，这里不用 */
+  --swarm-0: #ff5b3a;
+  --swarm-1: #ffc21a;
+  --swarm-2: #2fd07f;
+  --swarm-3: #3aa8ff;
+  --swarm-4: #8b6cff;
+  --swarm-5: #ff4f9a;
+  --swarm-6: #5ee6d0;
+  --swarm-7: #d9b38c;
+  --swarm-8: #e07bff;
+  --swarm-9: #ffa47a;
+  /* 光标描边与投影、网关光标、拓扑文字描边、遮罩、毛玻璃顶栏 */
+  --cursor-edge: #fff;
+  --cursor-shadow: rgb(0 0 0 / 0.6);
+  --gateway: rgb(255 255 255 / 0.5);
+  --halo-text: #000;
+  --scrim: rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.6);
+  --glass: rgb(0 0 0 / 0.72);
+
+  /* 字体：Geist 管界面，Geist Mono 管一切机器给的东西（IP、码、延迟、标注） */
+  --font-sans: "Geist Variable", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "SF Mono", ui-monospace, "PingFang SC", monospace;
+
+  /* 字号：操作界面以 13px 为正文 */
+  --t-cap: 11px;
+  --t-xs: 12px;
+  --t-sm: 13px;
+  --t-md: 14px;
+  --t-lg: 16px;
+  --t-xl: 22px;
+  --t-2xl: 32px;
+  --t-3xl: 44px;
+  --track-cap: 0.24em;
+  --track-tight: -0.03em;
+
+  /* 圆角 */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+
+  /* 间距：4px 栅格 */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* 动效：快进慢出；只在状态变化时动 */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-boop: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --d-1: 120ms;
+  --d-2: 200ms;
+  --d-3: 360ms;
+  --d-4: 640ms;
+
+  /* 布局 */
+  --sidebar: 240px;
+  --drawer: 440px;
+  --row: 44px;
+  --ctl: 32px;
+}
+
+/*
+ * 日间：纸白底。同一套规则，只换取值。
+ * 猫眼绿在白底上只有 1.2:1，所以只当填充用（在线点、主按钮、路径），写成字和细线时换成 --eye-fg 橄榄色（≥5.5:1）。
+ * 光标色整体压暗到在纸白上 ≥3:1；警告和错误压到 ≥4.6:1。数值的推算见 DESIGN.md「日间」。
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --void: #f5f5f2;
+  --ink-1: #ffffff;
+  --ink-2: #f3f3f0;
+  --ink-3: #ebebe7;
+  --ink-4: #e0e0db;
+  --line: rgb(0 0 0 / 0.07);
+  --line-2: rgb(0 0 0 / 0.12);
+  --line-3: rgb(0 0 0 / 0.22);
+  --tint: 0 0 0;
+
+  --fg: #111113;
+  --fg-2: rgb(0 0 0 / 0.66);
+  --fg-3: rgb(0 0 0 / 0.55);
+  --fg-4: rgb(0 0 0 / 0.3);
+  --solid: #111113;
+  --solid-hover: #000;
+  --solid-ink: #f5f5f2;
+
+  --eye: #c6f432;
+  --eye-2: #b5e21d;
+  --eye-fg: #4f6b00;
+  --eye-ink: #0c0f00;
+  --eye-wash: rgb(150 200 0 / 0.14);
+  --eye-line: rgb(90 125 0 / 0.42);
+  --eye-glow: rgb(150 200 0 / 0.35);
+  --eye-flash: rgb(206 255 28 / 0.5);
+
+  --warn: #966100;
+  --warn-wash: rgb(220 150 0 / 0.1);
+  --warn-line: rgb(150 97 0 / 0.32);
+  --bad: #da1700;
+  --bad-ink: #fff;
+  --bad-wash: rgb(218 23 0 / 0.07);
+  --bad-line: rgb(218 23 0 / 0.35);
+
+  --swarm-0: #ff4f2c;
+  --swarm-1: #b58500;
+  --swarm-2: #24a163;
+  --swarm-3: #018fff;
+  --swarm-4: #8b6cff;
+  --swarm-5: #ff3f91;
+  --swarm-6: #199f89;
+  --swarm-7: #c0803f;
+  --swarm-8: #d54eff;
+  --swarm-9: #ff5000;
+  --cursor-edge: #fff;
+  --cursor-shadow: rgb(0 0 0 / 0.28);
+  --gateway: rgb(0 0 0 / 0.42);
+  --halo-text: #f5f5f2;
+  --scrim: rgb(20 20 18 / 0.28);
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.12);
+  --glass: rgb(245 245 242 / 0.8);
+  --flash-blend: multiply;
+}

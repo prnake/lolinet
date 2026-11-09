@@ -1,0 +1,32 @@
+{
+  "name": "lo-li-mesh-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && vite build -c vite.probe.config.ts",
+    "preview": "vite preview",
+    "agent": "python3 agent/mesh_agent.py",
+    "build:probe": "tsc --noEmit && vite build -c vite.probe.config.ts",
+    "dev:probe": "vite -c vite.probe.config.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "globe.gl": "^2.46.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/topojson-client": "^3.1.5",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.6",
+    "yaml": "^2.9.1"
+  }
+}

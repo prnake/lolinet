@@ -1,0 +1,90 @@
+//! `lolinet status`：服务、本机、接入点（10.188.0.0/24）和设备。数据来自内置 easytier-cli 的 JSON 输出，
+//! 和 web/agent、probe/reporter.py 读的是同一份。
+
+use std::fs;
+
+use anyhow::Result;
+use serde_json::Value;
+
+use crate::{CONFIG, RPC, VERSION, service, tool};
+
+fn cli_json(sub: &str) -> Option<Value> {
+    let out = tool("easytier-cli").args(["-p", RPC, "-o", "json", sub]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+pub fn node() -> Option<Value> {
+    cli_json("node")
+}
+
+fn s(v: &Value, k: &str) -> String {
+    v.get(k).and_then(Value::as_str).unwrap_or("").to_owned()
+}
+
+/// 按终端显示宽度补空格（中文占两格）
+fn pad(text: &str, width: usize) -> String {
+    let w: usize = text.chars().map(|c| if c as u32 >= 0x2e80 { 2 } else { 1 }).sum();
+    format!("{text}{}", " ".repeat(width.saturating_sub(w)))
+}
+
+pub fn show() -> Result<()> {
+    println!("lolinet {VERSION} · EasyTier {}", easytier::common::constants::EASYTIER_VERSION);
+    match service::state() {
+        Some(st) if st.running => println!(
+            "服务    运行中 · {}{}",
+            st.manager,
+            st.pid.map(|p| format!(" · pid {p}")).unwrap_or_default()
+        ),
+        Some(st) => println!("服务    没在运行 · {}（sudo lolinet restart）", st.manager),
+        None => println!("服务    没装（sudo lolinet up）"),
+    }
+    let (Some(node), Some(Value::Array(peers))) = (node(), cli_json("peer")) else {
+        println!("内核    管理口 {RPC} 连不上");
+        return Ok(());
+    };
+    let nat = peers.iter().find(|p| s(p, "cost") == "Local").map(|p| s(p, "nat_type")).unwrap_or_default();
+    println!("本机    {}  {}  NAT {nat}", s(&node, "hostname"), s(&node, "ipv4_addr"));
+    println!("凭证    {}", credential());
+    // 没有地址的是控制台（network.issuer 那台 relay）的 Gateway 实例，不算节点
+    let (relays, devices): (Vec<&Value>, Vec<&Value>) = peers
+        .iter()
+        .filter(|p| s(p, "cost") != "Local" && !s(p, "ipv4").is_empty())
+        .partition(|p| s(p, "ipv4").starts_with("10.188.0."));
+    for (title, unit, list) in [("接入点", "个", relays), ("设备", "台", devices)] {
+        let direct = list.iter().filter(|p| s(p, "cost") == "p2p").count();
+        println!("{}{} {unit}在线，直连 {direct}", pad(title, 8), list.len());
+        for p in list {
+            let link = if s(p, "cost") == "p2p" { format!("直连 {}", s(p, "tunnel_proto")) } else { "中转".into() };
+            let lat = s(p, "lat_ms").parse::<f64>().map(|l| format!("{l:.0} ms")).unwrap_or_else(|_| "-".into());
+            println!(
+                "  {} {} {} {:>8}  丢包 {}",
+                pad(&s(p, "hostname"), 12),
+                pad(&s(p, "ipv4"), 14),
+                pad(&link, 10),
+                lat,
+                s(p, "loss_rate")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// pair.py 在配置末尾写的 `# credential_id` / `# credential_expiry_unix`；配置是 600，不是 root 读不到
+fn credential() -> String {
+    let text = match fs::read_to_string(CONFIG) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return "sudo lolinet 才看得到".into(),
+        Err(_) => return format!("没有 {CONFIG}"),
+    };
+    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix(" = ").map(str::trim).map(str::to_owned));
+    let id = field("# credential_id").unwrap_or_else(|| "?".into());
+    let Some(expiry) = field("# credential_expiry_unix").and_then(|e| e.parse::<i64>().ok()) else {
+        return id;
+    };
+    let days = (expiry - chrono::Utc::now().timestamp()) / 86400;
+    let date = chrono::DateTime::from_timestamp(expiry, 0).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+    if days < 0 { format!("{id}，已过期（{date}）") } else { format!("{id}，还剩 {days} 天（{date} 到期）") }
+}

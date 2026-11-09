@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- join/install.sh 在 macOS 上装的公开探针（设备模式）：系统级 LaunchDaemon，以 nobody 运行，不登录也上报。
+     手工装的用户级版本见 probe/device.py install-mac；install.sh 会把它撤掉，免得同一个 id 报两份。 -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>co.lo-li.mesh-probe</string>
+  <key>UserName</key><string>nobody</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/python3</string><string>-I</string><string>/usr/local/libexec/mesh-probe/reporter.py</string>
+    <string>--config</string><string>/etc/mesh-probe/reporter.json</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardErrorPath</key><string>/var/log/mesh-probe.log</string>
+</dict></plist>

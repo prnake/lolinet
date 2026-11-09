@@ -1,0 +1,125 @@
+# 编 EasyTier（easytier-core + easytier-cli，打了 patches/ 里的补丁）和 lolinet（同一份 EasyTier 编进一个二进制）：
+# 上游版本和补丁在 easytier/build.env。四个平台，产物是 artifact；发到自己的准入站用 join/deploy.py dist。
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths: [easytier/**, patches/**, lolinet/**, .github/workflows/build.yml]
+  pull_request:
+    paths: [easytier/**, patches/**, lolinet/**, .github/workflows/build.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 和上游 core.yml 一致：Linux 出 musl 静态二进制，aarch64 / darwin-arm 用 mimalloc，其余 jemalloc
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-musl, features: jemalloc, zig: false, native: true }
+          - { name: linux-aarch64, os: ubuntu-24.04, target: aarch64-unknown-linux-musl, features: mimalloc, zig: true, native: false }
+          - { name: macos-aarch64, os: macos-15, target: aarch64-apple-darwin, features: mimalloc, zig: false, native: true }
+          - { name: macos-x86_64, os: macos-15, target: x86_64-apple-darwin, features: jemalloc, zig: false, native: false }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch EasyTier and apply patches
+        run: |
+          grep -E '^[A-Z_]+=' easytier/build.env >> "$GITHUB_ENV"
+          set -a; . easytier/build.env; set +a
+          git clone -q --depth 1 --branch "$EASYTIER_REF" https://github.com/EasyTier/EasyTier.git src
+          test "$(git -C src rev-parse HEAD)" = "$EASYTIER_SHA" || { echo "tag $EASYTIER_REF 不再指向 $EASYTIER_SHA"; exit 1; }
+          for p in $EASYTIER_PATCHES $LOLINET_PATCHES; do git -C src apply --verbose "$GITHUB_WORKSPACE/$p"; done
+          # lolinet 是 easytier 包的第三个 bin（补丁里加的 [[bin]]），源码拷进去；和 lolinet/build.sh 一致
+          cp -R lolinet/src src/easytier/src/lolinet
+
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -qqy musl-tools
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust toolchain (from EasyTier rust-toolchain.toml)
+        working-directory: src
+        run: |
+          TC=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$TC" --profile minimal
+          rustup target add --toolchain "$TC" ${{ matrix.target }}
+          rustup show active-toolchain
+
+      - uses: mlugg/setup-zig@v2
+        if: matrix.zig
+        with:
+          version: 0.16.0
+      - uses: taiki-e/install-action@v2
+        if: matrix.zig
+        with:
+          tool: cargo-zigbuild@0.23.2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+          key: ${{ matrix.target }}
+
+      - name: Build
+        working-directory: src
+        run: |
+          BUILD=build; ${{ matrix.zig }} && BUILD=zigbuild
+          LOLINET_VERSION=$(git -C .. describe --always) cargo $BUILD --release --locked --target ${{ matrix.target }} -p easytier \
+            --features ${{ matrix.features }} --bin easytier-core --bin easytier-cli --bin lolinet
+
+      - name: Package
+        run: |
+          B=src/target/${{ matrix.target }}/release
+          mkdir -p pkg out
+          cp "$B/easytier-core" "$B/easytier-cli" pkg/
+          {
+            echo "easytier $EASYTIER_REF ($EASYTIER_SHA)"
+            echo "patches: $EASYTIER_PATCHES"
+            echo "target: ${{ matrix.target }} features: ${{ matrix.features }}"
+            echo "built from ${{ github.repository }}@${{ github.sha }} run ${{ github.run_number }}"
+          } > pkg/BUILD-INFO
+          # 和 join/install.sh 约定的格式：tar 根目录直接是 easytier-core / easytier-cli
+          COPYFILE_DISABLE=1 tar -czf out/easytier-${{ matrix.name }}.tar.gz -C pkg easytier-core easytier-cli BUILD-INFO
+          mkdir -p pkg-lolinet
+          cp "$B/lolinet" pkg-lolinet/
+          { echo "lolinet $(git describe --always)"; cat pkg/BUILD-INFO; echo "lolinet patches: $LOLINET_PATCHES"; } > pkg-lolinet/BUILD-INFO
+          COPYFILE_DISABLE=1 tar -czf out/lolinet-${{ matrix.name }}.tar.gz -C pkg-lolinet lolinet BUILD-INFO
+          cd out && shasum -a 256 *.tar.gz
+
+      - name: Verify
+        run: |
+          file pkg/easytier-core
+          if [ "$RUNNER_OS" = Linux ]; then file pkg/easytier-core | grep -qE 'statically linked|static-pie'; fi
+          # 补丁生效：本机起一个假 relay，解析 easytier-core 发出的 ClientHello 核对 SNI（没打补丁会是 localhost）。
+          # 不靠在二进制里找字符串：x86_64 上短常量会被编进指令立即数，找不到。
+          # 交叉编译的产物 runner 跑得动（如 Rosetta）就也测，跑不动就只靠上面 git apply 成功保证补丁在。
+          if ${{ matrix.native }} || ./pkg/easytier-core --version >/dev/null 2>&1; then
+            ./pkg/easytier-core --version && ./pkg/easytier-cli --version
+            python3 easytier/check_sni.py ./pkg/easytier-core
+            # lolinet 里编进去的内核也要带补丁：按 argv[0] 分发，链接成 easytier-core 名字再测一遍
+            ./pkg-lolinet/lolinet --version
+            ln -sf lolinet pkg-lolinet/easytier-core && python3 easytier/check_sni.py ./pkg-lolinet/easytier-core
+          else
+            echo "这台 runner 跑不了 ${{ matrix.target }}，跳过 SNI 实测"
+          fi
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: easytier-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+

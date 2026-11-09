@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-probe/
+.build/
+__pycache__/
+.DS_Store
+
+# 自己的节点清单、密钥和运行数据不进仓库（放 $LOLINET_HOME，默认 ~/.config/lolinet）
+nodes.yaml
+.env
+.env.*
+state/
+*.pem
+*.key
+*.p12
+loli.toml

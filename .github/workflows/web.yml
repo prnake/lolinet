@@ -1,0 +1,38 @@
+# 前端（本地控制台 + 公开探针页面）按 nodes.example.yaml 构建，查公开包里没有内部名字；Worker / 脚本做语法检查。
+name: web
+
+on:
+  push:
+    branches: [main]
+    paths: [join/**, web/**, probe/**, scripts/**, nodes.example.yaml, .github/workflows/web.yml]
+  pull_request:
+    paths: [join/**, web/**, probe/**, scripts/**, nodes.example.yaml, .github/workflows/web.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web (console + public probe)
+        working-directory: web
+        run: npm ci && npm run build
+
+      - name: Public probe bundle has no internal names
+        working-directory: web
+        run: node scripts/check-probe-bundle.mjs
+
+      - name: Syntax
+        run: |
+          cp join/worker.js "$RUNNER_TEMP/worker.mjs" && node --check "$RUNNER_TEMP/worker.mjs"
+          sh -n join/install.sh
+          python3 -m py_compile join/deploy.py probe/*.py scripts/*.py web/agent/*.py

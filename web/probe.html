@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="description" content="lo-li mesh 网络状态：接入点在线情况、拓扑和延迟（只读）。" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>lo-li mesh · 网络状态</title>
+    <script>
+      // 首屏前定主题，避免先黑后白闪一下；逻辑和 src/theme.ts 一致
+      (function () {
+        var p = localStorage.getItem("mesh.theme");
+        var light = p === "light" || (p !== "dark" && matchMedia("(prefers-color-scheme: light)").matches);
+        document.documentElement.dataset.theme = light ? "light" : "dark";
+        if (light) document.querySelector('meta[name="theme-color"]').setAttribute("content", "#f5f5f2");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/probe/main.tsx"></script>
+  </body>
+</html>

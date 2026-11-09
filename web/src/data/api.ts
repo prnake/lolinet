@@ -1,0 +1,69 @@
+import { md5 } from "./md5";
+import type { AgentInfo, Credential, NetworkSummary, PairResult, RegisteredDevice, Snapshot } from "./types";
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+export type PairRequest = { name: string; ip: string; ttl_days: number; peers: string[] };
+
+/** 页面只认这个接口；真 agent 和演示数据各实现一份。 */
+export interface Backend {
+  demo: boolean;
+  info(): Promise<AgentInfo>;
+  snapshot(): Promise<Snapshot>;
+  devices(): Promise<RegisteredDevice[]>;
+  pair(req: PairRequest): Promise<PairResult>;
+  forget(credentialId: string): Promise<void>;
+  consoleLoggedIn(): Promise<boolean>;
+  login(username: string, password: string): Promise<void>;
+  networks(): Promise<NetworkSummary[]>;
+  credentials(networkId: string): Promise<Credential[]>;
+  revoke(networkId: string, credentialId: string): Promise<void>;
+}
+
+async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // 写操作必须带 X-Mesh-Agent（agent 的 CSRF 防线），读也带上，省得区分
+  const headers: Record<string, string> = { "X-Mesh-Agent": "1" };
+  if (init.body) headers["Content-Type"] = "application/json";
+  const r = await fetch(path, { ...init, headers, credentials: "same-origin" });
+  const text = await r.text();
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    data = undefined;
+  }
+  if (!r.ok) {
+    const msg = (data as { message?: string } | undefined)?.message ?? (text.slice(0, 200) || r.statusText);
+    throw new ApiError(r.status, msg);
+  }
+  return data as T;
+}
+
+const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
+
+export const liveBackend: Backend = {
+  demo: false,
+  info: () => call("/api/mesh/info"),
+  snapshot: () => call("/api/mesh/snapshot"),
+  devices: async () => (await call<{ devices: RegisteredDevice[] }>("/api/mesh/devices")).devices,
+  pair: (req) => call("/api/mesh/pair", json(req)),
+  forget: async (credential_id) => void (await call("/api/mesh/forget", json({ credential_id }))),
+  consoleLoggedIn: async () => {
+    try {
+      await call("/api/v1/auth/check_login_status");
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return false;
+      throw e;
+    }
+  },
+  login: async (username, password) => void (await call("/api/v1/auth/login", json({ username, password: md5(password) }))),
+  networks: async () => (await call<{ networks: NetworkSummary[] }>("/api/v1/networks")).networks,
+  credentials: async (nid) => (await call<{ credentials: Credential[] }>(`/api/v1/networks/${nid}/credentials`)).credentials,
+  revoke: async (nid, cid) =>
+    void (await call(`/api/v1/networks/${nid}/credentials/${encodeURIComponent(cid)}`, { method: "DELETE" })),
+};

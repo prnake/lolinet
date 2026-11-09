@@ -1,0 +1,31 @@
+diff --git a/easytier/Cargo.toml b/easytier/Cargo.toml
+index d04a3a3..62a5b3e 100644
+--- a/easytier/Cargo.toml
++++ b/easytier/Cargo.toml
+@@ -26,6 +26,13 @@ name = "easytier-cli"
+ path = "src/easytier-cli.rs"
+ required-features = ["management", "cli"]
+ 
++# lo-li mesh：core 和 cli 编进同一个二进制，按 argv[0] 分发（源码在 loli-network/lolinet/src，构建时拷到 src/lolinet）
++[[bin]]
++name = "lolinet"
++path = "src/lolinet/main.rs"
++test = false
++required-features = ["management", "cli"]
++
+ [lib]
+ name = "easytier"
+ path = "src/lib.rs"
+diff --git a/easytier/src/easytier-cli.rs b/easytier/src/easytier-cli.rs
+index bcb2fa8..df1fdb5 100644
+--- a/easytier/src/easytier-cli.rs
++++ b/easytier/src/easytier-cli.rs
+@@ -3329,7 +3329,7 @@ fn optional_column_targets(
+ 
+ #[tokio::main]
+ #[tracing::instrument]
+-async fn main() -> Result<(), Error> {
++pub async fn main() -> Result<(), Error> {
+     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+     rust_i18n::set_locale(&locale);
+     let cli = Cli::parse();

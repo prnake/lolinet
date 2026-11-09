@@ -1,0 +1,24 @@
+# lo-li mesh 公开探针上报（probe/reporter.py）。只读 /proc 和 easytier-cli，不需要 root。
+[Unit]
+Description=lo-li mesh public probe reporter
+After=network-online.target easytier.service lolinet.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/mesh-probe/reporter.py
+LoadCredential=probe:/etc/mesh-probe/reporter.json
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+MemoryMax=64M
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
