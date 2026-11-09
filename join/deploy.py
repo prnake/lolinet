@@ -7,8 +7,11 @@
 
 用法:
   uv run join/deploy.py worker              上传 worker.js、绑定 KV/R2/DO/探针密钥、挂自定义域（HOSTNAMES）、关掉 workers.dev
-  uv run join/deploy.py install             上传探针包 dl/mesh-probe.tar.gz（install.sh 装探针用），再上传 install.sh
+  uv run join/deploy.py install             上传探针包 dl/mesh-probe.tar.gz（install.sh 装探针用），再上传 install.sh；
+                                            准入站上还没有四个平台的 lolinet 包（Actions → easytier → publish）就不传
   uv run join/deploy.py dist <tarball>...   上传 dl/<文件名> 和 dl/<文件名>.sha256
+  uv run join/deploy.py release <目录>       easytier.yml publish 用：目录里的 easytier-* / lolinet-* 包、探针包，最后是清单
+                                            dl/lolinet.json（lolinet upgrade 按它自动升级，见 lolinet/release.py）
   uv run join/deploy.py site                上传探针页面（先 cd web && npm run build:probe）到 R2 site/
 
 Cloudflare 凭据：CI 用仓库 secret CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID（最小权限 token），本机用$LOLINET_HOME/.env。
@@ -17,18 +20,15 @@ Cloudflare 凭据：CI 用仓库 secret CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUN
 from __future__ import annotations
 
 import datetime as dt
-import gzip
 import hashlib
 import hmac
-import io
 import json
 import os
 import secrets
 import sys
-import tarfile
 import uuid
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
@@ -42,6 +42,9 @@ PROBE_STATE = HOME_DIR / "state" / "mesh-probe.json"
 SITE_DIR = MESH_DIR / "web" / "dist-probe"
 DO_CLASS = "ProbeHub"
 DO_TAG = "v1"
+sys.path.insert(0, str(MESH_DIR / "lolinet"))
+from release import PROBE_NAME, probe_bundle  # noqa: E402
+from release import manifest as lolinet_manifest  # noqa: E402
 COMPAT_DATE = "2026-10-01"
 
 
@@ -220,25 +223,29 @@ def s3_put(key: str, data: bytes, ctype: str) -> None:
         raise SystemExit(f"R2 S3 PUT {key}: {e.code} {e.read()[:300]!r}")
 
 
-PROBE_FILES = ("reporter.py", "mesh-probe.service", "co.lo-li.mesh-probe.plist")
-
-
-def probe_bundle() -> bytes:
-    """install.sh 装公开探针用的包：reporter.py + systemd 单元（Linux）+ LaunchDaemon（macOS）。
-    tar 头和 gzip 的时间戳都是 0，同一个 Python 下内容不变 sha256 就不变（不同版本的 tar 头格式不一样）。"""
-    raw = io.BytesIO()
-    with tarfile.open(fileobj=raw, mode="w") as t:
-        for name in PROBE_FILES:
-            data = (MESH_DIR / "probe" / name).read_bytes()
-            info = tarfile.TarInfo(name)
-            info.size, info.mode = len(data), 0o644
-            t.addfile(info, io.BytesIO(data))
-    return gzip.compress(raw.getvalue(), mtime=0)
-
-
 def put_dist(name: str, data: bytes) -> None:
     put_object(f"dl/{name}", data, "application/gzip")
     put_object(f"dl/{name}.sha256", f"{hashlib.sha256(data).hexdigest()}  {name}\n".encode(), "text/plain")
+
+
+PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64")
+
+
+def require_lolinet() -> None:
+    """install.sh 下载 dl/lolinet-<平台>.tar.gz：包还没发布时上线新脚本，新设备就装不了，所以先查准入站上有没有。"""
+    missing = []
+    for p in PLATFORMS:
+        url = f"{BASE_URL}/dl/lolinet-{p}.tar.gz.sha256"
+        try:
+            with urlopen(Request(url, headers={"User-Agent": "lolinet-deploy"}), timeout=30) as r:
+                ok = r.status == 200 and len(r.read().split()[0]) == 64
+        except (URLError, OSError, IndexError):
+            ok = False
+        if not ok:
+            missing.append(url)
+    if missing:
+        raise SystemExit("install.sh 要下载的 lolinet 包还不在准入站上，先发布（Actions → easytier → Run workflow，勾 publish）：\n  "
+                         + "\n  ".join(missing))
 
 
 def site() -> None:
@@ -262,8 +269,19 @@ def main() -> None:
     elif cmd == "site":
         site()
     elif cmd == "install":
-        put_dist("mesh-probe.tar.gz", probe_bundle())  # 先传包，新 install.sh 上线时它已经在了
+        require_lolinet()
+        put_dist(PROBE_NAME, probe_bundle())  # 先传包，新 install.sh 上线时它已经在了
         put_object("install.sh", (HERE / "install.sh").read_bytes(), "text/x-shellscript")
+    elif cmd == "release":
+        out = Path(args[0])
+        packages = {f.name: f.read_bytes() for f in sorted(out.glob("*.tar.gz")) if f.name.startswith(("easytier-", "lolinet-"))}
+        m = lolinet_manifest({k: v for k, v in packages.items() if k.startswith("lolinet-")})
+        for name, data in packages.items():
+            put_dist(name, data)
+        put_dist(PROBE_NAME, probe_bundle())
+        # 清单最后传：设备看到新清单时，它指的包都已经在了
+        put_object("dl/lolinet.json", (json.dumps(m, indent=1) + "\n").encode(), "application/json")
+        print(f"dl/lolinet.json：lolinet {m['version']}")
     elif cmd == "dist":
         for f in map(Path, args):
             put_dist(f.name, f.read_bytes())

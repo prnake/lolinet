@@ -6,7 +6,7 @@ use std::fs;
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::{CONFIG, RPC, VERSION, service, tool};
+use crate::{CONFIG, RPC, VERSION, service, tool, upgrade};
 
 fn cli_json(sub: &str) -> Option<Value> {
     let out = tool("easytier-cli").args(["-p", RPC, "-o", "json", sub]).output().ok()?;
@@ -40,6 +40,12 @@ pub fn show() -> Result<()> {
         ),
         Some(st) => println!("服务    没在运行 · {}（sudo lolinet restart）", st.manager),
         None => println!("服务    没装（sudo lolinet up）"),
+    }
+    let st = upgrade::Settings::load();
+    match (st.auto, service::upgrade_scheduled()) {
+        (true, true) => println!("升级    自动，每 {} 小时 · {}", upgrade::INTERVAL_HOURS, st.manifest_url()),
+        (true, false) => println!("升级    定时任务没装（sudo lolinet up）· {}", st.manifest_url()),
+        (false, _) => println!("升级    关（sudo lolinet up --auto-upgrade on）；手动 sudo lolinet upgrade"),
     }
     let (Some(node), Some(Value::Array(peers))) = (node(), cli_json("peer")) else {
         println!("内核    管理口 {RPC} 连不上");

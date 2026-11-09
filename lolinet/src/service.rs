@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use crate::{BIN, LOG_DIR, write_file};
+use crate::{BIN, LOG_DIR, upgrade::INTERVAL_HOURS, write_file};
 
 pub struct State {
     pub running: bool,
@@ -26,7 +26,33 @@ pub fn install() -> Result<()> {
 }
 
 pub fn remove() -> Result<()> {
+    remove_upgrade()?;
     if MACOS { launchd::remove() } else { systemd::remove() }
+}
+
+/// 自动升级的定时任务（每 INTERVAL_HOURS 小时 `lolinet upgrade --auto`）；enabled = false 时撤掉
+pub fn install_upgrade(enabled: bool) -> Result<()> {
+    if !enabled {
+        return remove_upgrade();
+    }
+    if MACOS { launchd::install_upgrade() } else { systemd::install_upgrade() }
+}
+
+fn remove_upgrade() -> Result<()> {
+    if MACOS { launchd::remove_upgrade() } else { systemd::remove_upgrade() }
+}
+
+pub fn upgrade_scheduled() -> bool {
+    if MACOS { launchd::upgrade_scheduled() } else { systemd::upgrade_scheduled() }
+}
+
+/// join/install.sh 装的探针服务（升级换了 reporter.py 之后）；没装就什么都不做
+pub fn restart_probe() {
+    if MACOS {
+        run("launchctl", &["kickstart", "-k", "system/co.lo-li.mesh-probe"]);
+    } else {
+        run("systemctl", &["try-restart", "mesh-probe"]);
+    }
 }
 
 /// join/install.sh 以前用 `easytier-cli service install` 装的 easytier 服务：和 lolinet 抢同一张 TUN、同一条凭据，撤掉
@@ -53,12 +79,26 @@ mod launchd {
     const PLIST: &str = "/Library/LaunchDaemons/co.lo-li.lolinet.plist";
     const OLD_LABEL: &str = "easytier";
     const OLD_PLIST: &str = "/Library/LaunchDaemons/easytier.plist";
+    const UPGRADE_LABEL: &str = "co.lo-li.lolinet-upgrade";
+    const UPGRADE_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.lolinet-upgrade.plist";
+
+    fn load(label: &str, plist: &str) -> Result<()> {
+        run("launchctl", &["bootout", &format!("system/{label}")]);
+        // bootout 是异步的，紧接着 bootstrap 偶尔报 5: Input/output error，重试几次
+        for _ in 0..10 {
+            if run("launchctl", &["bootstrap", "system", plist]) {
+                return Ok(());
+            }
+            sleep(Duration::from_secs(1));
+        }
+        bail!("launchctl bootstrap system {plist} 失败")
+    }
 
     pub fn install() -> Result<()> {
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- lolinet up 写的；内核日志在 {LOG_DIR}/easytier.log，这里只收 warn 以上和崩溃输出 -->
+<!-- lolinet up 写的；内核日志在 {LOG_DIR}/easytier.log，这里只收参数错误和崩溃输出 -->
 <plist version="1.0"><dict>
   <key>Label</key><string>{LABEL}</string>
   <key>ProgramArguments</key><array><string>{BIN}</string><string>run</string></array>
@@ -70,16 +110,43 @@ mod launchd {
 "#
         );
         write_file(PLIST, plist.as_bytes(), 0o644)?;
-        run("launchctl", &["bootout", &format!("system/{LABEL}")]);
-        // bootout 是异步的，紧接着 bootstrap 偶尔报 5: Input/output error，重试几次
-        for _ in 0..10 {
-            if run("launchctl", &["bootstrap", "system", PLIST]) {
-                println!("launchd {LABEL} 已启动（{PLIST}）");
-                return Ok(());
-            }
-            sleep(Duration::from_secs(1));
+        load(LABEL, PLIST)?;
+        println!("launchd {LABEL} 已启动（{PLIST}）");
+        Ok(())
+    }
+
+    pub fn install_upgrade() -> Result<()> {
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- lolinet up 写的：每 {INTERVAL_HOURS} 小时按发布清单自动升级；只记换了什么和出错 -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>{UPGRADE_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{BIN}</string><string>upgrade</string><string>--auto</string></array>
+  <key>StartInterval</key><integer>{}</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>{LOG_DIR}/upgrade.log</string>
+  <key>StandardErrorPath</key><string>{LOG_DIR}/upgrade.log</string>
+</dict></plist>
+"#,
+            INTERVAL_HOURS * 3600
+        );
+        write_file(UPGRADE_PLIST, plist.as_bytes(), 0o644)?;
+        load(UPGRADE_LABEL, UPGRADE_PLIST)?;
+        println!("launchd {UPGRADE_LABEL} 已加载：每 {INTERVAL_HOURS} 小时检查升级");
+        Ok(())
+    }
+
+    pub fn remove_upgrade() -> Result<()> {
+        run("launchctl", &["bootout", &format!("system/{UPGRADE_LABEL}")]);
+        if Path::new(UPGRADE_PLIST).exists() {
+            fs::remove_file(UPGRADE_PLIST)?;
         }
-        bail!("launchctl bootstrap system {PLIST} 失败")
+        Ok(())
+    }
+
+    pub fn upgrade_scheduled() -> bool {
+        run("launchctl", &["print", &format!("system/{UPGRADE_LABEL}")])
     }
 
     pub fn remove() -> Result<()> {
@@ -132,6 +199,8 @@ mod systemd {
     const UNIT: &str = "/etc/systemd/system/lolinet.service";
     const OLD_NAME: &str = "easytier";
     const OLD_UNIT: &str = "/etc/systemd/system/easytier.service";
+    const UPGRADE_SERVICE: &str = "/etc/systemd/system/lolinet-upgrade.service";
+    const UPGRADE_TIMER: &str = "/etc/systemd/system/lolinet-upgrade.timer";
 
     fn need_systemd() -> Result<()> {
         if !Path::new("/run/systemd/system").is_dir() {
@@ -143,7 +212,7 @@ mod systemd {
     pub fn install() -> Result<()> {
         need_systemd()?;
         let unit = format!(
-            "# lolinet up 写的；内核日志在 {LOG_DIR}/easytier.log，journald 只收 warn 以上
+            "# lolinet up 写的；内核日志在 {LOG_DIR}/easytier.log，journald 只收参数错误和崩溃输出
 [Unit]
 Description=lo-li mesh (lolinet, EasyTier)
 After=network-online.target
@@ -167,6 +236,64 @@ WantedBy=multi-user.target
         }
         println!("systemd {NAME}.service 已启动");
         Ok(())
+    }
+
+    pub fn install_upgrade() -> Result<()> {
+        need_systemd()?;
+        let service = format!(
+            "# lolinet up 写的：按发布清单自动升级，由 lolinet-upgrade.timer 拉起；只记换了什么和出错
+[Unit]
+Description=lolinet auto upgrade
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={BIN} upgrade --auto
+"
+        );
+        let timer = format!(
+            "# lolinet up 写的：开机 15 分钟后一次，之后每 {INTERVAL_HOURS} 小时一次
+[Unit]
+Description=lolinet auto upgrade every {INTERVAL_HOURS}h
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec={INTERVAL_HOURS}h
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
+"
+        );
+        write_file(UPGRADE_SERVICE, service.as_bytes(), 0o644)?;
+        write_file(UPGRADE_TIMER, timer.as_bytes(), 0o644)?;
+        for args in [&["daemon-reload"][..], &["enable", "--now", "lolinet-upgrade.timer"]] {
+            if !run("systemctl", args) {
+                bail!("systemctl {} 失败", args.join(" "));
+            }
+        }
+        println!("systemd lolinet-upgrade.timer 已启用：每 {INTERVAL_HOURS} 小时检查升级");
+        Ok(())
+    }
+
+    pub fn remove_upgrade() -> Result<()> {
+        run("systemctl", &["disable", "--now", "lolinet-upgrade.timer"]);
+        let mut changed = false;
+        for f in [UPGRADE_TIMER, UPGRADE_SERVICE] {
+            if Path::new(f).exists() {
+                fs::remove_file(f)?;
+                changed = true;
+            }
+        }
+        if changed {
+            run("systemctl", &["daemon-reload"]);
+        }
+        Ok(())
+    }
+
+    pub fn upgrade_scheduled() -> bool {
+        run("systemctl", &["is-enabled", "--quiet", "lolinet-upgrade.timer"])
     }
 
     pub fn remove() -> Result<()> {

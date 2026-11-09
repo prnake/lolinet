@@ -7,7 +7,8 @@ export class ApiError extends Error {
   }
 }
 
-export type PairRequest = { name: string; ip: string; ttl_days: number; peers: string[] };
+// probe：配对码里带公开探针配置，install.sh 一起装（默认 true；false 时 pair.py --no-probe）
+export type PairRequest = { name: string; ip: string; ttl_days: number; peers: string[]; probe?: boolean };
 
 /** 页面只认这个接口；真 agent 和演示数据各实现一份。 */
 export interface Backend {

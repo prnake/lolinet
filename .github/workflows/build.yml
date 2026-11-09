@@ -1,14 +1,21 @@
 # 编 EasyTier（easytier-core + easytier-cli，打了 patches/ 里的补丁）和 lolinet（同一份 EasyTier 编进一个二进制）：
-# 上游版本和补丁在 easytier/build.env。四个平台，产物是 artifact；发到自己的准入站用 join/deploy.py dist。
+# 上游版本和补丁在 easytier/build.env。四个平台，产物是 artifact；推 v* tag（或手动勾 release）就发一个 GitHub Release，
+# 带 lolinet.json 清单：设备 lolinet upgrade 的来源是 github:prnake/lolinet 时按它自动升级。发到自己的准入站用 join/deploy.py release。
 name: build
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths: [easytier/**, patches/**, lolinet/**, .github/workflows/build.yml]
   pull_request:
     paths: [easytier/**, patches/**, lolinet/**, .github/workflows/build.yml]
   workflow_dispatch:
+    inputs:
+      release:
+        description: 发一个 GitHub Release（tag lolinet-<版本>，带 lolinet.json）
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -123,3 +130,30 @@ jobs:
           path: out/
           if-no-files-found: error
 
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easytier-*
+          path: out
+          merge-multiple: true
+      # lolinet.json 写四个平台 lolinet 包的 sha256 和版本（BUILD-INFO 第一行），探针包和它的 .sha256 一起发
+      - name: Manifest
+        run: python3 lolinet/release.py out
+      - name: GitHub Release
+        run: |
+          V=$(python3 -c 'import json; print(json.load(open("out/lolinet.json"))["version"])')
+          TAG=${GITHUB_REF_NAME}; case $GITHUB_REF in refs/tags/v*) ;; *) TAG="lolinet-$V" ;; esac
+          (cd out && sha256sum *.tar.gz > SHA256SUMS)
+          gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS out/lolinet.json --target "$GITHUB_SHA" --title "lolinet $V" \
+            --notes "lolinet $V（EasyTier 在 easytier/build.env，补丁在 patches/）。设备 lolinet upgrade --source github:${GITHUB_REPOSITORY} 按 lolinet.json 升级。"
+          # releases/latest 要指到这一版：设备按 releases/latest/download/lolinet.json 找清单
+          test "$(gh release view --json tagName -q .tagName)" = "$TAG"

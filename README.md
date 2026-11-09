@@ -95,11 +95,18 @@
    curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
    ```
 
-   入网时会顺带装上公开探针，不想装就加 `--no-probe`。吊销用 `uv run scripts/revoke.py laptop -`。
+   入网时默认顺带装上公开探针，不想装就加 `--no-probe`，控制台配对页上也有这个开关。吊销用 `uv run scripts/revoke.py laptop -`。
 
 5. **看状态。** 运行 `lolinet`，可以看到服务状态、本机、凭证剩余天数，以及每个接入点和设备是直连还是中转、延迟多少。也可以打开本地控制台：先运行 `python3 web/agent/mesh_agent.py`，再访问 http://127.0.0.1:10188/ 。
 
-目前 `install.sh` 装的还是 `easytier-core` / `easytier-cli`。装好的设备可以用 `sudo lolinet up` 切换到 lolinet，它会接管原来的服务。等四个平台的 lolinet 都发布后，`install.sh` 会改成直接装 lolinet。
+6. **自动升级。** `install.sh` 装的是 lolinet，并且默认带一个定时任务：每 6 小时按发布清单 `lolinet.json` 检查一次。
+
+   - 清单默认在准入站的 `dl/lolinet.json`，由 `join/deploy.py release` 发布。
+   - 也可以改用 GitHub Releases：`sudo lolinet up --upgrade-source github:prnake/lolinet`。这个仓库推 `v*` tag 就会发一版带清单的 Release。
+
+   每次换版本之前都会校验 sha256，并试跑一次新的二进制。手动升级用 `sudo lolinet upgrade`，只看有没有新版本用 `lolinet upgrade --check`，关掉自动升级用 `--auto-upgrade off`。详见 [lolinet/README.md](lolinet/README.md#自动升级)。
+
+   以前用 `easytier-core` / `easytier-cli` 装的设备，跑一次 `sudo lolinet up` 就能切换过来。
 
 ## 许可
 

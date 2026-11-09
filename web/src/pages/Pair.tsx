@@ -26,6 +26,7 @@ export function Pair() {
   const [ipEdit, setIpEdit] = useState<string | null>(null);
   const [ttl, setTtl] = useState<"30" | "90" | "365">("365");
   const [peers, setPeers] = useState<string[]>(DEFAULT_PEERS);
+  const [probe, setProbe] = useState<"on" | "off">("on");
   const [result, setResult] = useState<PairResult | null>(null);
   const [busy, setBusy] = useState(false);
   const now = useNow();
@@ -52,7 +53,7 @@ export function Pair() {
   const submit = async () => {
     setBusy(true);
     try {
-      setResult(await backend.pair({ name, ip, ttl_days: Number(ttl), peers }));
+      setResult(await backend.pair({ name, ip, ttl_days: Number(ttl), peers, probe: probe === "on" }));
     } catch (e) {
       toast(`生成失败：${e instanceof Error ? e.message : e}`, "bad");
     } finally {
@@ -150,11 +151,25 @@ export function Pair() {
                 })}
               </div>
             </div>
+            <div className="formrow">
+              <span className="field__label">公开探针</span>
+              <Segmented
+                value={probe}
+                onChange={setProbe}
+                options={[
+                  { value: "on", label: "装" },
+                  { value: "off", label: "不装" },
+                ]}
+              />
+            </div>
             <div className="formfoot">
               <Button variant="eye" size="lg" icon="bolt" disabled={!ready || busy} onClick={submit}>
                 {busy ? "签发中…" : "生成配对码"}
               </Button>
-              <span className="formfoot__note">在控制台签一条不可复用的凭据，{ttl} 天后过期。</span>
+              <span className="formfoot__note">
+                在控制台签一条不可复用的凭据，{ttl} 天后过期。
+                {probe === "on" ? "安装时一起装公开探针（只报硬件和大致位置）。" : "不装公开探针。"}
+              </span>
             </div>
           </Panel>
           <aside className="stack-4">
@@ -174,7 +189,7 @@ export function Pair() {
                   )}
                 </p>
                 <CommandPill
-                  command={`uv run scripts/pair.py new --name ${name || "<名字>"} --ip ${ip} --ttl-days ${ttl}${info?.socks ? ` --socks ${info.socks}` : ""}`}
+                  command={`uv run scripts/pair.py new --name ${name || "<名字>"} --ip ${ip} --ttl-days ${ttl}${probe === "off" ? " --no-probe" : ""}${info?.socks ? ` --socks ${info.socks}` : ""}`}
                 />
               </Panel>
             )}

@@ -11,7 +11,7 @@ index d04a3a3..62a5b3e 100644
 +name = "lolinet"
 +path = "src/lolinet/main.rs"
 +test = false
-+required-features = ["management", "cli"]
++required-features = ["management", "cli", "wireguard"]  # wireguard 带 sha2：lolinet upgrade 校验下载
 +
  [lib]
  name = "easytier"

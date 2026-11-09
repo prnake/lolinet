@@ -307,6 +307,8 @@ def do_pair(args, req: dict) -> tuple[int, dict]:
            "--name", name, "--ip", ip, "--ttl-days", str(ttl)]
     if peers:
         cmd += ["--peers", ",".join(peers)]
+    if req.get("probe") is False:  # 默认装公开探针
+        cmd += ["--no-probe"]
     if args.socks:
         cmd += ["--socks", args.socks]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)

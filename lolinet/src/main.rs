@@ -25,6 +25,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 mod et_cli;
 mod service;
 mod status;
+mod upgrade;
 
 use std::{
     ffi::{OsStr, OsString},
@@ -69,11 +70,35 @@ enum Cmd {
     Peers,
     /// 路由表（easytier-cli route）
     Routes,
-    /// 装成系统服务并启动（要 root）；会接管 join 脚本以前装的 easytier 服务
+    /// 装成系统服务并启动（要 root）；会接管 join 脚本以前装的 easytier 服务，默认带自动升级
     Up {
         /// 换成这份配置（配对得到的 loli.toml）；不给就用现有的
         #[arg(short, long)]
         config: Option<PathBuf>,
+        /// 准入站地址（join/install.sh 经环境变量传进来），自动升级默认看 <它>/dl/lolinet.json；不给就沿用上次的
+        #[arg(long, env = "LOLINET_BASE_URL")]
+        base_url: Option<String>,
+        /// 升级来源：github:<owner>/<repo>（GitHub Releases）、清单 URL，或者 base（用准入站）；不给就沿用上次的
+        #[arg(long)]
+        upgrade_source: Option<String>,
+        /// 自动升级 on / off（默认 on）；不给就沿用上次的
+        #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
+        auto_upgrade: Option<bool>,
+    },
+    /// 按发布清单升级 lolinet 和探针（要 root）；定时任务每 6 小时跑一次 --auto
+    Upgrade {
+        /// 只看发布的版本，不下载不换（不要 root）
+        #[arg(long)]
+        check: bool,
+        /// 下载、校验 sha256、试跑新版本，但不换（不要 root）
+        #[arg(long)]
+        dry_run: bool,
+        /// 定时任务用：自动升级关了就什么都不做，平时不输出
+        #[arg(long, hide = true)]
+        auto: bool,
+        /// 这次用别的来源：github:<owner>/<repo> 或清单 URL
+        #[arg(long)]
+        source: Option<String>,
     },
     /// 停掉并卸载系统服务（要 root），配置和二进制保留
     Down,
@@ -137,7 +162,8 @@ fn lolinet(args: Args) -> Result<()> {
         Cmd::Status => status::show(),
         Cmd::Peers => Err(exec_as("easytier-cli", ["peer"])),
         Cmd::Routes => Err(exec_as("easytier-cli", ["route"])),
-        Cmd::Up { config } => up(config),
+        Cmd::Up { config, base_url, upgrade_source, auto_upgrade } => up(config, base_url, upgrade_source, auto_upgrade),
+        Cmd::Upgrade { check, dry_run, auto, source } => upgrade::run(check, dry_run, auto, source),
         Cmd::Down => {
             need_root()?;
             service::remove()?;
@@ -166,7 +192,8 @@ fn lolinet(args: Args) -> Result<()> {
 }
 
 /// 后台进程的 easytier-core 参数。v2.7.0 不认配置文件里的 rpc_portal，命令行给，否则管理口听 0.0.0.0；
-/// 日志写文件（10 MB 一份、留 5 份），终端那份（launchd / journald 收）只留 warn 以上。
+/// 日志只写文件（10 MB 一份、留 5 份）。终端那份关掉：打洞超时之类的 warn / error 很密，launchd 收的 stderr 不轮转，
+/// 一天能涨好几 MB；参数错误、panic 直接写 stderr，launchd / journald 照样收得到。
 fn core_args(config: &Path) -> Vec<OsString> {
     let mut v: Vec<OsString> = vec!["-c".into(), config.into()];
     for a in [
@@ -175,17 +202,28 @@ fn core_args(config: &Path) -> Vec<OsString> {
         "--file-log-level", "info",
         "--file-log-size", "10",
         "--file-log-count", "5",
-        "--console-log-level", "warn",
+        "--console-log-level", "off",
     ] {
         v.push(a.into());
     }
     v
 }
 
-fn up(config: Option<PathBuf>) -> Result<()> {
+fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<String>, auto_upgrade: Option<bool>) -> Result<()> {
     need_root()?;
+    if let Some(b) = &base_url {
+        if !(b.starts_with("https://") || b.starts_with("http://")) {
+            bail!("--base-url 要是 http(s):// 开头的准入站地址");
+        }
+    }
+    if let Some(s) = &upgrade_source {
+        if s != "base" && !upgrade::valid_source(s) {
+            bail!("--upgrade-source 要是 github:<owner>/<repo>、清单 URL 或 base");
+        }
+    }
+    // 目录 755：loli.toml 自己是 600；lolinet.json（升级设置，没有密钥）普通用户也读得到，lolinet status 要显示
     fs::create_dir_all("/etc/lolinet")?;
-    fs::set_permissions("/etc/lolinet", fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions("/etc/lolinet", fs::Permissions::from_mode(0o755))?;
     let migrate = !Path::new(CONFIG).exists() && Path::new(OLD_CONFIG).exists();
     let src = config.or_else(|| migrate.then(|| OLD_CONFIG.into()));
     if let Some(src) = &src {
@@ -204,7 +242,19 @@ fn up(config: Option<PathBuf>) -> Result<()> {
     service::remove_legacy()?;
     link_legacy_names()?;
     fs::create_dir_all(LOG_DIR)?;
+    let mut st = upgrade::Settings::load();
+    if let Some(b) = base_url {
+        st.base_url = Some(b.trim_end_matches('/').to_owned());
+    }
+    if let Some(s) = upgrade_source {
+        st.source = (s != "base").then_some(s);
+    }
+    if let Some(a) = auto_upgrade {
+        st.auto = a;
+    }
+    st.save()?;
     service::install()?;
+    service::install_upgrade(st.auto)?;
     // 等内核起来、管理口连得上，再给 peer 几秒握手
     for _ in 0..30 {
         if status::node().is_some() {
@@ -259,7 +309,7 @@ fn exec_as<I: IntoIterator<Item = S>, S: AsRef<OsStr>>(name: &str, args: I) -> a
     anyhow::Error::new(tool(name).args(args).exec()).context(format!("exec {name}"))
 }
 
-fn need_root() -> Result<()> {
+pub(crate) fn need_root() -> Result<()> {
     if unsafe { nix::libc::geteuid() } != 0 {
         bail!("要 root：前面加 sudo");
     }
