@@ -32,6 +32,10 @@ jobs:
           - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, native: true }
     steps:
       - uses: actions/checkout@v5
+      # 采屏库带的 Metal 桥接（Swift）要 macOS 26 SDK；macos-15 镜像默认的 Xcode 16.4 编不过，换镜像里的 Xcode 26
+      - name: Select Xcode 26
+        if: runner.os == 'macOS'
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
