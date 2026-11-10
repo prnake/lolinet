@@ -44,7 +44,8 @@ jobs:
       - name: Fetch EasyTier and apply patches
         run: |
           grep -E '^[A-Z_]+=' easytier/build.env >> "$GITHUB_ENV"
-          set -a; . easytier/build.env; set +a
+          # 不加引号的 KEY=a b 不能 source（b 会被当成命令），按行解析；和 lolinet/build.sh 一致
+          set -a; eval "$(sed -nE "s/^([A-Z_]+)=(.*)$/\1='\2'/p" easytier/build.env)"; set +a
           git clone -q --depth 1 --branch "$EASYTIER_REF" https://github.com/EasyTier/EasyTier.git src
           test "$(git -C src rev-parse HEAD)" = "$EASYTIER_SHA" || { echo "tag $EASYTIER_REF 不再指向 $EASYTIER_SHA"; exit 1; }
           for p in $EASYTIER_PATCHES $LOLINET_PATCHES; do git -C src apply --verbose "$GITHUB_WORKSPACE/$p"; done
@@ -130,6 +131,8 @@ jobs:
             # lolinet 里编进去的内核也要带补丁：按 argv[0] 分发，链接成 easytier-core 名字再测一遍
             ./pkg-lolinet/lolinet --version
             ln -sf lolinet pkg-lolinet/easytier-core && python3 easytier/check_sni.py ./pkg-lolinet/easytier-core
+            # UDP 隧道偏好补丁：本机三节点（设备—relay—设备），内层 UDP 两跳都要走 udp 连接，TCP 不受影响
+            python3 easytier/check_udp_pref.py ./pkg-lolinet/lolinet
           else
             echo "这台 runner 跑不了 ${{ matrix.target }}，跳过 SNI 实测"
           fi

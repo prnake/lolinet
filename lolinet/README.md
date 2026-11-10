@@ -1,6 +1,6 @@
 # lolinet
 
-lo-li mesh 的命令行。EasyTier（[easytier/build.env](../easytier/build.env) 的版本 + [patches/](../patches/)，含 WSS SNI 补丁）
+lo-li mesh 的命令行。EasyTier（[easytier/build.env](../easytier/build.env) 的版本 + [patches/](../patches/)，含 WSS SNI 补丁和 UDP 隧道偏好补丁）
 整个编进同一个二进制，负责后台进程和看状态。
 
 ```

@@ -82,6 +82,12 @@ def render(name: str, overlay_ip: str, credential_secret: str, peers: list[str] 
         host = f"{p}.{net['edge_zone']}" if by_name else rs[p]["eip"]
         peer_uri = f"tcp://{host}:{rs[p]['et_port']}" if transport == "tcp" else f"wss://{host}:443/?sni={net['sni']}"
         lines += ["", "[[peer]]", f"# {p}.{net['edge_zone']}", f"uri = {q(peer_uri)}"]
+        # 再连一条 udp：lolinet 的隧道偏好补丁让内层 UDP（lolidesk 的 QUIC 等）走 UDP 隧道，没有队头阻塞，
+        # KCP 代理包仍走上面的 wss。udp 被运营商挡了就退回 wss。transport=tcp 是给官方二进制用的，
+        # 它们没有这个偏好，会按延迟把 KCP 也放到 udp 上（实测 KCP 套 UDP 隧道上传会崩），所以不加
+        if transport == "wss":
+            udp_uri = f"udp://{host}:{rs[p]['et_port']}"
+            lines += ["", "[[peer]]", f"# {p}.{net['edge_zone']} udp", f"uri = {q(udp_uri)}"]
     # 终端设备开延迟优先：默认「最少跳数」有直连就直发，不看延迟；开了才会按全网延迟表经最近 relay 中转。relay 保持默认。
     # enable_kcp_proxy：TCP 流包进 KCP/UDP，绕开运营商对出境 TCP 的整形（2026-11-08 实测本机到香港下载 67 -> 150 Mbps）
     lines += ["", "[flags]", "private_mode = true", "latency_first = true", "enable_kcp_proxy = true", ""]

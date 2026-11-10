@@ -19,7 +19,7 @@
 | 目录 | 内容 |
 |---|---|
 | [`lolinet/`](lolinet/README.md) | 命令行 `lolinet`。整个 EasyTier 编进同一个二进制，负责装后台服务（launchd / systemd）和看状态 |
-| `patches/`、`easytier/` | 私有 EasyTier：上游 v2.7.0 加两个补丁。一个让 WSS 支持自定义 SNI，一个是 lolinet 的入口。`easytier/check_sni.py` 起一个假 relay，实测补丁确实生效 |
+| `patches/`、`easytier/` | 私有 EasyTier：上游 v2.7.0 加三个补丁。一个让 WSS 支持自定义 SNI；一个是隧道偏好：同一对节点同时有 UDP 和 TCP / WSS 连接时，内层 UDP（lolidesk 的 QUIC 等）每一跳都走 UDP 隧道，KCP / QUIC 代理包走 TCP / WSS，已有 TCP 直连也继续打 UDP 洞；一个是 lolinet 的入口。`easytier/check_sni.py` 起一个假 relay 实测 SNI，`easytier/check_udp_pref.py` 起三个节点实测两跳的隧道选择 |
 | `join/` | 准入站，跑在 Cloudflare Worker 上：配对码兑换、客户端分发、公开探针接口、`<名字>.<edge_zone>` 跳转页。另有 `install.sh` 和部署脚本 |
 | `scripts/` | `pair.py` 签凭据、出配对码；`revoke.py` 吊销凭据；`device_config.py` 渲染设备配置 |
 | `probe/` | 公开探针上报，relay 和设备都用，只依赖 Python 标准库 |

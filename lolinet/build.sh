@@ -6,7 +6,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-. easytier/build.env
+# build.env 是 $GITHUB_ENV 格式（不加引号），多个补丁用空格分隔，所以按行解析而不是 source
+eval "$(sed -nE "s/^([A-Z_]+)=(.*)$/\1='\2'/p" easytier/build.env)"
 SRC=${LOLINET_SRC:-$ROOT/.build/easytier}
 TARGET=${TARGET:-}
 # 和 CI（build.yml）一致：aarch64 用 mimalloc，x86_64 用 jemalloc

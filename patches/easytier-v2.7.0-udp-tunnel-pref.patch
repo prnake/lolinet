@@ -1,0 +1,325 @@
+diff --git a/easytier-core/src/connectivity/hole_punch/peer_adapters.rs b/easytier-core/src/connectivity/hole_punch/peer_adapters.rs
+index bf700a5..71e8b4c 100644
+--- a/easytier-core/src/connectivity/hole_punch/peer_adapters.rs
++++ b/easytier-core/src/connectivity/hole_punch/peer_adapters.rs
+@@ -56,7 +56,8 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
+                     peer_id: route.peer_id,
+                     udp_nat_type,
+                     feature_flag: route.feature_flag,
+-                    has_direct_connection: peer_map.has_peer(route.peer_id),
++                    // lolinet: 只有已经有 UDP 隧道才不打；TCP / WSS 直连不算，UDP 流量要有自己的路
++                    has_direct_connection: peer_map.has_udp_tunnel_conn(route.peer_id),
+                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
+                 })
+             })
+diff --git a/easytier-core/src/peers/conn/peer.rs b/easytier-core/src/peers/conn/peer.rs
+index 7ab3435..3f92d11 100644
+--- a/easytier-core/src/peers/conn/peer.rs
++++ b/easytier-core/src/peers/conn/peer.rs
+@@ -26,6 +26,24 @@ use tokio_util::task::AbortOnDropHandle;
+ type ArcPeerConn = Arc<PeerConn>;
+ type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
+ 
++/// lolinet: 一个 peer 同时有 UDP 和 TCP / WSS 连接时，这次发送偏好哪一种。
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum TunnelPref {
++    /// 内层是 UDP（QUIC、WebRTC 之类），或者中转时包是从 UDP 隧道进来的：走 UDP 隧道，没有队头阻塞。
++    Udp,
++    /// KCP / QUIC 代理包：本身就是带重传的可靠传输，套在 UDP 隧道上遇到丢包会越补越多，走 TCP / WSS 隧道。
++    Stream,
++}
++
++tokio::task_local! {
++    /// lolinet: 本次发送的隧道偏好。没设或者没有对应类型的可用连接，就按原版规则用默认连接，不会因为偏好丢包。
++    pub static TUNNEL_PREF: Option<TunnelPref>;
++}
++
++pub fn tunnel_pref() -> Option<TunnelPref> {
++    TUNNEL_PREF.try_with(|v| *v).ok().flatten()
++}
++
+ fn conn_latency_sort_key(latency_us: u64, is_hole_punched: bool) -> (bool, u64) {
+     (is_hole_punched && latency_us == 0, latency_us)
+ }
+@@ -44,6 +62,8 @@ pub struct Peer {
+     shutdown_notifier: Arc<tokio::sync::Notify>,
+ 
+     default_conn: Arc<ArcSwapOption<PeerConn>>,
++    udp_conn: Arc<ArcSwapOption<PeerConn>>,
++    stream_conn: Arc<ArcSwapOption<PeerConn>>,
+     default_conn_update_lock: Arc<Mutex<()>>,
+     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
+     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
+@@ -65,6 +85,10 @@ impl Peer {
+         let peer_public_key = Arc::new(RwLock::new(None));
+         let peer_public_key_copy = peer_public_key.clone();
+         let default_conn = Arc::new(ArcSwapOption::empty());
++        let udp_conn: Arc<ArcSwapOption<PeerConn>> = Arc::new(ArcSwapOption::empty());
++        let udp_conn_copy = udp_conn.clone();
++        let stream_conn: Arc<ArcSwapOption<PeerConn>> = Arc::new(ArcSwapOption::empty());
++        let stream_conn_copy = stream_conn.clone();
+         let default_conn_update_lock = Arc::new(Mutex::new(()));
+ 
+         let conns_copy = conns.clone();
+@@ -98,6 +122,15 @@ impl Peer {
+                                     {
+                                         default_conn_copy.store(None);
+                                     }
++                                    for cache in [&udp_conn_copy, &stream_conn_copy] {
++                                        if cache
++                                            .load()
++                                            .as_ref()
++                                            .is_some_and(|cached| Arc::ptr_eq(cached, conn))
++                                        {
++                                            cache.store(None);
++                                        }
++                                    }
+                                 }
+                                 removed_conn
+                             };
+@@ -130,11 +163,15 @@ impl Peer {
+ 
+         let conns_copy = conns.clone();
+         let default_conn_copy = default_conn.clone();
++        let udp_conn_copy = udp_conn.clone();
++        let stream_conn_copy = stream_conn.clone();
+         let default_conn_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
+             loop {
+                 crate::foundation::time::sleep(std::time::Duration::from_secs(5)).await;
+                 if conns_copy.len() > 1 {
+                     default_conn_copy.store(None);
++                    udp_conn_copy.store(None);
++                    stream_conn_copy.store(None);
+                 }
+             }
+         }));
+@@ -150,6 +187,8 @@ impl Peer {
+ 
+             shutdown_notifier,
+             default_conn,
++            udp_conn,
++            stream_conn,
+             default_conn_update_lock,
+             peer_identity_type,
+             peer_public_key,
+@@ -236,7 +275,53 @@ impl Peer {
+         selected
+     }
+ 
++    /// lolinet: 某种隧道里延迟最低的可用连接；刚打通、还没 ping 通的不算。结果缓存，和默认连接一起每 5 秒重选。
++    fn select_conn_by_pref(&self, pref: TunnelPref) -> Option<ArcPeerConn> {
++        let (cache, want_udp) = match pref {
++            TunnelPref::Udp => (&self.udp_conn, true),
++            TunnelPref::Stream => (&self.stream_conn, false),
++        };
++        if let Some(conn) = cache.load_full()
++            && !conn.is_closed()
++        {
++            return Some(conn);
++        }
++        let selected = self
++            .conns
++            .iter()
++            .filter(|conn| {
++                let c = conn.value();
++                c.is_udp_tunnel() == want_udp
++                    && !c.is_closed()
++                    && !(c.is_hole_punched() && c.get_stats().latency_us == 0)
++            })
++            .min_by_key(|conn| conn.value().get_stats().latency_us)
++            .map(|conn| conn.value().clone());
++        cache.store(selected.clone());
++        selected
++    }
++
++    /// lolinet: 某条连接是不是 UDP 隧道（中转时看入口）。
++    pub fn conn_is_udp_tunnel(&self, conn_id: &PeerConnId) -> bool {
++        self.conns
++            .get(conn_id)
++            .is_some_and(|conn| conn.value().is_udp_tunnel())
++    }
++
++    /// lolinet: 有没有活着的 UDP 隧道连接（打洞时决定还要不要再打 UDP 洞）。
++    pub fn has_udp_tunnel_conn(&self) -> bool {
++        self.conns
++            .iter()
++            .any(|conn| conn.value().is_udp_tunnel() && !conn.value().is_closed())
++    }
++
+     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
++        if let Some(pref) = tunnel_pref()
++            && let Some(conn) = self.select_conn_by_pref(pref)
++        {
++            conn.send_msg(msg).await?;
++            return Ok(());
++        }
+         let default_conn = self.default_conn.load();
+         if let Some(conn) = default_conn.as_ref() {
+             conn.send_msg(msg).await?;
+diff --git a/easytier-core/src/peers/conn/peer_conn.rs b/easytier-core/src/peers/conn/peer_conn.rs
+index 072e870..eeedb00 100644
+--- a/easytier-core/src/peers/conn/peer_conn.rs
++++ b/easytier-core/src/peers/conn/peer_conn.rs
+@@ -438,6 +438,13 @@ impl PeerConn {
+         self.origin == PeerConnectionOrigin::Attached
+     }
+ 
++    /// lolinet: 这条连接的隧道是 UDP（打洞或 udp:// 监听），对内层 UDP 流量没有队头阻塞。
++    pub fn is_udp_tunnel(&self) -> bool {
++        self.tunnel_info
++            .as_ref()
++            .is_some_and(|info| info.tunnel_type == "udp")
++    }
++
+     pub fn is_hole_punched(&self) -> bool {
+         matches!(
+             self.origin,
+diff --git a/easytier-core/src/peers/conn/peer_map.rs b/easytier-core/src/peers/conn/peer_map.rs
+index 00a6432..f48ea0a 100644
+--- a/easytier-core/src/peers/conn/peer_map.rs
++++ b/easytier-core/src/peers/conn/peer_map.rs
+@@ -139,6 +139,20 @@ impl PeerMap {
+         DashSet::new()
+     }
+ 
++    /// lolinet: 和这个 peer 之间有没有 UDP 隧道（自己算有）。
++    pub fn has_udp_tunnel_conn(&self, peer_id: PeerId) -> bool {
++        peer_id == self.my_peer_id
++            || self
++                .get_peer_by_id(peer_id)
++                .is_some_and(|peer| peer.has_udp_tunnel_conn())
++    }
++
++    /// lolinet: 某条入口连接是不是 UDP 隧道。
++    pub fn conn_is_udp_tunnel(&self, peer_id: PeerId, conn_id: &PeerConnId) -> bool {
++        self.get_peer_by_id(peer_id)
++            .is_some_and(|peer| peer.conn_is_udp_tunnel(conn_id))
++    }
++
+     pub fn has_peer(&self, peer_id: PeerId) -> bool {
+         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
+     }
+diff --git a/easytier-core/src/peers/peer_manager.rs b/easytier-core/src/peers/peer_manager.rs
+index e630126..2657567 100644
+--- a/easytier-core/src/peers/peer_manager.rs
++++ b/easytier-core/src/peers/peer_manager.rs
+@@ -2598,6 +2598,18 @@ impl PeerOutboundPacketRouter {
+     }
+ 
+     pub async fn send_msg_for_proxy(
++        &self,
++        msg: ZCPacket,
++        dst_peer_id: PeerId,
++    ) -> Result<(), Error> {
++        // lolinet: KCP / QUIC 代理包偏好 TCP / WSS 隧道，子网代理回的 UDP 包偏好 UDP 隧道（包头调用方已填好）
++        let pref = local_tunnel_pref(&msg);
++        crate::peers::conn::peer::TUNNEL_PREF
++            .scope(pref, self.send_msg_for_proxy_inner(msg, dst_peer_id))
++            .await
++    }
++
++    async fn send_msg_for_proxy_inner(
+         &self,
+         mut msg: ZCPacket,
+         dst_peer_id: PeerId,
+@@ -2750,6 +2762,19 @@ impl PeerOutboundPacketRouter {
+     }
+ 
+     pub async fn send_msg_by_ip(
++        &self,
++        msg: ZCPacket,
++        ip_addr: IpAddr,
++        not_send_to_self: bool,
++    ) -> Result<(), Error> {
++        // lolinet: 必须在加密前看，加密后中转节点只看得到包头。这里发的都是 Data 包，包头在里面才填
++        let pref = inner_ip_is_udp(msg.payload()).then_some(crate::peers::conn::peer::TunnelPref::Udp);
++        crate::peers::conn::peer::TUNNEL_PREF
++            .scope(pref, self.send_msg_by_ip_inner(msg, ip_addr, not_send_to_self))
++            .await
++    }
++
++    async fn send_msg_by_ip_inner(
+         &self,
+         mut msg: ZCPacket,
+         ip_addr: IpAddr,
+@@ -3110,15 +3135,31 @@ impl PeerPacketRouter {
+             } else {
+                 None
+             };
+-            let ret = send_msg_internal(
+-                self.peers.as_ref(),
+-                &self.foreign_client,
+-                &self.relay_peer_map,
+-                tx_metrics,
+-                ret,
+-                to_peer_id,
+-            )
+-            .await;
++            // lolinet: KCP / QUIC 代理包走 TCP / WSS；其他包从 UDP 隧道进来就沿用 UDP
++            //（源节点只把内层 UDP 的包优先交给 UDP 隧道，加密后这里看不到内层）
++            let pref = if is_reliable_proxy_packet(packet_type) {
++                Some(crate::peers::conn::peer::TunnelPref::Stream)
++            } else if ingress
++                .peer_connection()
++                .is_some_and(|(peer_id, conn_id)| self.peers.conn_is_udp_tunnel(peer_id, &conn_id))
++            {
++                Some(crate::peers::conn::peer::TunnelPref::Udp)
++            } else {
++                None
++            };
++            let ret = crate::peers::conn::peer::TUNNEL_PREF
++                .scope(
++                    pref,
++                    send_msg_internal(
++                        self.peers.as_ref(),
++                        &self.foreign_client,
++                        &self.relay_peer_map,
++                        tx_metrics,
++                        ret,
++                        to_peer_id,
++                    ),
++                )
++                .await;
+             if ret.is_err() {
+                 tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
+             }
+@@ -3433,6 +3474,39 @@ impl RouteInterface for PeerManagerRouteInterface {
+     }
+ }
+ 
++/// lolinet: IPv4 / IPv6 包的传输层是不是 UDP（IPv6 只看第一个 next header，带扩展头的按非 UDP 处理）。
++fn inner_ip_is_udp(ip: &[u8]) -> bool {
++    match ip.first().map(|b| b >> 4) {
++        Some(4) => ip.get(9) == Some(&17),
++        Some(6) => ip.get(6) == Some(&17),
++        _ => false,
++    }
++}
++
++/// lolinet: KCP / QUIC 代理的传输包（不是代理后的数据包）。
++fn is_reliable_proxy_packet(packet_type: u8) -> bool {
++    [PacketType::KcpSrc, PacketType::KcpDst, PacketType::QuicSrc, PacketType::QuicDst]
++        .iter()
++        .any(|t| *t as u8 == packet_type)
++}
++
++/// lolinet: 本机发出的包（加密前）该偏好哪种隧道。
++fn local_tunnel_pref(msg: &ZCPacket) -> Option<crate::peers::conn::peer::TunnelPref> {
++    use crate::peers::conn::peer::TunnelPref;
++    let packet_type = msg.peer_manager_header().map(|h| h.packet_type);
++    match packet_type {
++        Some(t) if is_reliable_proxy_packet(t) => Some(TunnelPref::Stream),
++        Some(t)
++            if t != PacketType::Data as u8
++                && t != PacketType::DataWithKcpSrcModified as u8
++                && t != PacketType::DataWithQuicSrcModified as u8 =>
++        {
++            None
++        }
++        _ => inner_ip_is_udp(msg.payload()).then_some(TunnelPref::Udp),
++    }
++}
++
+ pub(crate) async fn send_msg_internal(
+     peers: &PeerMap,
+     foreign_network_client: &Arc<ForeignNetworkClient>,
