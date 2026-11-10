@@ -150,7 +150,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 
 ### lolidesk
 
-跑在这张网里的远程终端和远程桌面，和 `lolinet` 分开发包。终端会话在主机上，断线不丢，多个客户端可以同看一个会话。主机是 macOS 时，桌面画面用硬件编码的 H.264，经 QUIC datagram 传。所有东西走一条 QUIC 连接，主机证书第一次连上时记住，之后钉扎。详见 [lolidesk（英文）](docs/lolidesk.md)。
+跑在这张网里的远程终端和远程桌面，和 `lolinet` 分开发包。终端会话在主机上，跑在 Ghostty 的终端核心（libghostty-vt）里，主机把屏幕同步给每个客户端。断线不丢，主机重启后会话带着历史回来，多个客户端可以同看一个会话，新会话可以直接起一个 coding agent。主机是 macOS 时，桌面画面用硬件编码的 H.264，经 QUIC datagram 传，分辨率、帧率和画质自己选。图形客户端用 [GPUI](https://github.com/zed-industries/zed) 写，另有命令行客户端。所有东西走一条 QUIC 连接，主机证书第一次连上时记住，之后钉扎。详见 [lolidesk（英文）](docs/lolidesk.md)。
 
 ## 仓库里有什么
 
@@ -162,7 +162,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 | `scripts/` | `pair.py` 出配对码，`revoke.py` 吊销，`device_config.py` 渲染配置 |
 | `probe/` | 公开探针上报（只用 Python 标准库）和它的服务文件 |
 | [`web/`](web/README.md) | 本地控制台、公开探针页面、控制台的 agent |
-| [`desk/`](desk/README.md) | lolidesk，Rust 工作区 |
+| [`desk/`](desk/README.md) | lolidesk，Rust 工作区：主机、图形客户端（GPUI）和命令行 |
 | [`nodes.example.yaml`](nodes.example.yaml) | 节点清单模板 |
 
 ## 文档

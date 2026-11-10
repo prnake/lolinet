@@ -150,7 +150,7 @@ Relays and devices send HMAC-signed reports to the join site, and its home page 
 
 ### lolidesk
 
-A remote terminal and remote desktop that run over the network, shipped separately from `lolinet`. Terminal sessions live on the host, so a dropped connection loses nothing and several clients can watch one session. On a macOS host, the desktop streams hardware-encoded H.264 over QUIC datagrams. One QUIC connection carries everything; the host's certificate is pinned on first use. See [lolidesk](docs/lolidesk.md).
+A remote terminal and remote desktop that run over the network, shipped separately from `lolinet`. Terminal sessions live on the host in Ghostty's terminal core (libghostty-vt), which streams its screen to each client. A dropped connection loses nothing, sessions come back with their history after a host restart, several clients can watch one session, and new sessions can start a coding agent. On a macOS host, the desktop streams hardware-encoded H.264 over QUIC datagrams at the resolution, frame rate and quality you pick. The desktop app is built with [GPUI](https://github.com/zed-industries/zed); there is also a command-line client. One QUIC connection carries everything; the host's certificate is pinned on first use. See [lolidesk](docs/lolidesk.md).
 
 ## What's in this repository
 
@@ -162,7 +162,7 @@ A remote terminal and remote desktop that run over the network, shipped separate
 | `scripts/` | `pair.py` issues pairing codes, `revoke.py` revokes, `device_config.py` renders configs |
 | `probe/` | The public probe reporter (Python standard library only) and its service files |
 | [`web/`](web/README.md) | The local console, the public probe page, and the console's agent |
-| [`desk/`](desk/README.md) | lolidesk, a Rust workspace |
+| [`desk/`](desk/README.md) | lolidesk, a Rust workspace: host, desktop app (GPUI) and command line |
 | [`nodes.example.yaml`](nodes.example.yaml) | Template for your node list |
 
 ## Documentation

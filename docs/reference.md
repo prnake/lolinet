@@ -237,7 +237,7 @@ A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same f
 
 All four packages must carry the same version. Package URLs are resolved next to the manifest's URL, so a manifest and its packages always sit in one directory.
 
-lolidesk ships as `lolidesk-<version>` releases with `lolidesk-<macos|linux>-<arch>.tar.gz` (`lolidesk-host`, `lolidesk`, `BUILD-INFO`). These are never marked latest. See [lolidesk](lolidesk.md#distribution).
+lolidesk ships as `lolidesk-<version>` releases with `lolidesk-<macos|linux>-<arch>.tar.gz` (`lolidesk`, `libghostty-vt.dylib` or `.so`, `BUILD-INFO`, and `Lolidesk.app` on macOS). These are never marked latest. See [lolidesk](lolidesk.md#distribution).
 
 ## Ports
 
@@ -249,7 +249,7 @@ lolidesk ships as `lolidesk-<version>` releases with `lolidesk-<macos|linux>-<ar
 | `127.0.0.1:18080` | SOCKS5 port by convention for a no-tun instance; pass it to the scripts with `--socks` |
 | `127.0.0.1:10188` | The local console's agent |
 | `127.0.0.1:11211` | easytier-web's API on the issuer relay |
-| `10190` | `lolidesk-host`, on the host's overlay address |
+| `10190` | `lolidesk host`, on the host's overlay address |
 | `5188`, `5189` | Dev servers for the console and the probe page |
 
 ### Address plan

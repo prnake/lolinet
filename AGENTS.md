@@ -6,7 +6,7 @@ lolinet is a self-hosted mesh network on EasyTier: a Rust CLI built inside a pat
 
 | | |
 | :-- | :-- |
-| `make check` | Everything CI checks that runs without the EasyTier tree: web build and public-bundle leak check, Worker / shell / Python syntax, desk fmt + clippy + tests |
+| `make check` | Everything CI checks that runs without the EasyTier tree: web build and public-bundle leak check, Worker / shell / Python syntax, desk fmt + clippy + tests (fetches the pinned libghostty-vt into `desk/.ghostty/` first) |
 | `make check-web`, `make check-scripts`, `make check-desk` | One part of the above |
 | `make lolinet` | The real `lolinet` build (clones EasyTier into `.build/`, several minutes). `lolinet/src` does not compile on its own |
 | `make check-sni CORE=…` | Prove the SNI patch on a built `easytier-core` or `lolinet` linked under that name |
@@ -35,7 +35,8 @@ Devices in the field depend on these. Changing one needs a migration path, not j
 | Probe bundle file list | `lolinet/release.py` (`PROBE_FILES`), `join/install.sh`, `lolinet/src/upgrade.rs` |
 | Node list lookup (`LOLINET_NODES` → `nodes.yaml` → `nodes.example.yaml`) | `join/deploy.py`, `scripts/device_config.py`, `probe/device.py`, `web/vite.nodes.ts`, `web/scripts/check-probe-bundle.mjs` |
 | EasyTier version | `easytier/build.env`, patch file names, `nodes.example.yaml` (`network.easytier`), README badges |
-| Design tokens | `web/src/styles/tokens.css` is the only source; `web/DESIGN.md` documents it; `#/design` shows it |
+| Design tokens | `web/src/styles/tokens.css` is the only source; `web/DESIGN.md` documents it; `#/design` shows it; the lolidesk app copies the values into `desk/app` |
+| libghostty-vt | `desk/ghostty/libghostty-vt.json` (Ghostty commit, per-platform URL and SHA-256) is the only pin; the C structs in `desk/ghostty` follow that commit's headers, and its layout test checks them |
 
 ## Upgrading EasyTier
 
