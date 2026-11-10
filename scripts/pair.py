@@ -6,7 +6,8 @@
 
 设备上执行：curl -fsSL <准入站>/i | sudo sh -s <配对码>（准入站 = LOLINET_BASE_URL，不设就是节点清单的 network.join）
 默认连公开探针一起装：配置末尾加一行 `# probe = {...}`（设备公开 id + 上报密钥，probe/device.py 同一套派生），
-install.sh 取出来装成系统服务、不留在 EasyTier 配置里；--no-probe 不装，--location 写死公开的城市。
+lolinet up 把它存成 /etc/lolinet/probe.json、装成系统服务（lolinet 内置的探针），不留在 EasyTier 配置里；
+--no-probe 不装，--location 写死公开的城市。
 
 控制台只在 overlay 上（节点清单的 network.console，跑在 network.issuer 那台 relay 上）。本机要么已装 TUN 版，要么先起一个
 no-tun 实例并用 --socks 指过去。连接直接打 issuer 的 overlay IP，SNI 和证书校验用控制台域名（本机解析器可能是 fake-IP）。

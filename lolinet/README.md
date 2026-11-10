@@ -8,8 +8,10 @@ Source of the `lolinet` CLI: EasyTier and a small command line in one binary tha
 | `src/service.rs` | The launchd and systemd services and the upgrade job |
 | `src/status.rs` | `lolinet status`, from the built-in `easytier-cli`'s JSON (the same data the console's agent and the probe read) |
 | `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch |
+| `src/probe.rs` | `lolinet probe`: the device's public probe (hardware and location, signed like `probe/reporter.py`'s device mode), and taking over the older Python one |
 | `build.sh` | Local build: clone the pinned EasyTier, apply the patches, copy `src/` in, build, package |
-| `release.py` | Writes the release manifest `lolinet.json` and the probe bundle `mesh-probe.tar.gz` (standard library only) |
+| `release.py` | Writes the release manifest `lolinet.json` (standard library only) |
+| `check_probe.py` | End-to-end test of the built-in probe: install as root, drop to `nobody`, take over the Python probe, change id, upgrade, turn off, and verify reports the way the join site does |
 
 ## Build
 
@@ -25,17 +27,18 @@ TARGET=x86_64-apple-darwin FEATURES=jemalloc sh lolinet/build.sh   # cross-compi
 - `LOLINET_VERSION` comes from `git describe --always --dirty`; `lolinet --version` prints it, and the upgrade check compares it with the manifest.
 - `aarch64` builds use `mimalloc`, `x86_64` builds `jemalloc`, the same as CI.
 
-CI ([build.yml](../.github/workflows/build.yml)) builds four platforms with `easytier-core` and `easytier-cli`, checks that Linux binaries are static and that `lolinet` stays under 32 MiB (14 MiB packaged), then runs `easytier/check_sni.py` against `easytier-core` and against `lolinet` linked as `easytier-core`.
+CI ([build.yml](../.github/workflows/build.yml)) builds four platforms with `easytier-core` and `easytier-cli`, checks that Linux binaries are static and that `lolinet` stays under 32 MiB (14 MiB packaged), then runs `easytier/check_sni.py` against `easytier-core` and against `lolinet` linked as `easytier-core`, and `easytier/check_udp_pref.py` against `lolinet`. On the two platforms it can run natively it also runs `sudo lolinet/check_probe.py`, which installs the probe for real.
 
 ## Release
 
 ```sh
-python3 lolinet/release.py <dir with the four lolinet-*.tar.gz>   # writes lolinet.json, mesh-probe.tar.gz and its .sha256
+python3 lolinet/release.py <dir with the four lolinet-*.tar.gz>   # writes lolinet.json
 ```
 
 The version is the first line of each package's `BUILD-INFO` (`lolinet <version>`); all four must agree. The `build` workflow does this when it publishes a release; `join/deploy.py release <dir>` checks it again before uploading to the join site.
 
 ## Not done yet
 
-- `lolinet join <code>`: redeem and decrypt inside `lolinet`, so `install.sh` only downloads. The probe could move into `lolinet` too and stop needing `python3`.
+- `lolinet join <code>`: redeem and decrypt inside `lolinet`, so `install.sh` only downloads.
+- The relay mode of the probe (load, links) inside `lolinet`, once relays run it. Then `probe/reporter.py` can go.
 - GUI clients that drive `lolinet` (`lolinet cli -o json …`) instead of managing their own kernel process.

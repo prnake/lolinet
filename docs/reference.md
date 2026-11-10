@@ -23,9 +23,12 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet routes` | `easytier-cli route` |
 | `lolinet logs [-f] [-n 50]` | The kernel log, `/var/log/lolinet/easytier.log` |
 | `lolinet up [options]` *root* | Install the binary and the service and start it. Takes over an `easytier` service that an earlier join script installed. Prints the status at the end |
-| `lolinet down` *root* | Stop and remove the service. The config and binary stay |
+| `lolinet down` *root* | Stop and remove the service and the probe. The config and binary stay |
 | `lolinet restart` *root* | Restart the kernel |
 | `lolinet upgrade [options]` *root* | Switch to the version the release manifest names (see below) |
+| `lolinet probe [show\|send] [-c FILE]` *root* | Print what the public probe would report this round; `send` reports it once for real. Reads `/etc/lolinet/probe.json` |
+| `lolinet probe off` *root* | Take the device off the public page, remove the probe service and delete its config. Turning it back on needs a new pairing |
+| `lolinet probe run` | The probe service's entry point |
 | `lolinet run [-c FILE]` | The service's entry point: run the EasyTier kernel in the foreground with `/etc/lolinet/loli.toml` |
 | `lolinet core …` | Stock `easytier-core`, arguments passed through |
 | `lolinet cli …` | Stock `easytier-cli`, arguments passed through, aimed at the local service's admin port |
@@ -37,7 +40,7 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 
 | Option | |
 | :-- | :-- |
-| `-c, --config FILE` | Use this config (the `loli.toml` from pairing). It is copied to `/etc/lolinet/loli.toml` with mode 600 |
+| `-c, --config FILE` | Use this config (the `loli.toml` from pairing). It is copied to `/etc/lolinet/loli.toml` with mode 600. A `# probe = {…}` line is moved to `/etc/lolinet/probe.json` and the probe installed; without one, an installed probe is left alone |
 | `--base-url URL` | The join site. Also read from `LOLINET_BASE_URL`; `install.sh` passes it this way |
 | `--upgrade-source SRC` | `github:<owner>/<repo>`, a manifest URL, or `base` to use the join site |
 | `--auto-upgrade on\|off` | The 6-hourly upgrade check. On by default |
@@ -66,14 +69,15 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 | `/etc/systemd/system/lolinet.service` | Linux service, `Restart=always` |
 | `/etc/systemd/system/lolinet-upgrade.{service,timer}` | Linux upgrade job, every 6 hours with up to 30 minutes of random delay |
 
-The public probe, when installed:
+The public probe, when installed. It runs `/usr/local/bin/lolinet probe run`, starts as root and drops to `nobody` after reading its config:
 
 | Path | macOS | Linux |
 | :-- | :-- | :-- |
-| Reporter | `/usr/local/libexec/mesh-probe/reporter.py` | `/opt/mesh-probe/reporter.py` |
-| Config (id and report key) | `/etc/mesh-probe/reporter.json` | `/etc/mesh-probe/reporter.json`, passed with `LoadCredential` |
-| Service | `/Library/LaunchDaemons/co.lo-li.mesh-probe.plist` | `/etc/systemd/system/mesh-probe.service` |
-| Log | `/var/log/mesh-probe.log` | journald |
+| Config (id and report key) | `/etc/lolinet/probe.json`, mode 600 | `/etc/lolinet/probe.json`, mode 600 |
+| Service | `/Library/LaunchDaemons/co.lo-li.lolinet-probe.plist` | `/etc/systemd/system/lolinet-probe.service` |
+| Log | `/var/log/lolinet/probe.log` | journald |
+
+Earlier installs ran the Python reporter instead (`reporter.py` under `/usr/local/libexec/mesh-probe/` or `/opt/mesh-probe/`, config `/etc/mesh-probe/reporter.json`, service `co.lo-li.mesh-probe` or `mesh-probe.service`). `lolinet up` and `lolinet upgrade` move a device-mode config to `/etc/lolinet/probe.json`, keeping the public id, and remove the old service. Relay-mode configs are not touched.
 
 Paths from before `lolinet`, which `lolinet up` takes over: the config `/etc/easytier/loli.toml` (copied if `/etc/lolinet/loli.toml` doesn't exist yet), and the binary directory `/usr/local/libexec/easytier/` on macOS or `/opt/easytier/` on Linux, where `easytier-core` and `easytier-cli` become symlinks to `lolinet`.
 
@@ -168,17 +172,18 @@ Run them with `uv run`; each declares its own dependencies.
 | `scripts/device_config.py --name N --out FILE [--cred ID] [--by-name]` | Render a config for a device in `nodes.yaml` from a saved credential |
 | `join/deploy.py worker` | Upload the Worker with its bindings, attach the custom domains, turn off `workers.dev` |
 | `join/deploy.py site` | Upload `web/dist-probe/` as the join site's home page |
-| `join/deploy.py release DIR` | Upload `lolinet-*` and `easytier-*` packages, the probe bundle, then `dl/lolinet.json` |
-| `join/deploy.py install` | Upload the probe bundle and `install.sh`, once all four `lolinet` packages and `dl/lolinet.json` are on the join site |
+| `join/deploy.py release DIR` | Upload `lolinet-*` and `easytier-*` packages, then `dl/lolinet.json` |
+| `join/deploy.py install` | Upload `install.sh`, once all four `lolinet` packages and `dl/lolinet.json` are on the join site |
 | `join/deploy.py dist FILE…` | Upload any files to `dl/` with a `.sha256` next to each |
 | `probe/device.py relay --name N --out FILE` | A relay's probe config: report key, device-id key and report URL |
-| `probe/device.py config --name N --out FILE [options]` | A device's probe config, for devices not installed by `install.sh` |
+| `probe/device.py config --name N --out FILE [options]` | A device's probe config for `reporter.py`, for devices without `lolinet` (Docker) |
 | `probe/device.py id --name N` | The public id a hostname gets |
 | `probe/device.py bye --name N` | Remove a device from the public page |
 | `probe/device.py install-mac` / `uninstall-mac` | Run the probe as a user LaunchAgent on this Mac, without root |
 | `lolinet/build.sh` | Build `lolinet` for this machine (`TARGET`, `FEATURES` to cross-compile) |
-| `lolinet/release.py DIR` | Write `lolinet.json` and the probe bundle next to four `lolinet-*` packages |
+| `lolinet/release.py DIR` | Write `lolinet.json` next to four `lolinet-*` packages |
 | `easytier/check_sni.py PATH` | Start a fake relay and check that `easytier-core` sends the right SNI |
+| `sudo lolinet/check_probe.py PATH` | Install the built-in probe from this `lolinet` for real and check it end to end. Changes system services; meant for CI runners |
 
 ## Join site
 
@@ -204,8 +209,8 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 
 | Command | |
 | :-- | :-- |
-| `curl <join site>/i \| sudo sh -s CODE` | New device: download and check `lolinet`, then redeem the code, `lolinet up -c` the config, install the probe |
-| `curl <join site>/i \| sudo sh` | Device already in: use `/etc/lolinet/loli.toml` (or the older `/etc/easytier/loli.toml`) and run `lolinet up`. Does nothing when the version matches and the service and upgrade job are in place. Updates an installed probe's `reporter.py`. Refuses relay configs (they hold `network_secret`). `repair` and `upgrade` are accepted as the argument too |
+| `curl <join site>/i \| sudo sh -s CODE` | New device: download and check `lolinet`, then redeem the code, `lolinet up -c` the config, which installs the probe |
+| `curl <join site>/i \| sudo sh` | Device already in: use `/etc/lolinet/loli.toml` (or the older `/etc/easytier/loli.toml`) and run `lolinet up`. Does nothing when the version matches and the service, upgrade job and probe (if configured) are in place. Takes over an older Python probe. Refuses relay configs (they hold `network_secret`). `repair` and `upgrade` are accepted as the argument too |
 | `curl <join site>/i \| sh -s check` | Download and check only, then print the latest version, the local one and whether to install. No root needed |
 
 **Where it downloads.** GitHub first: the redirect of `https://github.com/$LOLINET_GITHUB/releases/latest` pins the tag, and every file comes from that release. If GitHub is unreachable, slower than 50 KB/s for 20 seconds, or has no usable manifest, it uses `<join site>/dl/`. The package's sha256 must match that release's `lolinet.json`, and the new binary must print the manifest's version. `lolinet up` gets `--upgrade-source github:<repo>` or `base` to match where the download came from.
@@ -218,7 +223,6 @@ A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same f
 | :-- | :-- |
 | `lolinet-<os>-<arch>.tar.gz` | `lolinet` and `BUILD-INFO` at the archive root. `<os>-<arch>` is `linux-x86_64`, `linux-aarch64`, `macos-aarch64` or `macos-x86_64` |
 | `easytier-<os>-<arch>.tar.gz` | The patched `easytier-core` and `easytier-cli`, and `BUILD-INFO` |
-| `mesh-probe.tar.gz` | `reporter.py`, `mesh-probe.service`, `co.lo-li.mesh-probe.plist`. Built reproducibly (zero timestamps) |
 | `*.sha256`, `SHA256SUMS` | Checksums |
 | `lolinet.json` | The manifest |
 
@@ -230,12 +234,11 @@ A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same f
  "lolinet": {
   "macos-aarch64": {"file": "lolinet-macos-aarch64.tar.gz", "sha256": "…"},
   "…": {}
- },
- "probe": {"file": "mesh-probe.tar.gz"}
+ }
 }
 ```
 
-All four packages must carry the same version. Package URLs are resolved next to the manifest's URL, so a manifest and its packages always sit in one directory.
+All four packages must carry the same version. Older manifests also had a `"probe"` entry for the Python probe bundle; the probe is now part of `lolinet`, and older `lolinet` versions ignore a manifest without it. Package URLs are resolved next to the manifest's URL, so a manifest and its packages always sit in one directory.
 
 lolidesk ships as `lolidesk-<version>` releases with `lolidesk-<macos|linux>-<arch>.tar.gz` (`lolidesk`, `libghostty-vt.dylib` or `.so`, `BUILD-INFO`, and `Lolidesk.app` on macOS). These are never marked latest. See [lolidesk](lolidesk.md#distribution).
 

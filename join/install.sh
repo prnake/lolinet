@@ -1,6 +1,6 @@
 #!/bin/sh
 # lolinet 一键安装 / 升级（EasyTier 带 WSS SNI 补丁编在里面）：
-#   curl -fsSL <准入站>/i | sudo sh -s <配对码>   新设备：兑换一次性加密配置、本地解密、装 lolinet、注册系统服务、装公开探针
+#   curl -fsSL <准入站>/i | sudo sh -s <配对码>   新设备：兑换一次性加密配置、本地解密、装 lolinet、注册系统服务（含公开探针）
 #   curl -fsSL <准入站>/i | sudo sh               已入网的设备：用本机现有配置装上 / 升级到最新的 lolinet，已是最新就不动
 #   curl -fsSL <准入站>/i | sh -s check           只看：最新版、本机版本、要不要装（下载校验一遍，不装，不要 sudo）
 # lolinet 从 GitHub（${LOLINET_GITHUB}，默认 prnake/lolinet）最新的 Release 下载，连不上或太慢就退到准入站 dl/
@@ -77,17 +77,22 @@ done
 [ -n "$SRC" ] || { echo "GitHub 和准入站都下载不到 lolinet"; exit 1; }
 if [ $SRC = github ]; then FROM="GitHub $GH"; else FROM="准入站 $BASE/dl/"; fi
 
-# lolinet 的服务和自动升级都在、以前这个脚本装的 easytier 服务不在（自动升级关了的不算缺）
+# lolinet 的服务和自动升级都在、以前这个脚本装的 easytier 服务不在（自动升级关了的不算缺）；
+# 配了公开探针的探针服务在，以前这个脚本装的 python 版探针不在（lolinet up 会把它换成内置的）
 installed_ok() {
   auto_off=; grep -q '"auto_upgrade": *false' /etc/lolinet/lolinet.json 2>/dev/null && auto_off=yes
   if [ $OS = macos ]; then d=/Library/LaunchDaemons; svc=co.lo-li.lolinet.plist; old=easytier.plist; timer=co.lo-li.lolinet-upgrade.plist
-  else d=/etc/systemd/system; svc=lolinet.service; old=easytier.service; timer=lolinet-upgrade.timer; fi
-  [ -f $d/$svc ] && [ ! -f $d/$old ] && { [ -n "$auto_off" ] || [ -f $d/$timer ]; }
+    probe=co.lo-li.lolinet-probe.plist; old_probe=co.lo-li.mesh-probe.plist
+  else d=/etc/systemd/system; svc=lolinet.service; old=easytier.service; timer=lolinet-upgrade.timer
+    probe=lolinet-probe.service; old_probe=mesh-probe.service; fi
+  [ -f $d/$svc ] && [ ! -f $d/$old ] && { [ -n "$auto_off" ] || [ -f $d/$timer ]; } \
+    && [ ! -f $d/$old_probe ] && { [ ! -f /etc/lolinet/probe.json ] || [ -f $d/$probe ]; }
 }
 
 # up：检查配置，把自己装到 /usr/local/bin/lolinet、配置放 /etc/lolinet/loli.toml（600），注册 launchd / systemd 服务
-# （管理口只听 127.0.0.1:15888）和自动升级（每 6 小时）。以前这个脚本装的 easytier 服务会被撤掉，老路径的
-# easytier-core / easytier-cli 换成指向 lolinet 的链接（探针靠它读 peer）。最后打印状态。
+# （管理口只听 127.0.0.1:15888）、自动升级（每 6 小时）和公开探针（配了的话，lolinet 内置）。以前这个脚本装的
+# easytier 服务和 python 版探针会被撤掉（探针配置接管过来，公开 id 不变），老路径的 easytier-core / easytier-cli
+# 换成指向 lolinet 的链接。最后打印状态。
 # 自动升级跟着这次下载成功的来源：GitHub 连得上就看 GitHub 的 Release，连不上的网络看准入站 dl/（两边是同一版的文件）
 up() {
   set -- up "$@"
@@ -97,21 +102,14 @@ up() {
   LOLINET_BASE_URL="$BASE" "$NEW" "$@"
 }
 
-fetch_probe() {
-  dl "$REL/mesh-probe.tar.gz" -o "$TMP/probe.tgz" || return 1
-  want=$(dl "$REL/mesh-probe.tar.gz.sha256" | cut -d' ' -f1) || return 1
-  [ "$(sha < "$TMP/probe.tgz")" = "$want" ] || return 1
-  mkdir -p "$TMP/probe"; tar -xzf "$TMP/probe.tgz" -C "$TMP/probe"
-}
-
 if [ $MODE = check ]; then
   if [ "$NEW" = "$BIN" ]; then got="本机已是这一版，没下载"; else got="下载和 sha256 都对"; fi
   echo "最新      lolinet ${VER}（${FROM}，${got}）"
   if [ -n "$CUR" ]; then echo "本机      lolinet $CUR"; else echo "本机      没装 lolinet"; fi
   if [ -z "$HAVE_CONF" ]; then echo "入网      没看到 /etc/lolinet/loli.toml（以前的装法要 sudo 才看得到）"; fi
   if [ "$VER" != "$CUR" ]; then echo "要装：     curl -fsSL $BASE/i | sudo sh"
-  elif ! installed_ok; then echo "版本是最新，但服务或自动升级没装好：curl -fsSL $BASE/i | sudo sh"
-  else echo "已是最新，服务和自动升级都在，不用动"; fi
+  elif ! installed_ok; then echo "版本是最新，但服务、自动升级或公开探针没装好：curl -fsSL $BASE/i | sudo sh"
+  else echo "已是最新，服务、自动升级和公开探针（配了的话）都在，不用动"; fi
   exit 0
 fi
 
@@ -123,16 +121,6 @@ if [ $MODE = update ]; then
     up
     echo "lolinet ${CUR:-（没装）} -> ${VER}（${FROM}）。看状态：lolinet；日志：lolinet logs -f"
   fi
-  # 装过公开探针的（配对时装的）：reporter.py 和这一版不一样就换掉、重启探针；没装过的不装（探针配置在配对包里）
-  PROBE_PY=/usr/local/libexec/mesh-probe/reporter.py; [ $OS = macos ] || PROBE_PY=/opt/mesh-probe/reporter.py
-  if [ -f /etc/mesh-probe/reporter.json ] && [ -f "$PROBE_PY" ]; then
-    if ! fetch_probe; then echo "探针包下载或校验失败，探针没动"
-    elif ! cmp -s "$TMP/probe/reporter.py" "$PROBE_PY"; then
-      install -m 644 "$TMP/probe/reporter.py" "$PROBE_PY"
-      if [ $OS = macos ]; then launchctl kickstart -k system/co.lo-li.mesh-probe 2>/dev/null || true; else systemctl try-restart mesh-probe || true; fi
-      echo "公开探针 reporter.py 已更新"
-    fi
-  fi
   exit 0
 fi
 
@@ -141,55 +129,14 @@ ID=$(printf %s "$CODE" | sha | cut -c1-32)
 curl -fsS "$BASE/v1/pair/$ID" -o "$TMP/blob" || { echo "配对码无效、已使用或已过期"; exit 1; }
 K=$CODE openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -a -A -pass env:K -in "$TMP/blob" -out "$TMP/pair.toml" \
   || { echo "解密失败：配对码不对"; exit 1; }
-# pair.py 把探针配置（公开 id + 上报密钥）写在末尾的 `# probe = {...}` 一行，取出来，不留在 EasyTier 配置里
-PROBE=$(sed -n 's/^# probe = //p' "$TMP/pair.toml")
-sed '/^# probe = /d' "$TMP/pair.toml" > "$TMP/loli.toml"
-up -c "$TMP/loli.toml"
+# pair.py 把探针配置（公开 id + 上报密钥）写在末尾的 `# probe = {...}` 一行：整份交给 lolinet up，它把这一行存到
+# /etc/lolinet/probe.json、装成系统服务（lolinet 内置，不要 python3），不留在 EasyTier 配置里
+up -c "$TMP/pair.toml"
 echo "已接入 lolinet 网络（lolinet ${VER}，${FROM}）。看状态：lolinet；日志：lolinet logs -f"
-
-probe_macos() {
-  install -d -m 755 /usr/local/libexec/mesh-probe /etc/mesh-probe
-  install -m 644 "$TMP/probe/reporter.py" /usr/local/libexec/mesh-probe/reporter.py
-  (umask 077; printf '%s\n' "$PROBE" > /etc/mesh-probe/reporter.json)
-  chown nobody /etc/mesh-probe/reporter.json
-  : > /var/log/mesh-probe.log; chown nobody /var/log/mesh-probe.log
-  # 以前用 probe/device.py install-mac 手工装的用户级 LaunchAgent 撤掉，免得同一台设备报两份
-  UH=$(dscl . -read "/Users/${SUDO_USER:-root}" NFSHomeDirectory 2>/dev/null | sed 's/^NFSHomeDirectory: //')
-  if [ -n "${SUDO_USER:-}" ] && [ -f "$UH/Library/LaunchAgents/co.lo-li.mesh-probe.plist" ]; then
-    launchctl bootout "gui/$(id -u "$SUDO_USER")/co.lo-li.mesh-probe" 2>/dev/null || true
-    rm -rf "$UH/Library/LaunchAgents/co.lo-li.mesh-probe.plist" "$UH/Library/Application Support/lo-li mesh/probe"
-  fi
-  install -m 644 "$TMP/probe/co.lo-li.mesh-probe.plist" /Library/LaunchDaemons/co.lo-li.mesh-probe.plist
-  launchctl bootout system/co.lo-li.mesh-probe 2>/dev/null || true
-  # bootout 是异步的：重装时紧接着 bootstrap 会报 5: Input/output error，重试几次（和 lolinet 的 launchd 服务一样）
-  i=0
-  until launchctl bootstrap system /Library/LaunchDaemons/co.lo-li.mesh-probe.plist 2>/dev/null; do
-    i=$((i + 1)); [ $i -lt 10 ] || { echo "探针服务注册失败：launchctl bootstrap system /Library/LaunchDaemons/co.lo-li.mesh-probe.plist"; return 1; }
-    sleep 1
-  done
-}
-
-probe_linux() {
-  install -d -m 755 /opt/mesh-probe
-  install -d -m 700 /etc/mesh-probe
-  install -m 644 "$TMP/probe/reporter.py" /opt/mesh-probe/reporter.py
-  (umask 077; printf '%s\n' "$PROBE" > /etc/mesh-probe/reporter.json)
-  install -m 644 "$TMP/probe/mesh-probe.service" /etc/systemd/system/mesh-probe.service
-  systemctl daemon-reload
-  systemctl enable mesh-probe >/dev/null 2>&1
-  systemctl restart mesh-probe
-}
-
-# 公开探针：reporter.py 只用标准库，macOS 用命令行工具自带的 /usr/bin/python3，Linux 用 systemd（和 relay 同一个单元文件）。
-# 缺依赖就跳过，不影响入网；之后装好依赖再用新配对码重跑即可。
-if [ -z "$PROBE" ]; then
-  echo "这台不装公开探针。"
-elif [ $OS = macos ] && ! xcode-select -p >/dev/null 2>&1; then
-  echo "跳过公开探针：没有 /usr/bin/python3（先 xcode-select --install）。"
-elif [ $OS = linux ] && { ! command -v python3 >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; }; then
-  echo "跳过公开探针：需要 python3 和 systemd。"
-else
-  fetch_probe || { echo "探针包下载或校验失败"; exit 1; }
-  probe_$OS
-  echo "公开探针已启动（只报硬件和位置），设备 id $(printf %s "$PROBE" | sed -n 's/.*"name":"\(d-[0-9a-f]*\)".*/\1/p')：$BASE"
+if ! grep -q '^# probe = ' "$TMP/pair.toml"; then
+  echo "这台不装公开探针（配对时选了不装）。"
+elif ! "$NEW" probe --help >/dev/null 2>&1; then
+  # 下到的 lolinet 比这个脚本旧（比如准入站 dl/ 还没同步）：探针配置先放好，自动升级到带探针的版本后自己装上
+  (umask 077; sed -n 's/^# probe = //p' "$TMP/pair.toml" > /etc/lolinet/probe.json)
+  echo "这一版 lolinet（${VER}）还没有内置探针：探针配置已存好，自动升级后自己装上。"
 fi
