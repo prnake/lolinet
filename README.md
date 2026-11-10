@@ -22,7 +22,7 @@
 | `patches/`、`easytier/` | 私有 EasyTier：上游 v2.7.0 加两个补丁。一个让 WSS 支持自定义 SNI，一个是 lolinet 的入口。`easytier/check_sni.py` 起一个假 relay，实测补丁确实生效 |
 | `join/` | 准入站，跑在 Cloudflare Worker 上：配对码兑换、客户端分发、公开探针接口、`<名字>.<edge_zone>` 跳转页。另有 `install.sh` 和部署脚本 |
 | `scripts/` | `pair.py` 签凭据、出配对码；`revoke.py` 吊销凭据；`device_config.py` 渲染设备配置 |
-| `probe/` | 公开探针上报，relay 和设备都用，只依赖 Python 标准库 |
+| `probe/` | relay 的公开探针上报，只依赖 Python 标准库；入网设备的探针编在 lolinet 里（`lolinet probe`，格式和签名相同） |
 | `web/` | 前端：本地控制台（拓扑、节点、凭据、配对）和公开探针页面。设计语言叫「猫眼」，见 [web/DESIGN.md](web/DESIGN.md) |
 | [`desk/`](desk/README.md) | lolidesk：网里的远程终端和远程桌面。主机端 `lolidesk-host`，客户端 `lolidesk` 带图形界面和终端界面。独立发包，不编进 `lolinet` |
 

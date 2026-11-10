@@ -134,6 +134,12 @@ jobs:
             echo "这台 runner 跑不了 ${{ matrix.target }}，跳过 SNI 实测"
           fi
 
+      # 内置的公开探针（lolinet probe）在 runner 上真装一遍：root、launchd / systemd、降到 nobody；接管 python 版、换 id、
+      # 升级时不乱重启、关掉，上报按准入站的规则验签。只在本机能跑的两个平台
+      - name: Probe end to end
+        if: matrix.native
+        run: sudo CI=1 python3 lolinet/check_probe.py ./pkg-lolinet/lolinet
+
       - uses: actions/upload-artifact@v5
         with:
           name: easytier-${{ matrix.name }}
@@ -155,7 +161,7 @@ jobs:
           pattern: easytier-*
           path: out
           merge-multiple: true
-      # lolinet.json 写四个平台 lolinet 包的 sha256 和版本（BUILD-INFO 第一行），探针包和它的 .sha256 一起发
+      # lolinet.json 写四个平台 lolinet 包的 sha256 和版本（BUILD-INFO 第一行）；设备的公开探针编在 lolinet 里，不单独发包
       - name: Manifest
         run: python3 lolinet/release.py out
       - name: GitHub Release
@@ -163,7 +169,7 @@ jobs:
           V=$(python3 -c 'import json; print(json.load(open("out/lolinet.json"))["version"])')
           TAG=${GITHUB_REF_NAME}; case $GITHUB_REF in refs/tags/v*) ;; *) TAG="lolinet-$V" ;; esac
           (cd out && sha256sum *.tar.gz > SHA256SUMS)
-          gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS out/lolinet.json --target "$GITHUB_SHA" --latest --title "lolinet $V" \
+          gh release create "$TAG" out/*.tar.gz out/SHA256SUMS out/lolinet.json --target "$GITHUB_SHA" --latest --title "lolinet $V" \
             --notes "lolinet $V（EasyTier 在 easytier/build.env，补丁在 patches/）。设备 lolinet upgrade --source github:${GITHUB_REPOSITORY} 按 lolinet.json 升级。"
           # releases/latest 要指到这一版：设备按 releases/latest/download/lolinet.json 找清单
           test "$(gh release view --json tagName -q .tagName)" = "$TAG"

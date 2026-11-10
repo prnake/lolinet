@@ -7,15 +7,15 @@
 
 用法:
   uv run join/deploy.py worker              上传 worker.js、绑定 KV/R2/DO/探针密钥、挂自定义域（HOSTNAMES）、关掉 workers.dev
-  uv run join/deploy.py install             上传探针包 dl/mesh-probe.tar.gz（install.sh 装探针用），再上传 install.sh；
-                                            准入站上还没有四个平台的 lolinet 包（先跑下面的 release）就不传
+  uv run join/deploy.py install             上传 install.sh；准入站上还没有四个平台的 lolinet 包（先跑下面的 release）就不传
   uv run join/deploy.py dist <tarball>...   上传 dl/<文件名> 和 dl/<文件名>.sha256
-  uv run join/deploy.py release <目录>       目录是一版 GitHub Release 的文件或 build 的产物：传 easytier-* / lolinet-* 包、探针包，最后是清单
+  uv run join/deploy.py release <目录>       目录是一版 GitHub Release 的文件或 build 的产物：传 easytier-* / lolinet-* 包，最后是清单
                                             dl/lolinet.json（lolinet upgrade 按它自动升级，见 lolinet/release.py）
   uv run join/deploy.py site                上传探针页面（先 cd web && npm run build:probe）到 R2 site/
 
 Cloudflare 凭据：CI 用仓库 secret CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID（最小权限 token），本机用$LOLINET_HOME/.env。
 探针上报主密钥：CI 用仓库 secret PROBE_MASTER，本机用$LOLINET_HOME/state/mesh-probe.json；各 relay 的派生密钥要另外下发到 relay。
+设备的公开探针编在 lolinet 里（lolinet probe），不再单独发 python 版的探针包；dl/ 里以前传的 mesh-probe.tar.gz 留着给旧的 install.sh。
 """
 from __future__ import annotations
 
@@ -43,7 +43,6 @@ SITE_DIR = MESH_DIR / "web" / "dist-probe"
 DO_CLASS = "ProbeHub"
 DO_TAG = "v1"
 sys.path.insert(0, str(MESH_DIR / "lolinet"))
-from release import PROBE_NAME, probe_bundle  # noqa: E402
 from release import manifest as lolinet_manifest  # noqa: E402
 COMPAT_DATE = "2026-10-01"
 
@@ -272,19 +271,18 @@ def main() -> None:
         site()
     elif cmd == "install":
         require_lolinet()
-        put_dist(PROBE_NAME, probe_bundle())  # 先传包，新 install.sh 上线时它已经在了
         put_object("install.sh", (HERE / "install.sh").read_bytes(), "text/x-shellscript")
     elif cmd == "release":
         out = Path(args[0])
         packages = {f.name: f.read_bytes() for f in sorted(out.glob("*.tar.gz")) if f.name.startswith(("easytier-", "lolinet-"))}
         m = lolinet_manifest({k: v for k, v in packages.items() if k.startswith("lolinet-")})
-        # 目录是一版 GitHub Release 的文件时，清单和探针包原样传（设备从哪个来源升级拿到的都是同一份）；清单要和包对得上
-        given, probe = out / "lolinet.json", out / PROBE_NAME
-        if given.is_file() and json.loads(given.read_text()) != m:
+        # 目录是一版 GitHub Release 的文件时，清单原样传（设备从哪个来源升级拿到的都是同一份）；清单要和包对得上。
+        # 以前的 Release 清单多一个 "probe"（python 版探针包），只比版本和包
+        given = out / "lolinet.json"
+        if given.is_file() and {k: json.loads(given.read_text()).get(k) for k in m} != m:
             raise SystemExit(f"{given} 和目录里的 lolinet 包对不上")
         for name, data in packages.items():
             put_dist(name, data)
-        put_dist(PROBE_NAME, probe.read_bytes() if probe.is_file() else probe_bundle())
         # 清单最后传：设备看到新清单时，它指的包都已经在了
         put_object("dl/lolinet.json", given.read_bytes() if given.is_file() else (json.dumps(m, indent=1) + "\n").encode(), "application/json")
         print(f"dl/lolinet.json：lolinet {m['version']}")

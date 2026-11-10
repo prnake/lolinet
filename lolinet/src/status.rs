@@ -1,4 +1,4 @@
-//! `lolinet status`：服务、本机、接入点（10.188.0.0/24）和设备。数据来自内置 easytier-cli 的 JSON 输出，
+//! `lolinet status`：服务、升级、探针、本机、接入点（10.188.0.0/24）和设备。数据来自内置 easytier-cli 的 JSON 输出，
 //! 和 web/agent、probe/reporter.py 读的是同一份。
 
 use std::fs;
@@ -6,7 +6,7 @@ use std::fs;
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::{CONFIG, RPC, VERSION, service, tool, upgrade};
+use crate::{CONFIG, RPC, VERSION, probe, service, tool, upgrade};
 
 fn cli_json(sub: &str) -> Option<Value> {
     let out = tool("easytier-cli").args(["-p", RPC, "-o", "json", sub]).output().ok()?;
@@ -46,6 +46,18 @@ pub fn show() -> Result<()> {
         (true, true) => println!("升级    自动，每 {} 小时 · {}", upgrade::INTERVAL_HOURS, st.manifest_url()),
         (true, false) => println!("升级    定时任务没装（sudo lolinet up）· {}", st.manifest_url()),
         (false, _) => println!("升级    关（sudo lolinet up --auto-upgrade on）；手动 sudo lolinet upgrade"),
+    }
+    // 公开 id 在 600 的配置里，不加 sudo 只看得到服务状态
+    let id = match probe::public_id() {
+        Ok(Some(id)) => format!(" · {id}"),
+        _ => String::new(),
+    };
+    match service::probe_state() {
+        Some(p) if p.running => println!("探针    运行中{id} · {} · 只报硬件和位置", p.manager),
+        Some(p) => println!("探针    没在运行{id} · {}（sudo lolinet up）", p.manager),
+        None if service::legacy_probe_installed() => println!("探针    python 版（sudo lolinet up 换成内置的）"),
+        None if !id.is_empty() => println!("探针    配了{id}，服务没装（sudo lolinet up）"),
+        None => println!("探针    没装（配对时带了探针才装）"),
     }
     let (Some(node), Some(Value::Array(peers))) = (node(), cli_json("peer")) else {
         println!("内核    管理口 {RPC} 连不上");

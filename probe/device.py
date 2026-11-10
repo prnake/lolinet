@@ -3,6 +3,8 @@
 # dependencies = []
 # ///
 """给设备装公开探针上报（probe/reporter.py 的设备模式）：只公开硬件和位置，不公开设备名。
+配对码入网的设备不用这个：pair.py 把配置放进配对包，lolinet up 装 lolinet 内置的探针。这里给 Docker 里的设备（config）、
+撤卡片（bye）和没装 lolinet 的 Mac（install-mac）用。
 
 设备的公开 id = d- + HMAC(devid_key, EasyTier 主机名) 前 10 位，devid_key = HMAC(master, "devid")；
 relay 用同一把 devid_key 把它看到的主机名换成 id，所以 relay 报的链路和设备自己报的硬件能对上，名字不出机器。上报密钥 = HMAC(master, "probe:<id>")，Worker 不需要设备名单。
