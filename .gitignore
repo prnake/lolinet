@@ -14,3 +14,9 @@ state/
 *.key
 *.p12
 loli.toml
+
+# cargo 的编译产物
+target/
+# lolidesk：取来的 libghostty-vt、打包出来的 app
+.ghostty/
+app-out/
