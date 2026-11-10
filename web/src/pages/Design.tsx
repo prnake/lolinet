@@ -45,7 +45,7 @@ export function Design() {
     <div className="stack-10 design">
       <section className="design__hero">
         <Mark size={56} />
-        <Headline lead="猫眼 Catseye" sub="lo-li mesh 的固定美学：黑里只亮一点，纸上只点一点。" />
+        <Headline lead="猫眼 Catseye" sub="lolinet 的固定美学：黑里只亮一点，纸上只点一点。" />
         <p className="design__lede">
           取 uwu.cat 的虚空、星号和光标群做气质，取 magpie 的一行一件事做操作界面，取 vibe42 的配对码、命令胶囊和三步流程做交互。右上角切日间 / 夜间 / 跟随系统。规范全文在{" "}
           <code>web/DESIGN.md</code>，取值都在 <code>src/styles/tokens.css</code>。

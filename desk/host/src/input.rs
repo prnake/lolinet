@@ -1,4 +1,4 @@
-//! 远程输入注入。macOS 用 CGEvent（和 Vibe42 一样）：鼠标按坐标、滚轮按行、键盘按 keycode + 修饰键，
+//! 远程输入注入。macOS 用 CGEvent：鼠标按坐标、滚轮按行、键盘按 keycode + 修饰键，
 //! 文本用 Unicode 字符串注入（不依赖键盘布局）。需要「辅助功能」权限，没有就静默失败。
 
 #[cfg(not(target_os = "macos"))]

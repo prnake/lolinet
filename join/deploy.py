@@ -111,7 +111,7 @@ def acct() -> str:
 
 def probe_master() -> str:
     """上报签名主密钥：CI 用仓库 secret PROBE_MASTER，本机读$LOLINET_HOME/state/mesh-probe.json，都没有才生成（只在本机）。
-    换主密钥会让 6 台 relay 的上报全部验签失败（要重跑 probe/deploy.py），所以 CI 里缺 secret 直接失败。"""
+    换主密钥会让所有 relay 和设备的上报全部验签失败（relay 要用 probe/device.py relay 重新生成配置下发，设备要重新配对），所以 CI 里缺 secret 直接失败。"""
     master = os.environ.get("PROBE_MASTER", "").strip()
     if master:
         if len(master) != 64 or not all(c in "0123456789abcdef" for c in master):
@@ -129,10 +129,15 @@ def probe_master() -> str:
 
 
 def relays() -> list[dict]:
-    """给 Worker 的 relay 名单：名字（只用来验签，不公开）、区域（公开 id）、规格。不给 EIP、VPC、overlay 地址。"""
-    doc = NODES
-    default = doc.get("relay_defaults", {}).get("instance_type")
-    return [{"name": r["name"], "region": r["region"], "spec": f"阿里云 {r.get('instance_type', default)}"} for r in doc["relays"]]
+    """给 Worker 的 relay 名单：名字（只用来验签，不公开）、区域（公开 id）、规格。不给 EIP、VPC、overlay 地址。
+    规格 = 「provider instance_type」（如「阿里云 ecs.c9i.xlarge」），各自先看 relay 自己的，再看 relay_defaults；没写的那段省掉。"""
+    defaults = NODES.get("relay_defaults") or {}
+
+    def spec(r: dict) -> str | None:  # 两个都没写就是 None，页面上写「接入点」
+        parts = (r.get(k) or defaults.get(k) for k in ("provider", "instance_type"))
+        return " ".join(str(p).strip() for p in parts if p and str(p).strip()) or None
+
+    return [{"name": r["name"], "region": r["region"], "spec": spec(r)} for r in NODES["relays"]]
 
 
 def worker() -> None:
@@ -144,7 +149,8 @@ def worker() -> None:
         {"type": "secret_text", "name": "PROBE_MASTER", "text": probe_master()},
         {"type": "plain_text", "name": "RELAYS", "text": json.dumps(relays())},
         {"type": "plain_text", "name": "BASE_URL", "text": BASE_URL},
-        {"type": "plain_text", "name": "EDGE_ZONE", "text": NET["edge_zone"]}]}
+        {"type": "plain_text", "name": "EDGE_ZONE", "text": NET["edge_zone"]},
+        {"type": "plain_text", "name": "TITLE", "text": str(NET.get("title") or "").strip() or "lolinet"}]}
     # DO 迁移只能做一次：脚本还没有 migration_tag 时带上建类的迁移，之后只核对 tag
     current = next((s for s in api("GET", f"{acct()}/workers/scripts") if s["id"] == WORKER), {})
     tag = current.get("migration_tag")

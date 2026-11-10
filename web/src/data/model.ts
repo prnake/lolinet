@@ -165,7 +165,7 @@ export function kindLabel(n: MeshNode) {
   return "设备";
 }
 
-/** 下一个空闲地址：电脑（TUN）10.188.16.0/20，App（无 TUN）10.188.32.0/20，见 ipam.md。 */
+/** 下一个空闲地址：电脑（TUN）10.188.16.0/20，App（无 TUN）10.188.32.0/20，见 nodes.example.yaml 的地址段。 */
 export function nextFreeIp(pool: "tun" | "app", used: Iterable<string>) {
   const taken = new Set(used);
   const base = pool === "tun" ? 16 : 32;

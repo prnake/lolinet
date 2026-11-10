@@ -1,5 +1,5 @@
 #!/bin/sh
-# lo-li mesh 一键接入：curl -fsSL <准入站>/i | sudo sh -s <配对码>
+# lolinet 一键接入：curl -fsSL <准入站>/i | sudo sh -s <配对码>
 # 兑换一次性加密配置 -> 用配对码在本地解密 -> 装 lolinet（EasyTier 带 WSS SNI 补丁编在里面）-> lolinet up 注册系统服务
 # -> 装公开探针（准入站首页的设备卡片，只报硬件和位置；配对时 pair.py --no-probe 就不装）。
 # 准入站地址：Worker 发这个脚本时把下面 BASE 的默认值换成自己的地址；直接跑仓库里这份要设 LOLINET_BASE_URL。
@@ -35,7 +35,7 @@ mkdir "$TMP/bin"; tar -xzf "$TMP/lolinet.tgz" -C "$TMP/bin"
 # 换成指向 lolinet 的链接（探针靠它读 peer）。最后打印状态。
 # 准入站地址经环境变量交给 lolinet：自动升级（默认开，每 6 小时）看 $BASE/dl/lolinet.json；老版本 lolinet 不认这个变量，照常装
 LOLINET_BASE_URL="$BASE" "$TMP/bin/lolinet" up -c "$TMP/loli.toml"
-echo "已接入 lo-li mesh。看状态：lolinet；日志：lolinet logs -f"
+echo "已接入 lolinet 网络。看状态：lolinet；日志：lolinet logs -f"
 
 probe_macos() {
   install -d -m 755 /usr/local/libexec/mesh-probe /etc/mesh-probe

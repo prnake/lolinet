@@ -134,6 +134,8 @@ export type RelaySpec = {
 export type NodesDoc = {
   network: {
     name: string;
+    /** 显示名（控制台侧栏、探针页顶栏、页面标题）；nodes.yaml 不写时构建插件填 lolinet */
+    title: string;
     cidr: string;
     sni: string;
     easytier: string;
