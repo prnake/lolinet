@@ -34,7 +34,16 @@ lolinet cli …             # 原版 easytier-cli
   - `/etc/lolinet/loli.toml` 还没有时，从 `/etc/easytier/loli.toml` 拷过来（旧文件留着）；
   - 老路径的 `easytier-core` / `easytier-cli`（macOS `/usr/local/libexec/easytier/`，Linux `/opt/easytier/`）换成指向 lolinet 的链接，
     探针（`reporter.py` 找 `easytier-cli`）、菜单栏 App（no-tun 内核）、`pair_e2e_test.sh` 不用改。
-- **配对码安装**（`curl <准入站>/i | sudo sh -s <配对码>`）：`join/install.sh` 从准入站 `dl/lolinet-<os>-<arch>.tar.gz` 下载、校验 sha256，再 `lolinet up -c <解密出的配置>`。四个平台的包由 `build.yml` 编并发 GitHub Release，再用 `join/deploy.py release` 传到准入站的 `dl/`；`deploy.py install` 查到包不全就不传新脚本。
+- **一键安装 / 升级**（`join/install.sh`，准入站 `/i` 发）：lolinet 从 GitHub 最新的 Release 下载（跟 `releases/latest` 的跳转钉住 tag），
+  连不上或太慢（20 秒不到 50 KB/s）就退到准入站 `dl/`；sha256 按那一版的 `lolinet.json` 校验，新二进制试跑 `--version` 对了才装。
+  - `curl <准入站>/i | sudo sh -s <配对码>`：新设备。先下载校验好 lolinet 再兑换（下载失败不会白用掉配对码），`lolinet up -c <解密出的配置>`，装公开探针。
+  - `curl <准入站>/i | sudo sh`：已入网的设备（`/etc/lolinet/loli.toml`，或者以前这个脚本装的 `/etc/easytier/loli.toml`）。
+    本机已是最新、服务和自动升级都在就什么都不动；否则 `lolinet up`（接管旧的 easytier 服务）。装过探针的顺带更新 `reporter.py`。relay（配置里有 `network_secret`）不碰。
+  - `curl <准入站>/i | sh -s check`：不要 sudo，只下载校验，告诉你最新版、本机版本、要不要装。
+  - 自动升级跟着这次下载成功的来源：GitHub 连得上就 `--upgrade-source github:<repo>`，否则 `base`（准入站 `dl/lolinet.json`）。
+  - `LOLINET_GITHUB=<owner>/<repo>` 换 GitHub 仓库（默认 `prnake/lolinet`）。
+  - 发包：四个平台的包由公开仓库的 `build.yml` 编、发 GitHub Release，私有仓库的 `dist.yml` 原样同步到准入站 `dl/`；
+    `deploy.py install` 查到 `dl/` 的包或 `lolinet.json` 不全就不传新脚本。
 - **凭证剩余**读配置末尾 `pair.py` 写的 `# credential_id` / `# credential_expiry_unix`；配置是 600，不加 sudo 看不到这一行。
 
 ## 自动升级

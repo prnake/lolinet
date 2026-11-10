@@ -101,14 +101,19 @@
 
 5. **看状态。** 运行 `lolinet`，可以看到服务状态、本机、凭证剩余天数，以及每个接入点和设备是直连还是中转、延迟多少。也可以打开本地控制台：先运行 `python3 web/agent/mesh_agent.py`，再访问 http://127.0.0.1:10188/ 。
 
-6. **自动升级。** `install.sh` 装的是 lolinet，并且默认带一个定时任务：每 6 小时按发布清单 `lolinet.json` 检查一次。
+6. **安装和升级。** lolinet 默认从这个仓库最新的 GitHub Release 下载。连不上 GitHub 或者太慢，就退到准入站的 `dl/`，那里是同一个 Release 的原样副本。
 
-   - 清单默认在准入站的 `dl/lolinet.json`，由 `join/deploy.py release` 发布。
-   - 也可以改用 GitHub Releases：`sudo lolinet up --upgrade-source github:prnake/lolinet`。这个仓库每次发版都带清单，`releases/latest` 始终是 lolinet 的最新一版。
+   ```sh
+   curl -fsSL https://join.edge.example.com/i | sudo sh -s <配对码>   # 新设备
+   curl -fsSL https://join.edge.example.com/i | sudo sh               # 已入网的设备：装上 lolinet 或升级到最新，已是最新就不动
+   curl -fsSL https://join.edge.example.com/i | sh -s check           # 只看要不要装，不要 sudo
+   ```
 
-   每次换版本之前都会校验 sha256，并试跑一次新的二进制。手动升级用 `sudo lolinet upgrade`，只看有没有新版本用 `lolinet upgrade --check`，关掉自动升级用 `--auto-upgrade off`。详见 [lolinet/README.md](lolinet/README.md#自动升级)。
+   不带配对码时用本机现有的配置。以前用 `easytier-core` / `easytier-cli` 装的设备也这样切到 lolinet，旧服务会被接管。
 
-   以前用 `easytier-core` / `easytier-cli` 装的设备，跑一次 `sudo lolinet up` 就能切换过来。
+   装好后默认带一个定时任务，每 6 小时按发布清单 `lolinet.json` 检查一次。安装时从哪里下载成功，定时任务就跟哪里：GitHub Releases，或者准入站的 `dl/lolinet.json`。每次换版本之前都会校验 sha256，并试跑一次新的二进制。
+
+   手动升级用 `sudo lolinet upgrade`，只看有没有新版本用 `lolinet upgrade --check`，关掉自动升级用 `sudo lolinet up --auto-upgrade off`。详见 [lolinet/README.md](lolinet/README.md#自动升级)。
 
 ## 发布和改动
 
