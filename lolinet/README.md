@@ -7,10 +7,10 @@ Source of the `lolinet` CLI: EasyTier and a small command line in one binary tha
 | `src/main.rs` | Entry point, `argv[0]` dispatch, the clap commands, `up` / `down` / `run`, taking over older installs |
 | `src/service.rs` | The launchd and systemd services and the upgrade job |
 | `src/status.rs` | `lolinet status`, from the built-in `easytier-cli`'s JSON (the same data the console's agent and the probe read) |
-| `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch |
+| `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch; an installed lolidesk too |
 | `src/probe.rs` | `lolinet probe`: the device's public probe (hardware and location, signed like `probe/reporter.py`'s device mode), and taking over the older Python one |
 | `build.sh` | Local build: clone the pinned EasyTier, apply the patches, copy `src/` in, build, package |
-| `release.py` | Writes the release manifest `lolinet.json` (standard library only) |
+| `release.py` | Writes the release manifest `lolinet.json`, or with `--lolidesk` the lolidesk manifest `lolidesk.json` (standard library only) |
 | `check_probe.py` | End-to-end test of the built-in probe: install as root, drop to `nobody`, take over the Python probe, change id, upgrade, turn off, and verify reports the way the join site does |
 
 ## Build

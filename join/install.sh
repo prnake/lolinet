@@ -3,6 +3,7 @@
 #   curl -fsSL <准入站>/i | sudo sh -s <配对码>   新设备：兑换一次性加密配置、本地解密、装 lolinet、注册系统服务（含公开探针）
 #   curl -fsSL <准入站>/i | sudo sh               已入网的设备：用本机现有配置装上 / 升级到最新的 lolinet，已是最新就不动
 #   curl -fsSL <准入站>/i | sh -s check           只看：最新版、本机版本、要不要装（下载校验一遍，不装，不要 sudo）
+# 三种都顺带管 lolidesk（网里的远程终端 / 远程桌面）：装上或换成发布的版本，不开主机服务，见 install_lolidesk。
 # lolinet 从 GitHub（${LOLINET_GITHUB}，默认 prnake/lolinet）最新的 Release 下载，连不上或太慢就退到准入站 dl/
 # （dist.yml 从同一个 Release 原样同步）。sha256 按那一版的 lolinet.json 校验，新二进制试跑 --version 对了才装。
 # 准入站地址：Worker 发这个脚本时把下面 BASE 的默认值换成自己的地址；直接跑仓库里这份要设 LOLINET_BASE_URL。
@@ -50,14 +51,15 @@ release_dir() {
   esac
 }
 
-# 清单 lolinet.json（lolinet/release.py 写的）：version 和各平台包的 file / sha256。只用 sed 读，不靠 python / jq
+# 清单 lolinet.json（lolinet/release.py 写的）：version 和各平台包的 file / sha256。只用 sed 读，不靠 python / jq。
+# 第二个参数是哪个产品的清单：lolinet（默认）或 lolidesk（lolidesk.json，同样的格式）
 manifest() {
   m=$(tr -d ' \t\r\n' < "$1")
   VER=$(printf %s "$m" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
   e=$(printf %s "$m" | sed -n "s/.*\"$OS-$ARCH\":{\([^}]*\)}.*/\1/p")
   FILE=$(printf %s "$e" | sed -n 's/.*"file":"\([^"]*\)".*/\1/p')
   WANT=$(printf %s "$e" | sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1/p')
-  case $FILE in lolinet-*.tar.gz) ;; *) return 1 ;; esac
+  case $FILE in "${2:-lolinet}"-*.tar.gz) ;; *) return 1 ;; esac
   case $FILE in */*) return 1 ;; esac
   [ -n "$VER" ] && [ -n "$WANT" ]
 }
@@ -102,6 +104,69 @@ up() {
   LOLINET_BASE_URL="$BASE" "$NEW" "$@"
 }
 
+# lolidesk：整个包（lolidesk + libghostty-vt）装进 /usr/local/lib/lolidesk/，/usr/local/bin/lolidesk 链接过去；
+# 之后 lolinet upgrade 按 lolidesk.json 更新。不开主机服务。2026-11-10 以前的包是 /usr/local/bin 下的 lolidesk-host、lolidesk
+# 两个程序：也换成指向新程序的链接（叫 lolidesk-host 时它就是 `lolidesk host`，老的服务照样起得来）。
+# 清单 lolidesk.json：GitHub 上在最新的 lolidesk-* Release 里（它不占 releases/latest，要问 API），准入站上在 dl/。
+# lolinet 这次从 GitHub 下的就先 GitHub 后准入站，从准入站下的就只用准入站。已经是清单上的版本就不动。
+# 试跑过、跑得起来才装。出什么问题都只跳过，不影响入网。
+desk_dir() {
+  case $1 in
+    github)
+      tag=$(curl -fsS --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$GH/releases?per_page=30" 2>/dev/null \
+        | grep -o '"tag_name": *"lolidesk-[^"]*"' | head -n 1 | sed 's/.*"\(lolidesk-[^"]*\)"$/\1/')
+      [ -n "$tag" ] || return 1
+      echo "https://github.com/$GH/releases/download/$tag" ;;
+    base) echo "$BASE/dl" ;;
+  esac
+}
+
+# 参数：check（只看）、update（不带配对码）、pair。子 shell：manifest 写的 VER / FILE / WANT 不覆盖 lolinet 的
+install_lolidesk() (
+  if [ $SRC = github ]; then order="github base"; else order=base; fi
+  DREL=
+  for S in $order; do
+    d=$(desk_dir $S) || continue
+    if dl "$d/lolidesk.json" -o "$TMP/lolidesk.json" 2>/dev/null && manifest "$TMP/lolidesk.json" lolidesk; then DREL=$d; break; fi
+  done
+  [ -n "$DREL" ] || { echo "跳过 lolidesk：没找到发布的 lolidesk.json"; return 0; }
+  DD=/usr/local/lib/lolidesk
+  LIB=libghostty-vt.so; [ $OS = macos ] && LIB=libghostty-vt.dylib
+  NEED=
+  [ "$("$DD/lolidesk" --version 2>/dev/null)" = "lolidesk $VER" ] || NEED=1
+  for b in lolidesk-host lolidesk; do
+    [ -f "/usr/local/bin/$b" ] && [ ! -L "/usr/local/bin/$b" ] && NEED=1
+  done
+  if [ $1 = check ]; then
+    if [ -z "$NEED" ]; then echo "lolidesk  ${VER}，本机已是这一版"; else echo "lolidesk  ${VER}，本机要装或更新（curl -fsSL $BASE/i | sudo sh）"; fi
+    return 0
+  fi
+  [ -n "$NEED" ] || { echo "lolidesk $VER 已是最新"; return 0; }
+  dl "$DREL/$FILE" -o "$TMP/lolidesk.tgz" || { echo "跳过 lolidesk：下载 $FILE 失败或太慢"; return 0; }
+  [ "$(sha < "$TMP/lolidesk.tgz")" = "$WANT" ] || { echo "跳过 lolidesk：$FILE 的 sha256 和 lolidesk.json 不一致"; return 0; }
+  mkdir -p "$TMP/desk" && tar -xzf "$TMP/lolidesk.tgz" -C "$TMP/desk" lolidesk "$LIB" || { echo "跳过 lolidesk：$FILE 解压失败"; return 0; }
+  [ "$("$TMP/desk/lolidesk" --version 2>/dev/null)" = "lolidesk $VER" ] || { echo "跳过 lolidesk：这台机器上跑不起来"; return 0; }
+  # 先库后程序；/usr/local/bin 下的名字都换成链接（临时链接再改名）
+  { install -d -m 755 "$DD" /usr/local/bin && install -m 644 "$TMP/desk/$LIB" "$DD/$LIB" && install -m 755 "$TMP/desk/lolidesk" "$DD/lolidesk"; } \
+    || { echo "跳过 lolidesk：装不进 $DD"; return 0; }
+  for b in lolidesk lolidesk-host; do
+    if [ $b = lolidesk ] || [ -e "/usr/local/bin/$b" ]; then
+      ln -sf "$DD/lolidesk" "/usr/local/bin/.$b.lolinet" && mv -f "/usr/local/bin/.$b.lolinet" "/usr/local/bin/$b"
+    fi
+  done
+  echo "已装 lolidesk ${VER}（$DD，/usr/local/bin/lolidesk；之后 lolinet upgrade 跟着更新）"
+  if [ $1 = update ]; then
+    echo "  在跑的主机下次启动才用新版本"
+    return 0
+  fi
+  echo "  连别的机器：lolidesk <地址> --token <token>"
+  if [ $OS = macos ]; then
+    echo "  让这台能被连（不用 sudo）：lolidesk host token 看 token，lolidesk host install 装成当前用户的常驻服务"
+  else
+    echo "  让这台能被连（不用 sudo）：lolidesk host token 看 token，lolidesk host run 起主机"
+  fi
+)
+
 if [ $MODE = check ]; then
   if [ "$NEW" = "$BIN" ]; then got="本机已是这一版，没下载"; else got="下载和 sha256 都对"; fi
   echo "最新      lolinet ${VER}（${FROM}，${got}）"
@@ -110,6 +175,7 @@ if [ $MODE = check ]; then
   if [ "$VER" != "$CUR" ]; then echo "要装：     curl -fsSL $BASE/i | sudo sh"
   elif ! installed_ok; then echo "版本是最新，但服务、自动升级或公开探针没装好：curl -fsSL $BASE/i | sudo sh"
   else echo "已是最新，服务、自动升级和公开探针（配了的话）都在，不用动"; fi
+  install_lolidesk check
   exit 0
 fi
 
@@ -121,6 +187,7 @@ if [ $MODE = update ]; then
     up
     echo "lolinet ${CUR:-（没装）} -> ${VER}（${FROM}）。看状态：lolinet；日志：lolinet logs -f"
   fi
+  install_lolidesk update
   exit 0
 fi
 
@@ -140,3 +207,5 @@ elif ! "$NEW" probe --help >/dev/null 2>&1; then
   (umask 077; sed -n 's/^# probe = //p' "$TMP/pair.toml" > /etc/lolinet/probe.json)
   echo "这一版 lolinet（${VER}）还没有内置探针：探针配置已存好，自动升级后自己装上。"
 fi
+
+install_lolidesk pair

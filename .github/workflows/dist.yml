@@ -1,0 +1,72 @@
+# 准入站同步：把一版 GitHub Release 的文件原样传到准入站的 dl/（R2）。连不上 GitHub 的设备从这里装（install.sh）和升级（lolinet upgrade）。
+# build.yml（lolinet）和 desk.yml（lolidesk）发完 Release 就调它；main 上改了 join/install.sh 也跑，把新脚本传上去。
+# 手动运行：给一个 tag 就补传那一版，不给就只传 install.sh。
+# 仓库 secret：CLOUDFLARE_API_TOKEN（只授权准入站那个 R2 桶就够）、CLOUDFLARE_ACCOUNT_ID、LOLINET_BASE_URL（准入站地址，
+# 放 secret 是为了日志里打码）。没配齐就跳过，fork 上不报错。可选 LOLINET_NODES_YAML：整份 nodes.yaml，桶名不是
+# nodes.example.yaml 里的 lolinet-dist 时要给。Worker 和探针页面不在这里部署：要真的节点清单和 PROBE_MASTER。
+name: dist
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要同步的 Release tag（lolinet-…、v… 或 lolidesk-…）；空着就只传 install.sh
+        type: string
+        default: ""
+  push:
+    branches: [main]
+    paths: [join/install.sh]
+
+permissions:
+  contents: read
+
+jobs:
+  dist:
+    runs-on: ubuntu-24.04
+    # lolinet、lolidesk、install.sh 各一组，同一组一次只传一版，免得两版的文件交错
+    concurrency:
+      group: dist-${{ startsWith(inputs.tag, 'lolidesk-') && 'lolidesk' || (inputs.tag && 'lolinet' || 'install') }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      LOLINET_BASE_URL: ${{ secrets.LOLINET_BASE_URL }}
+      NODES_YAML: ${{ secrets.LOLINET_NODES_YAML }}
+    steps:
+      - name: Cloudflare secrets
+        id: cf
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && [ -n "$LOLINET_BASE_URL" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::没配 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID / LOLINET_BASE_URL，不同步准入站"
+          fi
+      - uses: actions/checkout@v5
+        if: steps.cf.outputs.ok
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: steps.cf.outputs.ok
+      - name: Node list
+        if: steps.cf.outputs.ok && env.NODES_YAML != ''
+        run: |
+          (umask 077; printf '%s\n' "$NODES_YAML" > "$RUNNER_TEMP/nodes.yaml")
+          echo "LOLINET_NODES=$RUNNER_TEMP/nodes.yaml" >> "$GITHUB_ENV"
+      # 包和 .sha256 先传，清单（lolinet.json / lolidesk.json）最后传：设备看到新清单时，它指的包都已经在了
+      - name: Release files
+        if: steps.cf.outputs.ok && env.TAG != ''
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/out"
+          case $TAG in
+            lolidesk-*) uv run join/deploy.py lolidesk "$RUNNER_TEMP/out" ;;
+            *) uv run join/deploy.py release "$RUNNER_TEMP/out" ;;
+          esac
+      # 准入站上没有四个平台的 lolinet 包和 lolinet.json 时 deploy.py 不传（新脚本装不了），这一步失败
+      - name: install.sh
+        if: steps.cf.outputs.ok && env.TAG == ''
+        run: uv run join/deploy.py install

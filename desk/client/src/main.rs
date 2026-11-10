@@ -14,7 +14,7 @@ use lolidesk_host::HostCmd;
 #[derive(Parser)]
 #[command(
     name = "lolidesk",
-    version,
+    version = lolidesk_proto::BUILD,
     about = "lolidesk：连 lolinet 内网里的电脑（lolidesk <主机>），也让这台电脑能被连（lolidesk host）。图形界面是 Lolidesk.app",
     args_conflicts_with_subcommands = true
 )]
@@ -58,6 +58,21 @@ struct Args {
     tui: bool,
 }
 
+/// 叫成 lolidesk-host 时（2026-11-10 以前的包是两个程序，老的 LaunchAgent 跑 `lolidesk-host run`，
+/// 升级后那个名字是指向 lolidesk 的链接）就是 `lolidesk host …`
+fn argv() -> Vec<std::ffi::OsString> {
+    let mut v: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let legacy = v
+        .first()
+        .and_then(|a| std::path::Path::new(a).file_name())
+        .is_some_and(|n| n == "lolidesk-host");
+    if legacy {
+        v[0] = "lolidesk".into();
+        v.insert(1, "host".into());
+    }
+    v
+}
+
 #[derive(Subcommand)]
 enum Top {
     /// 让这台电脑能被连：run（前台运行，默认）、token、install、uninstall
@@ -68,7 +83,7 @@ enum Top {
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = Args::parse_from(argv());
     if let Some(Top::Host { cmd }) = args.cmd {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -139,7 +154,7 @@ fn main() -> Result<()> {
         addr,
         &token,
         Some(pinned),
-        &format!("lolidesk {}", env!("CARGO_PKG_VERSION")),
+        &format!("lolidesk {}", lolidesk_proto::BUILD),
     ))?;
     hosts.remember(addr, &hex::encode(fp), &token, &client.welcome.host);
     hosts.save()?;

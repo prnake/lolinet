@@ -1,22 +1,24 @@
 # lolidesk（desk/，Rust 工作区）：编 lolidesk（一个程序：lolidesk host 让这台能被连，lolidesk <主机> 连别人），macOS 上再编图形客户端 Lolidesk.app（GPUI，包里也带着 lolidesk）。
-# macOS arm64 / x86_64、Linux x86_64（Linux 只有终端：没有采屏，也不编图形客户端）。
+# 和 lolinet 同样四个平台：macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 只有终端：没有采屏，也不编图形客户端）。
 # 终端两端都用 libghostty-vt（运行时载入），版本钉在 desk/ghostty/libghostty-vt.json，由 desk/scripts/fetch-ghostty.sh 取。
 # 独立发包，不编进 lolinet：lolinet 保持小体积的静态二进制（build.yml 的 Verify 会查）。
 # PR 和 main 上都跑：fmt、clippy、测试、编译，再在回环上实跑终端会话（含主机重启后会话带着历史回来）；产物是 artifact。
-# 在 main 上手动运行并勾 release，就发一个 lolidesk-<版本> 的 GitHub Release。它不能占 latest：
-# 设备按 releases/latest 找 lolinet.json，别的 Release 抢了 latest 会让自动升级找不到清单。
+# 推到 main 编过了就自动发一个 lolidesk-<版本> 的 GitHub Release（带清单 lolidesk.json；这个 tag 已经有了就跳过），
+# 再用 dist.yml 原样同步到准入站 dl/。main 上只改了 .md 不跑，免得发一版内容没变的。在 main 上手动运行并勾 release 也发，用来补发。
+# 它不能占 latest：设备按 releases/latest 找 lolinet.json，别的 Release 抢了 latest 会让自动升级找不到清单。
+# 设备上装了的 lolidesk 由 lolinet upgrade 按 lolidesk.json 更新，比的是 --version：编译时 LOLIDESK_VERSION 设成 git describe。
 name: desk
 
 on:
   push:
     branches: [main]
-    paths: [desk/**, .github/workflows/desk.yml]
+    paths: [desk/**, "!desk/**/*.md", .github/workflows/desk.yml]
   pull_request:
     paths: [desk/**, .github/workflows/desk.yml]
   workflow_dispatch:
     inputs:
       release:
-        description: 发一个 GitHub Release（tag lolidesk-<版本>，不占 latest），只在 main 上生效
+        description: 发一个 GitHub Release（tag lolidesk-<版本>，不占 latest），只在 main 上生效；推到 main 时会自动发
         type: boolean
         default: false
 
@@ -38,6 +40,8 @@ jobs:
           - { name: macos-aarch64, os: macos-15, target: aarch64-apple-darwin, native: true }
           - { name: macos-x86_64, os: macos-15, target: x86_64-apple-darwin, native: false }
           - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, native: true }
+          # GitHub 的 arm64 Linux runner（公开仓库免费），本机编，测试和冒烟测试都跑
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, native: true }
     steps:
       - uses: actions/checkout@v5
       # 采屏库带的 Metal 桥接（Swift）要 macOS 26 SDK；macos-15 镜像默认的 Xcode 16.4 编不过，换镜像里的 Xcode 26
@@ -60,6 +64,7 @@ jobs:
             aarch64-apple-darwin) P=darwin-arm64; LIB=libghostty-vt.dylib ;;
             x86_64-apple-darwin) P=darwin-amd64; LIB=libghostty-vt.dylib ;;
             x86_64-unknown-linux-gnu) P=linux-amd64; LIB=libghostty-vt.so ;;
+            aarch64-unknown-linux-gnu) P=linux-arm64; LIB=libghostty-vt.so ;;
           esac
           sh scripts/fetch-ghostty.sh $P "$PWD/.ghostty"
           echo "GHOSTTY_LIB=$PWD/.ghostty/$LIB" >> "$GITHUB_ENV"
@@ -78,14 +83,14 @@ jobs:
 
       - name: Build
         working-directory: desk
-        run: cargo build --locked --release --workspace --target ${{ matrix.target }}
+        run: LOLIDESK_VERSION=$(git describe --always) cargo build --locked --release --workspace --target ${{ matrix.target }}
 
       # 图形客户端：上面的 cargo build 已经编了 lolidesk-app，这里装成 Lolidesk.app（带 libghostty-vt，ad-hoc 签名）
       - name: App (Lolidesk.app)
         if: runner.os == 'macOS'
         working-directory: desk
         run: |
-          V=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          V=$(git describe --always)
           sh scripts/bundle-app.sh target/${{ matrix.target }}/release/lolidesk-app target/${{ matrix.target }}/release/lolidesk "$GHOSTTY_LIB" app-out "$V"
           du -sh app-out/Lolidesk.app && ls -l app-out/Lolidesk.app/Contents/MacOS app-out/Lolidesk.app/Contents/Frameworks
           echo "APP=app-out/Lolidesk.app" >> "$GITHUB_ENV"
@@ -118,7 +123,10 @@ jobs:
             ${{ matrix.native }} && { ./pkg/lolidesk --version; exit 1; }
             echo "这台 runner 跑不了 ${{ matrix.target }}，跳过"; exit 0
           fi
-          ./pkg/lolidesk --version
+          # --version 要是包的版本（BUILD-INFO 第一行）：lolinet upgrade 靠它判断要不要换
+          [ "$(./pkg/lolidesk --version)" = "lolidesk $(git describe --always)" ] || { ./pkg/lolidesk --version; echo "lolidesk --version 不是 $(git describe --always)"; exit 1; }
+          # 老名字：叫 lolidesk-host 时就是 lolidesk host（老的 LaunchAgent 跑 lolidesk-host run）
+          ln -sf lolidesk pkg/lolidesk-host && ./pkg/lolidesk-host --help | grep -q token && rm pkg/lolidesk-host
           TOKEN=$(./pkg/lolidesk host token | awk '/^token/{print $2}')
           SHELL=/bin/bash ./pkg/lolidesk host run --listen 127.0.0.1:10190 > host.log 2>&1 &
           HOST=$!
@@ -149,12 +157,15 @@ jobs:
           path: desk/lolidesk-*.tar.gz
           if-no-files-found: error
 
+  # 推到 main 自动发；手动运行要勾 release。PR 不发
   release:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -164,16 +175,31 @@ jobs:
           pattern: lolidesk-*
           path: out
           merge-multiple: true
+      # lolidesk.json：四个平台包的 sha256 和版本（BUILD-INFO 第一行），四个都要在、版本一致
+      - name: Manifest
+        run: python3 lolinet/release.py --lolidesk out
       - name: GitHub Release
+        id: release
         run: |
-          # 版本取包里 BUILD-INFO 的第一行（lolidesk <版本>）
-          V=$(tar -xOzf out/lolidesk-linux-x86_64.tar.gz BUILD-INFO | sed -n '1s/^lolidesk //p')
-          [ -n "$V" ] || { echo "BUILD-INFO 里没有版本"; exit 1; }
+          V=$(python3 -c 'import json; print(json.load(open("out/lolidesk.json"))["version"])')
           TAG="lolidesk-$V"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # 同一个提交重跑（或者先手动发过）就不再发；准入站照样再同步一次
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "已经有 ${TAG}，跳过"; exit 0; fi
           (cd out && for f in lolidesk-*.tar.gz; do sha256sum "$f" > "$f.sha256"; done && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
           BEFORE=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
-          gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS --target "$GITHUB_SHA" --latest=false --title "lolidesk $V" \
-            --notes "lolidesk $V：lolidesk（一个程序：lolidesk host 让这台电脑能被连，lolidesk <主机> 连别人）和终端核心 libghostty-vt，macOS 的包里还有图形客户端 Lolidesk.app（ad-hoc 签名，第一次打开要右键 → 打开）。macOS arm64 / x86_64、Linux x86_64（Linux 只有终端）。独立发包，不编进 lolinet。"
+          gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS out/lolidesk.json --target "$GITHUB_SHA" --latest=false --title "lolidesk $V" \
+            --notes "lolidesk ${V}：lolidesk（一个程序：lolidesk host 让这台电脑能被连，lolidesk <主机> 连别人）和终端核心 libghostty-vt，macOS 的包里还有图形客户端 Lolidesk.app（ad-hoc 签名，第一次打开要右键 → 打开）。macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 只有终端）。独立发包，不编进 lolinet。"
           # releases/latest 还得是 lolinet 的那一版
           AFTER=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
           [ "$AFTER" = "$BEFORE" ] || { echo "releases/latest 从 ${BEFORE:-无} 变成了 $AFTER"; exit 1; }
+
+  # 同一版的文件传到准入站 dl/（没配 Cloudflare 的 secret 就跳过，见 dist.yml）
+  dist:
+    needs: release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dist.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    secrets: inherit

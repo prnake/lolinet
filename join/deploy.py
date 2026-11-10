@@ -11,9 +11,12 @@
   uv run join/deploy.py dist <tarball>...   上传 dl/<文件名> 和 dl/<文件名>.sha256
   uv run join/deploy.py release <目录>       目录是一版 GitHub Release 的文件或 build 的产物：传 easytier-* / lolinet-* 包，最后是清单
                                             dl/lolinet.json（lolinet upgrade 按它自动升级，见 lolinet/release.py）
+  uv run join/deploy.py lolidesk <目录>      目录是一版 lolidesk Release 的文件：传 lolidesk-* 包，最后是清单 dl/lolidesk.json
+                                            （install.sh 按它装，lolinet upgrade 按它换）
   uv run join/deploy.py site                上传探针页面（先 cd web && npm run build:probe）到 R2 site/
 
-Cloudflare 凭据：CI 用仓库 secret CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID（最小权限 token），本机用$LOLINET_HOME/.env。
+Cloudflare 凭据：CI（.github/workflows/dist.yml）用仓库 secret CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID（最小权限 token），
+本机用$LOLINET_HOME/.env。
 探针上报主密钥：CI 用仓库 secret PROBE_MASTER，本机用$LOLINET_HOME/state/mesh-probe.json；各 relay 的派生密钥要另外下发到 relay。
 设备的公开探针编在 lolinet 里（lolinet probe），不再单独发 python 版的探针包；dl/ 里以前传的 mesh-probe.tar.gz 留着给旧的 install.sh。
 """
@@ -292,6 +295,18 @@ def main() -> None:
         # 清单最后传：设备看到新清单时，它指的包都已经在了
         put_object("dl/lolinet.json", given.read_bytes() if given.is_file() else (json.dumps(m, indent=1) + "\n").encode(), "application/json")
         print(f"dl/lolinet.json：lolinet {m['version']}")
+    elif cmd == "lolidesk":
+        out = Path(args[0])
+        packages = {f.name: f.read_bytes() for f in sorted(out.glob("lolidesk-*.tar.gz"))}
+        m = lolinet_manifest(packages, "lolidesk")
+        given = out / "lolidesk.json"
+        if given.is_file() and json.loads(given.read_text()) != m:
+            raise SystemExit(f"{given} 和目录里的 lolidesk 包对不上")
+        for name, data in packages.items():
+            put_dist(name, data)
+        # 清单最后传，理由同上
+        put_object("dl/lolidesk.json", given.read_bytes() if given.is_file() else (json.dumps(m, indent=1) + "\n").encode(), "application/json")
+        print(f"dl/lolidesk.json：lolidesk {m['version']}")
     elif cmd == "dist":
         for f in map(Path, args):
             put_dist(f.name, f.read_bytes())

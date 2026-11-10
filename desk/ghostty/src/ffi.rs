@@ -197,8 +197,11 @@ pub fn library_path() -> Result<PathBuf> {
         _ => tried.push(format!("${ENV}（没设）")),
     }
     let mut candidates = Vec::new();
+    // 解开链接：/usr/local/bin/lolidesk 指向 /usr/local/lib/lolidesk/lolidesk，库在后者旁边
+    // （macOS 的 current_exe 给的是启动时的路径，不一定解开过）
     if let Some(dir) = std::env::current_exe()
         .ok()
+        .map(|exe| exe.canonicalize().unwrap_or(exe))
         .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
     {
         candidates.push(dir.join(LIB_NAME));

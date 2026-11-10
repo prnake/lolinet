@@ -27,7 +27,7 @@ The remote desktop follows Vibe42's model and the terminal follows [kero](https:
 
 ### Host
 
-On the machine you want to reach. Join it to lolinet first.
+On the machine you want to reach. Join it to lolinet first. Once a lolidesk release is published, `install.sh` puts `lolidesk` in `/usr/local/lib/lolidesk/` (linked from `/usr/local/bin/lolidesk`) and `lolinet upgrade` keeps it current (see [Distribution](#distribution)). It doesn't start the host. Run these as your own user, not with `sudo`:
 
 ```sh
 lolidesk host token       # prints the token and certificate fingerprint
@@ -44,7 +44,7 @@ lolidesk host uninstall   # macOS: stop and remove it
 | **Listen address** | `host run --listen <addr:port>` overrides it. With no `10.188.0.0/16` address on the machine, the host listens on `0.0.0.0:10190` and only the token protects it |
 | **Terminal core** | `lolidesk` loads `libghostty-vt.dylib` (`.so` on Linux) from beside itself, as the package puts it, or from `../Frameworks` inside the app; `LOLIDESK_GHOSTTY_VT` names another file. Without it the host still serves the desktop, and terminal requests get an error saying so. Programs in a session see `TERM=xterm-256color`, `TERM_PROGRAM=lolidesk` and `LOLIDESK_SESSION=<id>` |
 | **Service** | `host install` / `host uninstall`, macOS only. The LaunchAgent runs `<this binary> host run`; installing again restarts it, and moves it to the binary you ran `install` from. Logs go to `~/Library/Logs/lolidesk/host.log`. On Linux, write your own `systemd --user` unit that runs `lolidesk host run` |
-| **From `lolidesk-host`** | Earlier packages had a separate `lolidesk-host`. After upgrading, run `lolidesk host install` once: it replaces the LaunchAgent, which still points at the old binary. Then delete `lolidesk-host` |
+| **From `lolidesk-host`** | Earlier packages had a separate `lolidesk-host`. Called by that name, `lolidesk` behaves as `lolidesk host`, and `install.sh` and `lolinet upgrade` turn an installed `/usr/local/bin/lolidesk-host` into a link to it, so an existing LaunchAgent keeps starting. Run `lolidesk host install` once to point the LaunchAgent at `lolidesk` itself |
 | **Permissions** | The remote desktop needs two permissions for the `lolidesk` binary the service runs, in System Settings → Privacy & Security: **Screen Recording** (capture) and **Accessibility** (mouse and keyboard injection). Without Screen Recording, the app shows the error under the host; without Accessibility you can watch but not control |
 
 ### Desktop app
@@ -90,18 +90,23 @@ lolidesk ships as its own package and is not built into `lolinet`. `lolinet` sta
 | | |
 | :-- | :-- |
 | **Package** | `lolidesk-<macos\|linux>-<aarch64\|x86_64>.tar.gz`, with `lolidesk`, `libghostty-vt.dylib` (`.so`) and `BUILD-INFO` at the root, and `Lolidesk.app` too in the macOS packages, with its own copy of both in `Contents/Helpers` and `Contents/Frameworks`: the same format as the lolinet package |
+| **Version** | `lolidesk --version` prints the version set in `LOLIDESK_VERSION` at build time. CI sets it to `git describe --always` (the short commit hash), so it matches the first line of `BUILD-INFO` and the manifest's `version`; `lolinet upgrade` compares against it. A local build without it prints the Cargo version |
 | **libghostty-vt** | Pinned by Ghostty commit and SHA-256 in `desk/ghostty/libghostty-vt.json`; `desk/scripts/fetch-ghostty.sh <platform> <dir>` downloads and checks it. The builds are the ones mygo publishes (macOS 13+; Linux with glibc 2.28+) |
-| **CI** | [`desk.yml`](../.github/workflows/desk.yml) builds macOS arm64 / x86_64 (with the app) and Linux x86_64 (terminal only) on pull requests and on `main`, and runs terminal sessions over loopback, including one that has to come back with its history after a host restart |
-| **Release** | Manual: run `desk` on `main` with *release* ticked. It publishes a `lolidesk-<version>` GitHub Release that does not take `latest`, because lolinet's auto-upgrade reads `releases/latest` |
-| **Join site** | `uv run join/deploy.py dist <tarball>…` uploads the same packages (with `.sha256`) to the join site's download area |
+| **CI** | [`desk.yml`](../.github/workflows/desk.yml) builds the same four platforms as lolinet on pull requests and on `main`: macOS arm64 / x86_64 (with the app) and Linux x86_64 / arm64 (terminal only; arm64 builds natively on GitHub's `ubuntu-24.04-arm` runner). It runs terminal sessions over loopback, including one that has to come back with its history after a host restart |
+| **Release** | Automatic: every push to `main` that changes `desk/` (other than `.md` files) publishes a `lolidesk-<version>` GitHub Release once all four builds pass, with the packages, their `.sha256`, `SHA256SUMS` and the manifest `lolidesk.json`. A tag that already exists is skipped, and running `desk` on `main` with *release* ticked publishes again by hand. The release never takes `latest`, because lolinet's auto-upgrade reads `releases/latest` |
+| **Manifest** | `lolidesk.json`, written by `lolinet/release.py --lolidesk`: the same shape as `lolinet.json`, keyed `lolidesk`. See [Release artifacts](reference.md#release-artifacts) |
+| **Join site** | The [`dist`](../.github/workflows/dist.yml) workflow copies each release to the join site's `dl/`, packages first and `lolidesk.json` last, when the repository has the Cloudflare secrets ([Self-hosting](self-hosting.md#7--upgrade-devices)). By hand: `uv run join/deploy.py lolidesk <dir>`, with the release's files in `<dir>` |
+| **Install** | `install.sh` puts `lolidesk` and libghostty-vt in `/usr/local/lib/lolidesk/` and links `/usr/local/bin/lolidesk` to it, both when it pairs a new device and when it upgrades one (`sudo sh` without a code). An older install's `/usr/local/bin/lolidesk-host` becomes a link too: called by that name the program is `lolidesk host`, so an existing LaunchAgent keeps working. It reads `lolidesk.json` from where it got `lolinet`: on GitHub the newest `lolidesk-*` release, found through the GitHub API because these releases don't take `latest`, else the join site's `dl/`. It checks the sha256 and runs the new `lolidesk --version`, which must print the manifest's version. Any problem skips lolidesk and doesn't affect joining. The host service isn't started |
+| **Updates** | `lolinet upgrade`, every 6 hours while auto-upgrade is on, replaces `/usr/local/lib/lolidesk/` when the installed `lolidesk --version` differs from `lolidesk.json` (or when `/usr/local/bin` still holds the old separate binaries). It reads the manifest from the same source as `lolinet.json`: from the same directory for the join site or a manifest URL, from the newest `lolidesk-*` release for a `github:` source. The checks are the same as for `lolinet`: sha256, then a test run that must print the manifest's version. It never installs lolidesk where it isn't, and it never restarts a running host, because terminal sessions live in the host process. A running host keeps the old version until it next starts |
 | **Build on macOS** | Xcode 26 or later (macOS 26 SDK) for the host: the capture library's Metal bridge uses types from the new SDK. `make desk-app` builds the app and bundles it with `desk/scripts/bundle-app.sh` into `desk/app-out/Lolidesk.app`. GPUI comes from the `gpui-pre` snapshot that `gpui-kit` pins; a first build takes a few minutes |
 
-The install script doesn't install lolidesk yet. Download and unpack it by hand for now.
+**macOS permissions after an update.** macOS ties Screen Recording and Accessibility to the binary they were granted to. An updated `lolidesk` is a different binary, and on Apple silicon, where it is ad-hoc signed and identified by its hash, macOS may stop honoring the earlier grants. If the desktop then reports that Screen Recording is missing, or input stops working, remove `lolidesk` from both lists in System Settings → Privacy & Security, add it again, and restart the host (`lolidesk host uninstall && lolidesk host install`). `sudo lolinet up --auto-upgrade off` keeps a machine on its current versions, `lolinet`'s included.
 
 ## Roadmap
 
 - Capture on Linux / Windows hosts (PipeWire / DXGI) and client decoding off macOS. On anything but macOS, both sides are terminal only for now.
 - Remote clipboard sync, file transfer, several displays at once, an application menu, remote unlock.
 - Adaptive bitrate: today the bitrate follows the chosen quality, and congestion only drops frames and asks for a keyframe. FEC.
+- A signed `lolidesk` and `Lolidesk.app` (Developer ID), so macOS keeps its permissions across updates.
 - Resuming agents' conversations after a host restart (Claude Code, Codex and others report their session id through a SessionStart hook, as kero does) and showing each session's status (working, waiting for you, idle) in the sidebar.
 - Kitty graphics in Mirror frames; a GPUI client on Linux.

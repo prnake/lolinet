@@ -120,7 +120,7 @@ async fn control(
                     &ControlResp::Welcome {
                         host: shared.host.clone(),
                         os: std::env::consts::OS.into(),
-                        version: env!("CARGO_PKG_VERSION").into(),
+                        version: proto::BUILD.into(),
                         desktop: desktop::supported(),
                         persistent: shared.sessions.persistent(),
                     },

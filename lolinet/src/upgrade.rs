@@ -1,5 +1,6 @@
 //! 自动升级：按发布清单 lolinet.json 把 /usr/local/bin/lolinet 换成发布的版本（公开探针编在里面，一起换）。
 //! 每次（不管换没换）顺带把探针理一遍：以前 install.sh 装的 python 版接管过来，服务文件跟上这一版。
+//! 装了 lolidesk 的再按 lolidesk.json 换 /usr/local/lib/lolidesk/（lolidesk + libghostty-vt）。
 //!
 //! 清单来源（/etc/lolinet/lolinet.json 的设置，`lolinet up` 写）：
 //! - `source` = `github:<owner>/<repo>`：GitHub Releases 最新一版的 lolinet.json；或者直接是清单 URL；
@@ -10,6 +11,9 @@
 //! 包和清单放在同一个目录（准入站 dl/、GitHub 某个 Release），按清单的地址拼出包的地址。清单的地址只跟「文件名不变」的跳转：
 //! GitHub 的 releases/latest/download/ 先跳到 releases/download/<tag>/（钉在这一版上），再跳到一次性的存储地址，
 //! 后面那个目录里没有别的文件，不能拿来拼。下载用系统 curl，sha256 不对就不换。
+//!
+//! lolidesk 的清单跟着同一个来源：准入站、清单 URL 是 lolinet.json 同目录的 lolidesk.json；GitHub 上 lolidesk 的
+//! Release 不占 releases/latest，问 API 拿最新的 lolidesk-* Release，用它里面的 lolidesk.json。
 
 use std::{
     fs,
@@ -27,6 +31,14 @@ use crate::{BIN, VERSION, probe, service, write_file};
 pub const SETTINGS: &str = "/etc/lolinet/lolinet.json";
 pub const DEFAULT_GITHUB: &str = "prnake/lolinet";
 pub const INTERVAL_HOURS: u64 = 6;
+/// lolidesk 装在这里（程序和 libghostty-vt 放一起，程序在旁边找库），/usr/local/bin/lolidesk 是指过来的链接
+pub const DESK_DIR: &str = "/usr/local/lib/lolidesk";
+const DESK_LINK: &str = "/usr/local/bin/lolidesk";
+/// 2026-11-10 以前的包是两个程序，装在 /usr/local/bin；现在的 lolidesk 被叫成 lolidesk-host 时就是 `lolidesk host`，
+/// 所以老的服务（LaunchAgent 跑 lolidesk-host run）换成指过来的链接照样起得来
+const DESK_LEGACY: [&str; 2] = ["/usr/local/bin/lolidesk-host", "/usr/local/bin/lolidesk"];
+const DESK_LIB: &str = if cfg!(target_os = "macos") { "libghostty-vt.dylib" } else { "libghostty-vt.so" };
+const DESK_MANIFEST: &str = "lolidesk.json";
 
 pub struct Settings {
     pub base_url: Option<String>,
@@ -107,6 +119,24 @@ fn fetch(url: &str, dest: &Path) -> Result<()> {
         bail!("下载 {url} 失败：{}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
+}
+
+/// 和 fetch 一样，只是 404（没发布）返回 false
+fn fetch_if_found(url: &str, dest: &Path) -> Result<bool> {
+    let out = Command::new("curl")
+        .args(["-sSL", "--retry", "2", "--connect-timeout", "20", "--max-time", "60", "-w", "%{http_code}", "-o"])
+        .arg(dest)
+        .arg(url)
+        .output()
+        .context("跑 curl")?;
+    if !out.status.success() {
+        bail!("下载 {url} 失败：{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "200" => Ok(true),
+        "404" => Ok(false),
+        code => bail!("下载 {url} 失败：HTTP {code}"),
+    }
 }
 
 /// 清单的稳定地址：从 url 出发，只跟文件名不变的跳转（最多 5 次）。包和探针的地址从它拼
@@ -193,6 +223,11 @@ pub fn run(check: bool, dry_run: bool, auto: bool, source: Option<String>) -> Re
         }
     }
     let url = source.as_deref().map(source_url).unwrap_or_else(|| st.manifest_url());
+    // 来源是 GitHub 的话是哪个仓库：lolidesk 的清单要问它的 API（见 desk_manifest_url）
+    let github = match source.as_deref().or(st.source.as_deref()) {
+        Some(s) => s.strip_prefix("github:").map(str::to_owned),
+        None => st.base_url.is_none().then(|| DEFAULT_GITHUB.to_owned()),
+    };
     let res = (|| {
         let tmp = Tmp::new()?;
         let m = manifest(&url, &tmp.0)?;
@@ -205,6 +240,7 @@ pub fn run(check: bool, dry_run: bool, auto: bool, source: Option<String>) -> Re
         } else {
             replace(&m, &tmp.0, dry_run, auto)?;
         }
+        desk(&m, github.as_deref(), &tmp.0, check, dry_run, auto)?;
         Ok(())
     })();
     // 公开探针：python 版接管过来、服务文件跟上这一版；和这次下载成不成功无关
@@ -225,6 +261,11 @@ pub fn run(check: bool, dry_run: bool, auto: bool, source: Option<String>) -> Re
 
 fn now() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// 定时任务的输出带时间（进日志），手动跑不带
+fn stamp(auto: bool) -> String {
+    if auto { format!("{} ", now()) } else { String::new() }
 }
 
 fn replace(m: &Manifest, tmp: &Path, dry_run: bool, auto: bool) -> Result<()> {
@@ -254,9 +295,125 @@ fn replace(m: &Manifest, tmp: &Path, dry_run: bool, auto: bool) -> Result<()> {
     service::restart_probe();
     println!(
         "{}lolinet {VERSION} -> {}{}",
-        if auto { format!("{} ", now()) } else { String::new() },
+        stamp(auto),
         m.version,
         if restarted { "，服务已重启" } else { "" }
     );
+    Ok(())
+}
+
+
+/// lolidesk.json 的地址。GitHub：最新的 lolidesk-* Release 里那份（API 按发布时间从新到旧列），没发布过就是 None；
+/// 别的来源（准入站 dl/、清单 URL）：和 lolinet.json 同一个目录
+fn desk_manifest_url(m: &Manifest, github: Option<&str>, tmp: &Path) -> Result<Option<String>> {
+    let Some(repo) = github else {
+        return Ok(Some(sibling(&m.url, DESK_MANIFEST)));
+    };
+    let api = format!("https://api.github.com/repos/{repo}/releases?per_page=30");
+    let path = tmp.join("releases.json");
+    fetch(&api, &path)?;
+    let v: Value = serde_json::from_slice(&fs::read(&path)?).with_context(|| format!("{api} 不是 JSON"))?;
+    let flag = |r: &Value, k: &str| r.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let tag = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| !flag(r, "draft") && !flag(r, "prerelease"))
+        .filter_map(|r| r.get("tag_name").and_then(Value::as_str))
+        .find(|t| t.starts_with("lolidesk-"));
+    Ok(tag.map(|t| format!("https://github.com/{repo}/releases/download/{t}/{DESK_MANIFEST}")))
+}
+
+/// 本机二进制自己报的版本：`<名字> <版本>` 里的版本，跑不起来就是 None
+fn bin_version(path: &str, name: &str) -> Option<String> {
+    let out = Command::new(path).arg("--version").output().ok()?;
+    let shown = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    shown.strip_prefix(&format!("{name} ")).filter(|_| out.status.success()).map(str::to_owned)
+}
+
+/// 装了 lolidesk 才管（没装的不装）：/usr/local/lib/lolidesk/lolidesk，或者老的 /usr/local/bin 下的两个程序。
+/// 版本和 lolidesk.json 不一样就把整个包（lolidesk + libghostty-vt）换进 /usr/local/lib/lolidesk/，
+/// /usr/local/bin 下的 lolidesk、lolidesk-host（老的）换成指过去的链接。
+/// 不重启在跑的主机：终端会话在主机进程里，重启就全断了。换的是文件，主机下次启动才用新版本。
+/// macOS 上换了程序，屏幕录制和辅助功能的授权可能要重新给（授权认的是那个二进制，见 docs/lolidesk.md）。
+fn desk(m: &Manifest, github: Option<&str>, tmp: &Path, check: bool, dry_run: bool, auto: bool) -> Result<()> {
+    let main = format!("{DESK_DIR}/lolidesk");
+    let installed = Path::new(&main).exists() || DESK_LEGACY.iter().any(|p| Path::new(p).exists());
+    if !installed {
+        return Ok(());
+    }
+    let path = tmp.join(DESK_MANIFEST);
+    let url = match desk_manifest_url(m, github, tmp)? {
+        Some(url) if fetch_if_found(&url, &path)? => url,
+        _ => {
+            if !auto {
+                println!("这个来源没有发布 lolidesk，本机的没动");
+            }
+            return Ok(());
+        }
+    };
+    let v: Value = serde_json::from_slice(&fs::read(&path)?).with_context(|| format!("{url} 不是 JSON"))?;
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned).with_context(|| format!("{url} 缺 {k}"));
+    let entry = v.pointer(&format!("/lolidesk/{}", platform())).with_context(|| format!("{url} 里没有 {}", platform()))?;
+    let (version, file, want) = (s(&v, "version")?, s(entry, "file")?, s(entry, "sha256")?);
+    if !file.starts_with("lolidesk-") || file.contains('/') {
+        bail!("{url} 里的包名不对：{file}");
+    }
+    // 要换：新位置没装、版本不对，或者 /usr/local/bin 下还是老的独立程序（不是指过来的链接）
+    let cur = bin_version(&main, "lolidesk");
+    let legacy: Vec<&str> =
+        DESK_LEGACY.iter().copied().filter(|p| fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink())).collect();
+    if cur.as_deref() == Some(version.as_str()) && legacy.is_empty() {
+        if !auto {
+            println!("lolidesk {version} 和发布的一致");
+        }
+        return Ok(());
+    }
+    let was = match (&cur, legacy.is_empty()) {
+        (Some(c), true) => c.clone(),
+        (Some(c), false) => format!("{c}，另有老的 {}", legacy.join("、")),
+        (None, _) => format!("老的 {}", legacy.join("、")),
+    };
+    if check {
+        println!("lolidesk 发布的是 {version}，本机 {was}：sudo lolinet upgrade（{url}）");
+        return Ok(());
+    }
+    let tgz = tmp.join(&file);
+    fetch(&sibling(&url, &file), &tgz)?;
+    let got = sha256(&tgz)?;
+    if got != want {
+        bail!("{file} 的 sha256 不对：{got}，{DESK_MANIFEST} 写的是 {want}");
+    }
+    // 解出来、在本机试跑（它在旁边找 libghostty-vt）、版本和清单一致，才换
+    let stage = tmp.join("lolidesk");
+    let bin = untar(&tgz, &stage, "lolidesk")?;
+    let lib = untar(&tgz, &stage, DESK_LIB)?;
+    if bin_version(&bin.to_string_lossy(), "lolidesk").as_deref() != Some(version.as_str()) {
+        bail!("新的 lolidesk 在本机试跑结果不对，应该是 lolidesk {version}");
+    }
+    if dry_run {
+        println!("lolidesk 可以换成 {version}（{file}，sha256 和试跑都对，--dry-run 没换）");
+        return Ok(());
+    }
+    fs::create_dir_all(DESK_DIR)?;
+    // 先换库再换程序：新程序起来时旁边一定是配套的库
+    write_file(&format!("{DESK_DIR}/{DESK_LIB}"), &fs::read(&lib)?, 0o644)?;
+    write_file(&main, &fs::read(&bin)?, 0o755)?;
+    for link in std::iter::once(DESK_LINK).chain(legacy.iter().copied().filter(|p| *p != DESK_LINK)) {
+        relink(link, &main)?;
+    }
+    println!("{}lolidesk {was} -> {version}（在跑的主机下次启动才用新版本）", stamp(auto));
+    Ok(())
+}
+
+/// link 换成指向 target 的符号链接（先建临时链接再改名）
+fn relink(link: &str, target: &str) -> Result<()> {
+    if fs::read_link(link).ok().as_deref() == Some(Path::new(target)) {
+        return Ok(());
+    }
+    let tmp = format!("{link}.lolinet");
+    let _ = fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(target, &tmp)?;
+    fs::rename(&tmp, link)?;
     Ok(())
 }

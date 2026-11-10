@@ -2,7 +2,7 @@
 # The checks mirror what CI runs (.github/workflows/{build,desk,web}.yml), so they can run locally.
 #
 #   make lolinet        lolinet for this machine → .build/out/lolinet-<os>-<arch>.tar.gz
-#   make desk           lolidesk (host and client in one) → desk/target/release/, libghostty-vt → desk/.ghostty/
+#   make desk           lolidesk (host and client in one) → desk/target/release/ (--version prints git describe, as in CI), libghostty-vt → desk/.ghostty/
 #   make desk-app       Lolidesk.app (macOS, GPUI) → desk/app-out/
 #   make web            local console (web/dist) and public probe page (web/dist-probe)
 #   make check          web + scripts + desk checks
@@ -28,12 +28,13 @@ lolinet:
 # The pinned libghostty-vt for this machine (desk/ghostty/libghostty-vt.json), which the host, the app and the tests load.
 GHOSTTY_PLATFORM := $(shell uname -s | tr A-Z a-z | sed 's/darwin/darwin/')-$(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 GHOSTTY_LIB := $(CURDIR)/desk/.ghostty/libghostty-vt.$(if $(filter darwin-%,$(GHOSTTY_PLATFORM)),dylib,so)
+DESK_VERSION = $$(git describe --always --dirty 2>/dev/null || echo dev)
 
 $(GHOSTTY_LIB):
 	sh desk/scripts/fetch-ghostty.sh $(GHOSTTY_PLATFORM) desk/.ghostty
 
 desk: $(GHOSTTY_LIB)
-	cd desk && cargo build --locked --release --workspace
+	cd desk && LOLIDESK_VERSION=$(DESK_VERSION) cargo build --locked --release --workspace
 
 desk-app: $(GHOSTTY_LIB)
 	cd desk && cargo build --locked --release -p lolidesk-app -p lolidesk

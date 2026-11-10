@@ -35,4 +35,4 @@ pub mod ui;
 pub use ui::app::run;
 
 /// 显示在侧栏底下的版本。
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = lolidesk_proto::BUILD;

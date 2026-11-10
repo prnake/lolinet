@@ -17,6 +17,12 @@ use bytes::Bytes;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub const VERSION: u16 = 2;
+/// 这一版的版本：CI 编译时设 LOLIDESK_VERSION=`git describe --always`（和包里 BUILD-INFO、lolidesk.json 的 version 一致），
+/// `--version` 打印它，lolinet upgrade 拿它和清单比。本地不设就是 Cargo.toml 的版本号
+pub const BUILD: &str = match option_env!("LOLIDESK_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 pub const ALPN: &[u8] = b"lolidesk/1";
 pub const DEFAULT_PORT: u16 = 10190;
 /// 证书是自签的，SNI 固定；客户端靠指纹钉扎（TOFU）认主机。
