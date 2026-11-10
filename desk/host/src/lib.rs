@@ -1,26 +1,22 @@
-//! lolidesk-host：跑在被控电脑上。一个进程持所有终端会话（断线不丢），按需采屏编码。
+//! `lolidesk host`：让这台电脑能被连。一个进程持所有终端会话（断线不丢），按需采屏编码。
 //! 只监听 lolinet overlay 地址（10.188.0.0/16），自签证书 + 共享 token。
+//! 和连别人的客户端是同一个程序 `lolidesk`（desk/client），这里是它的 `host` 子命令。
 
 mod config;
 mod desktop;
 mod input;
+mod launchers;
 mod net;
+mod procinfo;
 mod terminal;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 
-#[derive(Parser)]
-#[command(name = "lolidesk-host", version, about = "lolidesk 主机端")]
-struct Args {
-    #[command(subcommand)]
-    cmd: Option<Cmd>,
-}
-
-#[derive(Subcommand)]
-enum Cmd {
+#[derive(Subcommand, Debug)]
+pub enum HostCmd {
     /// 前台运行（launchd / systemd 调它）
     Run {
         /// 监听地址；默认本机 10.188.0.0/16 的地址:10190，没有就 0.0.0.0:10190
@@ -32,34 +28,30 @@ enum Cmd {
         #[arg(long)]
         reset: bool,
     },
-    /// macOS：装成当前用户的 LaunchAgent（屏幕录制 / 辅助功能权限跟着这个二进制走）
+    /// macOS：装成当前用户的 LaunchAgent 并启动（屏幕录制 / 辅助功能权限跟着这个二进制走）；再装一次就是重启
     Install,
+    /// macOS：停掉并撤掉 LaunchAgent
     Uninstall,
 }
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
-        )
-        .init();
-    let args = Args::parse();
-    match args.cmd.unwrap_or(Cmd::Run { listen: None }) {
-        Cmd::Run { listen } => {
+/// 跑一个 `host` 子命令；不给子命令就是前台运行。日志由调用方初始化。
+pub fn main(cmd: Option<HostCmd>) -> Result<()> {
+    match cmd.unwrap_or(HostCmd::Run { listen: None }) {
+        HostCmd::Run { listen } => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
             rt.block_on(run(listen))
         }
-        Cmd::Token { reset } => {
+        HostCmd::Token { reset } => {
             let cfg = config::HostConfig::load_or_create(reset)?;
             println!("token      {}", cfg.token);
             println!("指纹       {}", cfg.fingerprint_hex());
             println!("目录       {}", cfg.dir.display());
             Ok(())
         }
-        Cmd::Install => config::install_launch_agent(),
-        Cmd::Uninstall => config::uninstall_launch_agent(),
+        HostCmd::Install => config::install_launch_agent(),
+        HostCmd::Uninstall => config::uninstall_launch_agent(),
     }
 }
 
@@ -78,8 +70,37 @@ async fn run(listen: Option<SocketAddr>) -> Result<()> {
         %addr,
         fingerprint = %cfg.fingerprint_hex(),
         desktop = desktop::supported(),
-        "lolidesk-host 已启动"
+        "lolidesk 主机已启动"
     );
     let shared = net::Shared::new(cfg.token.clone());
-    net::serve(endpoint, shared).await
+    let sessions = shared.sessions.clone();
+    let listener = endpoint.clone();
+    tokio::select! {
+        r = net::serve(listener, shared) => r,
+        _ = shutdown() => {
+            // launchd 停服务、升级时发 SIGTERM：先把会话存全，重启后回放
+            tracing::info!("收到退出信号，存下会话");
+            tokio::task::spawn_blocking(move || sessions.save(true)).await?;
+            // 告诉客户端连接关了（不发的话，它们要等空闲超时才发现），它们会马上开始重连
+            endpoint.close(0u32.into(), b"restart");
+            let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
+            Ok(())
+        }
+    }
+}
+
+/// 等 SIGTERM 或 Ctrl-C。
+async fn shutdown() {
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = term => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
 }

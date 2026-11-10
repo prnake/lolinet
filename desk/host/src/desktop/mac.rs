@@ -19,7 +19,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use lolidesk_proto::{DisplayInfo, Quality, VideoFrame};
+use lolidesk_proto::{bitrate, target_size, DisplayInfo, VideoFrame};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
@@ -45,18 +45,22 @@ use screencapturekit::prelude::*;
 use screencapturekit::stream::configuration::PixelFormat;
 use tokio::sync::mpsc::Sender;
 
-use super::{bitrate, target_size, CaptureConfig};
+use super::{clamp_fps, Actual, CaptureConfig};
 
 type OSStatus = i32;
 
-fn pixel_size(id: u32, points: (u32, u32)) -> (u32, u32) {
+/// 显示器的原生像素和刷新率（Hz，不知道是 0）。
+fn display_mode(id: u32, points: (u32, u32)) -> ((u32, u32), u16) {
     unsafe {
         match CGDisplayCopyDisplayMode(id) {
             Some(m) => (
-                CGDisplayMode::pixel_width(Some(&m)) as u32,
-                CGDisplayMode::pixel_height(Some(&m)) as u32,
+                (
+                    CGDisplayMode::pixel_width(Some(&m)) as u32,
+                    CGDisplayMode::pixel_height(Some(&m)) as u32,
+                ),
+                CGDisplayMode::refresh_rate(Some(&m)).round() as u16,
             ),
-            None => points,
+            None => (points, 0),
         }
     }
 }
@@ -66,7 +70,7 @@ fn ensure_permission() -> Result<()> {
         return Ok(());
     }
     unsafe { CGRequestScreenCaptureAccess() };
-    bail!("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾上 lolidesk-host（或启动它的终端），然后重启服务")
+    bail!("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾上 lolidesk（或启动它的终端），然后重启服务（lolidesk host install）")
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
@@ -78,16 +82,31 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
         .into_iter()
         .map(|d| {
             let id = d.display_id();
-            let (w, h) = pixel_size(id, (d.width(), d.height()));
+            let ((w, h), refresh) = display_mode(id, (d.width(), d.height()));
+            // 内建屏的刷新率是 0（ProMotion 可变刷新），按 120 报
+            let refresh = if refresh == 0 && builtin(id) {
+                120
+            } else {
+                refresh
+            };
             DisplayInfo {
                 id,
                 width: w,
                 height: h,
+                refresh,
                 primary: id == main,
-                name: format!("显示器 {id} · {w}×{h}"),
+                name: if builtin(id) {
+                    "内建显示器".into()
+                } else {
+                    format!("显示器 {id}")
+                },
             }
         })
         .collect())
+}
+
+fn builtin(id: u32) -> bool {
+    unsafe { objc2_core_graphics::CGDisplayIsBuiltin(id) }
 }
 
 /// VTCompressionSession 是线程安全的 CoreFoundation 对象，objc2 的绑定没标 Send/Sync，这里包一层。
@@ -104,10 +123,11 @@ impl std::ops::Deref for Session {
 
 struct Inner {
     tx: Sender<Vec<u8>>,
-    force_key: AtomicBool,
+    force_key: Arc<AtomicBool>,
     frames: AtomicU64,
     fps: u32,
     size: (u32, u32),
+    bitrate: u32,
     params: Mutex<Option<(Vec<u8>, Vec<u8>)>>,
     session: Mutex<Option<Session>>,
 }
@@ -120,7 +140,7 @@ impl Inner {
         }
     }
 
-    fn create_session(&self, quality: Quality, low_latency: bool) -> Result<Session> {
+    fn create_session(&self, low_latency: bool) -> Result<Session> {
         let (w, h) = self.size;
         let yes: &CFType = CFBoolean::new(true);
         let no: &CFType = CFBoolean::new(false);
@@ -160,7 +180,7 @@ impl Inner {
         }
         let session =
             Session(unsafe { CFRetained::from_raw(NonNull::new(out).context("空 session")?) });
-        let br = bitrate(quality, w, h) as i32;
+        let br = self.bitrate as i32;
         unsafe {
             Self::set_prop(&session, kVTCompressionPropertyKey_RealTime, yes);
             Self::set_prop(
@@ -368,8 +388,15 @@ impl Capture {
             .into_iter()
             .find(|d| d.display_id() == cfg.display)
             .with_context(|| format!("没有显示器 {}", cfg.display))?;
-        let (pw, ph) = pixel_size(cfg.display, (display.width(), display.height()));
-        let (w, h) = target_size(cfg.quality, pw, ph);
+        let ((pw, ph), refresh) = display_mode(cfg.display, (display.width(), display.height()));
+        let refresh = if refresh == 0 && builtin(cfg.display) {
+            120
+        } else {
+            refresh
+        };
+        let (w, h) = target_size(cfg.video.long_edge, pw, ph);
+        let fps = clamp_fps(cfg.video.fps, refresh);
+        let br = bitrate(cfg.video.quality, w, h, fps);
         let filter = SCContentFilter::create()
             .with_display(&display)
             .with_excluding_windows(&[])
@@ -379,23 +406,25 @@ impl Capture {
             .with_width(w)
             .with_height(h)
             .with_pixel_format(PixelFormat::BGRA)
-            .with_fps(cfg.fps as u32)
+            .with_fps(fps as u32)
             .with_queue_depth(3)
             .with_shows_cursor(false);
+        cfg.force_key.store(true, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             tx,
-            force_key: AtomicBool::new(true),
+            force_key: cfg.force_key.clone(),
             frames: AtomicU64::new(0),
-            fps: cfg.fps as u32,
+            fps: fps as u32,
             size: (w, h),
+            bitrate: br,
             params: Mutex::new(None),
             session: Mutex::new(None),
         });
-        let session = match inner.create_session(cfg.quality, true) {
+        let session = match inner.create_session(true) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("低延迟编码器不可用（{e:#}），退回普通硬件编码器");
-                inner.create_session(cfg.quality, false)?
+                inner.create_session(false)?
             }
         };
         *inner.session.lock().unwrap() = Some(session);
@@ -410,29 +439,12 @@ impl Capture {
         })
     }
 
-    pub fn size(&self) -> (u32, u32) {
-        self.inner.size
-    }
-
-    pub fn request_keyframe(&self) {
-        self.inner.force_key.store(true, Ordering::Relaxed);
-    }
-
-    /// 第一版只换码率（尺寸不变）：重建编码器，下一帧是关键帧。
-    pub fn set_quality(&self, q: Quality) {
-        match self
-            .inner
-            .create_session(q, true)
-            .or_else(|_| self.inner.create_session(q, false))
-        {
-            Ok(s) => {
-                let old = self.inner.session.lock().unwrap().replace(s);
-                if let Some(old) = old {
-                    unsafe { old.invalidate() };
-                }
-                self.inner.force_key.store(true, Ordering::Relaxed);
-            }
-            Err(e) => tracing::warn!("换画质失败：{e:#}"),
+    pub fn actual(&self) -> Actual {
+        Actual {
+            width: self.inner.size.0,
+            height: self.inner.size.1,
+            fps: self.inner.fps as u8,
+            bitrate: self.inner.bitrate,
         }
     }
 

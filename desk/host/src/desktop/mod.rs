@@ -1,16 +1,28 @@
 //! 远程桌面采集 + 编码。macOS：ScreenCaptureKit → VideoToolbox 硬件 H.264。其他平台先不支持。
 
-use lolidesk_proto::Quality;
+use std::sync::{atomic::AtomicBool, Arc};
+
+use lolidesk_proto::VideoSettings;
 
 #[cfg(target_os = "macos")]
 mod mac;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct CaptureConfig {
     pub display: u32,
-    pub quality: Quality,
+    pub video: VideoSettings,
+    /// 置 true 时下一帧编成关键帧（客户端请求、发送端丢了帧都会置）。
+    pub force_key: Arc<AtomicBool>,
+}
+
+/// 采集实际用上的参数（按显示器收紧过）。
+#[derive(Debug, Clone, Copy)]
+pub struct Actual {
+    pub width: u32,
+    pub height: u32,
     pub fps: u8,
+    pub bitrate: u32,
 }
 
 pub fn supported() -> bool {
@@ -31,11 +43,14 @@ impl Capture {
     ) -> anyhow::Result<Self> {
         anyhow::bail!("这个平台还不支持远程桌面")
     }
-    pub fn size(&self) -> (u32, u32) {
-        (0, 0)
+    pub fn actual(&self) -> Actual {
+        Actual {
+            width: 0,
+            height: 0,
+            fps: 0,
+            bitrate: 0,
+        }
     }
-    pub fn request_keyframe(&self) {}
-    pub fn set_quality(&self, _q: Quality) {}
     pub fn stop(self) {}
 }
 
@@ -44,28 +59,22 @@ pub fn list_displays() -> anyhow::Result<Vec<lolidesk_proto::DisplayInfo>> {
     anyhow::bail!("这个平台还不支持远程桌面")
 }
 
-/// 按画质档位算编码尺寸（偶数、保持比例）。
+/// 帧率夹在 1 到显示器刷新率之间（刷新率不知道就按 120 算）。
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn target_size(quality: Quality, px_w: u32, px_h: u32) -> (u32, u32) {
-    let long = px_w.max(px_h).max(1);
-    let cap = match quality {
-        Quality::Smooth => 1280,
-        Quality::Balanced => 1920,
-        Quality::Sharp => 3840,
-    };
-    let scale = (cap as f64 / long as f64).min(1.0);
-    let even = |v: f64| ((v.round() as u32) & !1).max(2);
-    (even(px_w as f64 * scale), even(px_h as f64 * scale))
+pub fn clamp_fps(want: u8, refresh: u16) -> u8 {
+    let top = if refresh == 0 { 120 } else { refresh.min(240) };
+    want.clamp(1, top.min(u8::MAX as u16) as u8)
 }
 
-/// 码率（bit/s）：按像素数和档位。1080p 大致 Smooth 4 Mbps / Balanced 10 / Sharp 24。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn bitrate(quality: Quality, w: u32, h: u32) -> u32 {
-    let px = (w * h) as f64 / (1920.0 * 1080.0);
-    let base = match quality {
-        Quality::Smooth => 4.0e6,
-        Quality::Balanced => 10.0e6,
-        Quality::Sharp => 24.0e6,
-    };
-    (base * px.max(0.25)).clamp(1.0e6, 80.0e6) as u32
+#[cfg(test)]
+mod tests {
+    use super::clamp_fps;
+
+    #[test]
+    fn fps_follows_refresh() {
+        assert_eq!(clamp_fps(60, 0), 60);
+        assert_eq!(clamp_fps(120, 60), 60);
+        assert_eq!(clamp_fps(0, 60), 1);
+        assert_eq!(clamp_fps(120, 120), 120);
+    }
 }

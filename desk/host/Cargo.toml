@@ -3,7 +3,7 @@ name = "lolidesk-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "lolidesk 主机端：PTY 终端会话 + 远程桌面（ScreenCaptureKit → VideoToolbox → QUIC）"
+description = "lolidesk 的主机部分（`lolidesk host`）：终端会话（PTY + libghostty-vt）+ 远程桌面（ScreenCaptureKit → VideoToolbox → QUIC）"
 
 [dependencies]
 lolidesk-proto.workspace = true
@@ -12,7 +12,6 @@ bytes.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 quinn.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
@@ -21,7 +20,10 @@ sha2.workspace = true
 hex.workspace = true
 rand.workspace = true
 dirs.workspace = true
-alacritty_terminal.workspace = true
+lolidesk-ghostty.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 portable-pty = "0.9"
 if-addrs = "0.13"
 
@@ -31,4 +33,4 @@ objc2-core-foundation = { version = "0.3.2", features = ["CFDictionary", "CFStri
 objc2-core-media = "0.3.2"
 objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer", "CVReturn", "CVBase"] }
 objc2-video-toolbox = { version = "0.3.2", features = ["VTCompressionSession", "VTCompressionProperties", "VTErrors", "VTBase", "VTSession", "objc2-core-media", "objc2-core-video"] }
-objc2-core-graphics = { version = "0.3.2", features = ["CGEvent", "CGEventTypes", "CGEventSource", "CGDirectDisplay", "CGRemoteOperation", "CGGeometry", "CGWindow"] }
+objc2-core-graphics = { version = "0.3.2", features = ["CGEvent", "CGEventTypes", "CGEventSource", "CGDirectDisplay", "CGDisplayConfiguration", "CGRemoteOperation", "CGGeometry", "CGWindow"] }

@@ -1,18 +1,18 @@
 //! QUIC 服务：每条连接先在控制流上 Hello 过 token，之后终端流 / 桌面流各开各的。
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
 use anyhow::{bail, Context, Result};
 use lolidesk_proto::{
-    self as proto, ControlReq, ControlResp, DeskEvent, DeskReq, Frag, StreamKind, TermEvent,
-    TermReq, FRAG_KEY,
+    self as proto, ControlReq, ControlResp, DeskEvent, DeskInput, DeskReq, Frag, StreamKind,
+    TermEvent, TermReq, VideoSettings, FRAG_KEY,
 };
 use quinn::{Connection, RecvStream, SendStream};
 
-use crate::{config, desktop, input, terminal::Sessions};
+use crate::{config, desktop, input, launchers, terminal::Sessions};
 
 pub struct Shared {
     token: String,
@@ -25,7 +25,7 @@ impl Shared {
         Arc::new(Self {
             token,
             host: config::hostname(),
-            sessions: Sessions::default(),
+            sessions: Sessions::new(config::config_dir().join("sessions")),
         })
     }
 }
@@ -122,6 +122,7 @@ async fn control(
                         os: std::env::consts::OS.into(),
                         version: env!("CARGO_PKG_VERSION").into(),
                         desktop: desktop::supported(),
+                        persistent: shared.sessions.persistent(),
                     },
                 )
                 .await?;
@@ -137,7 +138,13 @@ async fn control(
                 proto::send(send, &resp).await?;
             }
             ControlReq::ListSessions => {
-                proto::send(send, &ControlResp::Sessions(shared.sessions.list())).await?;
+                let sessions = shared.sessions.clone();
+                let list = tokio::task::spawn_blocking(move || sessions.list()).await?;
+                proto::send(send, &ControlResp::Sessions(list)).await?;
+            }
+            ControlReq::ListLaunchers => {
+                let list = tokio::task::spawn_blocking(launchers::list).await?;
+                proto::send(send, &ControlResp::Launchers(list)).await?;
             }
         }
     }
@@ -155,46 +162,40 @@ async fn terminal(mut send: SendStream, mut recv: RecvStream, shared: &Shared) -
     let first = proto::recv::<TermReq>(&mut recv)
         .await?
         .context("终端流没发 Open/Attach 就关了")?;
-    let session = match first {
-        TermReq::Open {
-            cols,
-            rows,
-            command,
-            cwd,
-        } => shared.sessions.open(cols, rows, command, cwd)?,
-        TermReq::Attach { id, cols, rows } => {
-            let s = shared
-                .sessions
-                .get(id)
-                .with_context(|| format!("会话 {id} 不存在"))?;
-            s.resize(cols, rows);
-            s
+    let opened = match first {
+        TermReq::Open { size, command, cwd } => {
+            let sessions = shared.sessions.clone();
+            tokio::task::spawn_blocking(move || sessions.open(size, command, cwd))
+                .await?
+                .map(|s| (s, size))
         }
-        other => bail!("终端流第一条必须是 Open/Attach，收到 {other:?}"),
+        TermReq::Attach { id, size } => shared
+            .sessions
+            .get(id)
+            .map(|s| (s, size))
+            .with_context(|| format!("会话 {id} 不存在（可能已经结束了）")),
+        other => Err(anyhow::anyhow!(
+            "终端流第一条必须是 Open/Attach，收到 {other:?}"
+        )),
+    };
+    let (session, size) = match opened {
+        Ok(v) => v,
+        Err(e) => {
+            // 说清楚为什么开不了，再关流
+            let _ = proto::send(&mut send, &TermEvent::Error(format!("{e:#}"))).await;
+            let _ = send.finish();
+            return Err(e);
+        }
     };
     proto::send(&mut send, &TermEvent::Opened { id: session.id }).await?;
-    let (mut rx, snap) = session.attach();
-    proto::send(&mut send, &snap).await?;
-    session.viewers.fetch_add(1, Ordering::Relaxed);
 
+    // 会话往这个队列里放帧和事件，这里按顺序发出去；队列满了会话会断开这个客户端（它重接从第一帧开始）
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<TermEvent>(crate::terminal::VIEWER_QUEUE);
+    let viewer = session.attach(tx, size);
     let fwd = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    let exit = matches!(ev, TermEvent::Exited(_));
-                    if proto::send(&mut send, &ev).await.is_err() || exit {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(n, "观看者落后，丢输出");
-                    let _ = proto::send(
-                        &mut send,
-                        &TermEvent::Error(format!("丢了 {n} 段输出，请重新接入")),
-                    )
-                    .await;
-                }
-                Err(_) => break,
+        while let Some(ev) = rx.recv().await {
+            if proto::send(&mut send, &ev).await.is_err() {
+                break;
             }
         }
         let _ = send.finish();
@@ -203,8 +204,10 @@ async fn terminal(mut send: SendStream, mut recv: RecvStream, shared: &Shared) -
     let result: Result<()> = async {
         while let Some(req) = proto::recv::<TermReq>(&mut recv).await? {
             match req {
-                TermReq::Input(i) => session.write(&session.encode_input(&i)),
-                TermReq::Resize { cols, rows } => session.resize(cols, rows),
+                TermReq::Input(bytes) => session.input(viewer, &bytes),
+                TermReq::Resize(size) => session.ask(viewer, size),
+                TermReq::Claim => session.claim(viewer),
+                TermReq::Clear(what) => session.clear(what),
                 TermReq::Kill => session.kill(),
                 TermReq::Open { .. } | TermReq::Attach { .. } => bail!("已经接上了"),
             }
@@ -212,8 +215,9 @@ async fn terminal(mut send: SendStream, mut recv: RecvStream, shared: &Shared) -
         Ok(())
     }
     .await;
-    session.viewers.fetch_sub(1, Ordering::Relaxed);
-    fwd.abort();
+    session.detach(viewer);
+    // 等已经排着的帧发完（会话那头丢了发送端，队列就会结束）
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), fwd).await;
     result
 }
 
@@ -223,65 +227,48 @@ async fn desktop_stream(
     conn: Connection,
 ) -> Result<()> {
     let mut capture: Option<desktop::Capture> = None;
-    let mut sender: Option<tokio::task::JoinHandle<()>> = None;
+    let mut display = 0u32;
     let mut injector: Option<input::Injector> = None;
+    // 发送任务只有一个，跨重开采集复用；采集只管往 tx 里塞编好的帧
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    let dropped = Arc::new(AtomicU64::new(0));
+    let force_key = Arc::new(AtomicBool::new(true));
+    let sender = tokio::spawn(send_frames(
+        conn.clone(),
+        rx,
+        dropped.clone(),
+        force_key.clone(),
+    ));
     let result: Result<()> = async {
         while let Some(req) = proto::recv::<DeskReq>(&mut recv).await? {
             match req {
-                DeskReq::Start {
-                    display: display_id,
-                    quality,
-                    max_fps,
-                } => {
-                    let display = display_id;
+                DeskReq::Start { display: id, video } => {
                     if capture.is_some() {
                         proto::send(&mut send, &DeskEvent::Error("已经在推了".into())).await?;
                         continue;
                     }
-                    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
-                    match desktop::Capture::start(
-                        desktop::CaptureConfig {
-                            display,
-                            quality,
-                            fps: max_fps.clamp(5, 60),
-                        },
-                        tx,
-                    ) {
-                        Ok(c) => {
-                            let (w, h) = c.size();
-                            proto::send(
-                                &mut send,
-                                &DeskEvent::Ready {
-                                    width: w,
-                                    height: h,
-                                },
-                            )
-                            .await?;
-                            sender = Some(tokio::spawn(send_frames(conn.clone(), rx)));
+                    display = id;
+                    match start_capture(display, video, &force_key, tx.clone(), &mut send).await? {
+                        Some(c) => {
                             injector = Some(input::Injector::new(display));
                             capture = Some(c);
-                            tracing::info!(display_id, ?quality, max_fps, w, h, "远程桌面开始");
                         }
-                        Err(e) => {
-                            tracing::warn!("采屏失败：{e:#}");
-                            proto::send(&mut send, &DeskEvent::Error(format!("{e:#}"))).await?;
-                        }
+                        None => continue,
                     }
+                }
+                DeskReq::Configure(video) => {
+                    let Some(old) = capture.take() else {
+                        continue;
+                    };
+                    old.stop();
+                    capture =
+                        start_capture(display, video, &force_key, tx.clone(), &mut send).await?;
                 }
                 DeskReq::Stop => break,
-                DeskReq::Keyframe => {
-                    if let Some(c) = &capture {
-                        c.request_keyframe();
-                    }
-                }
-                DeskReq::Quality(q) => {
-                    if let Some(c) = &capture {
-                        c.set_quality(q);
-                    }
-                }
+                DeskReq::Keyframe => force_key.store(true, Ordering::Relaxed),
                 DeskReq::Input(i) => {
-                    if let Some(inj) = &mut injector {
-                        inj.apply(&i);
+                    if let Some(inj) = &injector {
+                        inj.apply(i);
                     }
                 }
             }
@@ -292,18 +279,78 @@ async fn desktop_stream(
     if let Some(c) = capture.take() {
         c.stop();
     }
-    if let Some(s) = sender.take() {
-        s.abort();
+    if let Some(inj) = injector.take() {
+        inj.apply(DeskInput::ReleaseAll);
     }
+    sender.abort();
     let _ = proto::send(&mut send, &DeskEvent::Stopped("结束".into())).await;
-    tracing::info!("远程桌面结束");
+    tracing::info!(dropped = dropped.load(Ordering::Relaxed), "远程桌面结束");
     result
 }
 
-/// 一帧切成若干 datagram。来不及发就整帧丢（datagram 本来就不保证到达，客户端丢了会要关键帧）。
-async fn send_frames(conn: Connection, mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>) {
+/// 开采集，成功就回 Ready（实际参数），失败回 Error。
+async fn start_capture(
+    display: u32,
+    video: VideoSettings,
+    force_key: &Arc<AtomicBool>,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    send: &mut SendStream,
+) -> Result<Option<desktop::Capture>> {
+    let cfg = desktop::CaptureConfig {
+        display,
+        video,
+        force_key: force_key.clone(),
+    };
+    let started = tokio::task::spawn_blocking(move || desktop::Capture::start(cfg, tx)).await?;
+    match started {
+        Ok(c) => {
+            let a = c.actual();
+            let display_id = display;
+            tracing::info!(
+                display_id,
+                ?video,
+                w = a.width,
+                h = a.height,
+                fps = a.fps,
+                bitrate = a.bitrate,
+                "远程桌面开始"
+            );
+            proto::send(
+                send,
+                &DeskEvent::Ready {
+                    width: a.width,
+                    height: a.height,
+                    fps: a.fps,
+                    bitrate: a.bitrate,
+                },
+            )
+            .await?;
+            Ok(Some(c))
+        }
+        Err(e) => {
+            tracing::warn!("采屏失败：{e:#}");
+            proto::send(send, &DeskEvent::Error(format!("{e:#}"))).await?;
+            Ok(None)
+        }
+    }
+}
+
+/// 一帧切成若干 datagram。发送缓冲放不下整帧就整帧丢（发一半等于白发），
+/// 然后跳过后面的差分帧、让编码器出关键帧：差分帧缺了参考，发过去也解不出来。
+async fn send_frames(
+    conn: Connection,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    dropped: Arc<AtomicU64>,
+    force_key: Arc<AtomicBool>,
+) {
     let mut frame_id: u32 = 0;
+    let mut skipping = false;
     while let Some(frame) = rx.recv().await {
+        let key = frame.first().is_some_and(|b| *b != 0);
+        if skipping && !key {
+            continue;
+        }
+        skipping = false;
         frame_id = frame_id.wrapping_add(1);
         let Some(max) = conn.max_datagram_size() else {
             continue;
@@ -314,7 +361,12 @@ async fn send_frames(conn: Connection, mut rx: tokio::sync::mpsc::Receiver<Vec<u
             tracing::warn!(len = frame.len(), "帧太大，丢弃");
             continue;
         }
-        let key = frame.first().is_some_and(|b| *b != 0);
+        if conn.datagram_send_buffer_space() < frame.len() + count * (proto::FRAG_HDR + 8) {
+            dropped.fetch_add(1, Ordering::Relaxed);
+            skipping = true;
+            force_key.store(true, Ordering::Relaxed);
+            continue;
+        }
         for (i, chunk) in frame.chunks(payload).enumerate() {
             let mut d = Vec::with_capacity(proto::FRAG_HDR + chunk.len());
             Frag {

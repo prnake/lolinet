@@ -1,37 +1,40 @@
-//! lolidesk：连 lolinet 内网里的 lolidesk-host。默认开 GUI（终端 + 远程桌面），`--tui` 在当前终端里接会话。
+//! lolidesk：一个程序两种用法，每台电脑都一样。
+//! - `lolidesk host …`：让这台电脑能被连（终端会话 + 远程桌面），见 desk/host；
+//! - `lolidesk <主机>`：在当前终端里接别的电脑上的会话（TUI），或者列出会话、显示器、agent。
+//!
+//! 图形界面（终端 + 远程桌面）是 Lolidesk.app（desk/app），它的包里也带着这个程序。
 
-mod config;
-mod decode;
-mod gui;
-mod net;
-mod term;
 mod tui;
 
-use std::net::{SocketAddr, ToSocketAddrs};
-
 use anyhow::{bail, Context, Result};
-use clap::Parser;
-use lolidesk_proto::Quality;
+use clap::{Parser, Subcommand};
+use lolidesk_core::{hosts::Hosts, net};
+use lolidesk_host::HostCmd;
 
 #[derive(Parser)]
-#[command(name = "lolidesk", version, about = "lolidesk 客户端")]
+#[command(
+    name = "lolidesk",
+    version,
+    about = "lolidesk：连 lolinet 内网里的电脑（lolidesk <主机>），也让这台电脑能被连（lolidesk host）。图形界面是 Lolidesk.app",
+    args_conflicts_with_subcommands = true
+)]
 struct Args {
-    /// 主机：overlay 地址或主机名，可带端口（默认 10190）
+    #[command(subcommand)]
+    cmd: Option<Top>,
+    /// 要连的主机：overlay 地址或主机名，可带端口（默认 10190）
     host: Option<String>,
-    /// 主机上 `lolidesk-host token` 打印的 token；第一次连要给，之后记住
+    /// 主机上 `lolidesk host token` 打印的 token；第一次连要给，之后记住
     #[arg(short, long)]
     token: Option<String>,
-    /// 在当前终端里接会话（不开窗口）
-    #[arg(long)]
-    tui: bool,
     /// 接到已有会话；不给就新开一个
     #[arg(short, long)]
     session: Option<u32>,
-    /// 开远程桌面并连到这个显示器（0 = 主显示器）
-    #[arg(short, long)]
-    desktop: Option<u32>,
-    #[arg(short, long, value_enum, default_value_t = QualityArg::Balanced)]
-    quality: QualityArg,
+    /// 新开会话时跑的命令（比如 claude、codex），在登录 shell 里跑，退出后留在 shell
+    #[arg(short, long, conflicts_with = "session")]
+    command: Option<String>,
+    /// 新开会话的工作目录
+    #[arg(long, conflicts_with = "session")]
+    cwd: Option<String>,
     /// 不询问直接信任新主机的证书指纹
     #[arg(short = 'y', long)]
     yes: bool,
@@ -41,52 +44,56 @@ struct Args {
     /// 忘掉一台主机（指纹和 token）
     #[arg(long)]
     forget: Option<String>,
-    /// 只列出主机上的会话，不开窗口
+    /// 只列出主机上的会话
     #[arg(long)]
     sessions: bool,
-    /// 只列出主机上的显示器（顺便检查屏幕录制权限），不开窗口
+    /// 只列出主机上的显示器（顺便检查屏幕录制权限）
     #[arg(long)]
     displays: bool,
+    /// 只列出主机上找得到的 agent
+    #[arg(long)]
+    launchers: bool,
+    /// 旧版本的参数：现在默认就是在当前终端里接会话
+    #[arg(long, hide = true)]
+    tui: bool,
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum QualityArg {
-    Smooth,
-    Balanced,
-    Sharp,
-}
-
-impl From<QualityArg> for Quality {
-    fn from(q: QualityArg) -> Self {
-        match q {
-            QualityArg::Smooth => Quality::Smooth,
-            QualityArg::Balanced => Quality::Balanced,
-            QualityArg::Sharp => Quality::Sharp,
-        }
-    }
+#[derive(Subcommand)]
+enum Top {
+    /// 让这台电脑能被连：run（前台运行，默认）、token、install、uninstall
+    Host {
+        #[command(subcommand)]
+        cmd: Option<HostCmd>,
+    },
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let gui = !args.tui;
-    // GUI 时日志别往 stderr 刷太多；TUI 时 stderr 会污染屏幕，只留 warn
-    let level = if gui { "info" } else { "warn" };
+    if let Some(Top::Host { cmd }) = args.cmd {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+            )
+            .init();
+        return lolidesk_host::main(cmd);
+    }
+    // stderr 会混进终端画面，只留 warn
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive(level.parse()?),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("warn".parse()?),
         )
         .with_writer(std::io::stderr)
         .init();
 
     if args.list {
-        for h in config::Hosts::load()?.list() {
-            println!("{}\t{}", h.addr, h.fingerprint);
+        for h in Hosts::load()?.list() {
+            println!("{}\t{}\t{}", h.addr, h.name, h.fingerprint);
         }
         return Ok(());
     }
     if let Some(h) = &args.forget {
-        let mut hosts = config::Hosts::load()?;
-        let addr = resolve(h)?;
+        let mut hosts = Hosts::load()?;
+        let addr = net::resolve(h)?;
         hosts.forget(&addr);
         hosts.save()?;
         println!("已忘掉 {addr}");
@@ -95,58 +102,79 @@ fn main() -> Result<()> {
     let host = args
         .host
         .clone()
-        .context("要连哪台？lolidesk <overlay 地址[:端口]>")?;
-    let addr = resolve(&host)?;
+        .context("要连哪台？lolidesk <overlay 地址[:端口]>；让这台能被连是 lolidesk host")?;
+    let addr = net::resolve(&host)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let mut hosts = config::Hosts::load()?;
+    let mut hosts = Hosts::load()?;
     let known = hosts.get(&addr);
     let token = args
         .token
         .clone()
         .or_else(|| known.as_ref().map(|h| h.token.clone()))
-        .context("第一次连要 --token（主机上 `lolidesk-host token`）")?;
-    let pinned = known.as_ref().and_then(|h| h.fingerprint_bytes());
+        .context("第一次连要 --token（主机上 `lolidesk host token`）")?;
+    // 新主机：先只握手拿指纹，核对过再发 token
+    let pinned = match known.as_ref().and_then(|h| h.fingerprint_bytes()) {
+        Some(fp) => fp,
+        None => {
+            let fp = rt.block_on(net::fingerprint(addr))?;
+            if !args.yes {
+                eprint!(
+                    "新主机 {addr} 的证书指纹：\n  {}\n和主机上 `lolidesk host token` 打印的指纹对一下。信任并记住？[y/N] ",
+                    hex::encode(fp)
+                );
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                if !matches!(line.trim(), "y" | "Y" | "yes") {
+                    bail!("没有信任，退出");
+                }
+            }
+            fp
+        }
+    };
 
     let (client, fp) = rt.block_on(net::connect(
         addr,
         &token,
-        pinned,
+        Some(pinned),
         &format!("lolidesk {}", env!("CARGO_PKG_VERSION")),
     ))?;
-    if pinned.is_none() {
-        let fp_hex = hex::encode(fp);
-        if !args.yes {
-            eprintln!("新主机 {addr}（{}）证书指纹：\n  {fp_hex}\n和主机上 `lolidesk-host token` 打印的指纹对一下。信任并记住？[y/N] ", client.welcome.host);
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line)?;
-            if !matches!(line.trim(), "y" | "Y" | "yes") {
-                bail!("没有信任，退出");
-            }
-        }
-        hosts.remember(addr, &fp_hex, &token);
-        hosts.save()?;
-    } else if let Some(t) = &args.token {
-        hosts.remember(addr, &hex::encode(fp), t);
-        hosts.save()?;
-    }
+    hosts.remember(addr, &hex::encode(fp), &token, &client.welcome.host);
+    hosts.save()?;
     eprintln!(
-        "已连上 {}（{}，lolidesk-host {}）",
-        client.welcome.host, client.welcome.os, client.welcome.version
+        "已连上 {}（{}，lolidesk {}{}）",
+        client.welcome.host,
+        client.welcome.os,
+        client.welcome.version,
+        if client.welcome.persistent {
+            "，会话存盘，主机重启后恢复"
+        } else {
+            ""
+        }
     );
 
-    if args.sessions || args.displays {
+    if args.sessions || args.displays || args.launchers {
         use lolidesk_proto::{ControlReq, ControlResp};
         if args.sessions {
             match rt.block_on(client.control(ControlReq::ListSessions))? {
                 ControlResp::Sessions(list) if list.is_empty() => println!("没有会话"),
                 ControlResp::Sessions(list) => {
                     for s in list {
+                        let what = if s.command.is_empty() {
+                            "shell"
+                        } else {
+                            &s.command
+                        };
+                        let state = match s.exited {
+                            Some(code) => format!("已退出（{code}）"),
+                            None if s.restored => "恢复的".into(),
+                            None => s.foreground.clone(),
+                        };
                         println!(
-                            "#{}\t{}×{}\t{} 人在看\t{}\t{}",
-                            s.id, s.cols, s.rows, s.viewers, s.command, s.title
+                            "#{}\t{}×{}\t{} 人在看\t{}\t{}\t{}\t{}",
+                            s.id, s.cols, s.rows, s.viewers, what, state, s.cwd, s.title
                         );
                     }
                 }
@@ -158,10 +186,12 @@ fn main() -> Result<()> {
                 ControlResp::Displays(list) => {
                     for d in list {
                         println!(
-                            "{}\t{}×{}{}",
+                            "{}\t{}×{}\t{} Hz\t{}{}",
                             d.id,
                             d.width,
                             d.height,
+                            d.refresh,
+                            d.name,
                             if d.primary { "\t主显示器" } else { "" }
                         );
                     }
@@ -170,31 +200,24 @@ fn main() -> Result<()> {
                 other => println!("{other:?}"),
             }
         }
+        if args.launchers {
+            match rt.block_on(client.control(ControlReq::ListLaunchers))? {
+                ControlResp::Launchers(list) => {
+                    for l in list {
+                        println!("{}\t{}", l.name, l.command);
+                    }
+                }
+                other => println!("{other:?}"),
+            }
+        }
         client.conn.close(0u32.into(), b"bye");
         return Ok(());
     }
 
-    let start = gui::Start {
+    let open = tui::Open {
         session: args.session,
-        desktop: args.desktop,
-        quality: args.quality.into(),
+        command: args.command.clone(),
+        cwd: args.cwd.clone(),
     };
-    if gui {
-        gui::run(rt, client, start)
-    } else {
-        rt.block_on(tui::run(client, args.session))
-    }
-}
-
-fn resolve(host: &str) -> Result<SocketAddr> {
-    let with_port = if host.contains(':') && !host.starts_with('[') {
-        host.to_string()
-    } else {
-        format!("{host}:{}", lolidesk_proto::DEFAULT_PORT)
-    };
-    with_port
-        .to_socket_addrs()
-        .with_context(|| format!("解析 {host}"))?
-        .next()
-        .with_context(|| format!("{host} 没有地址"))
+    rt.block_on(tui::run(client, open))
 }

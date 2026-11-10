@@ -1,0 +1,33 @@
+[package]
+name = "lolidesk-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "lolidesk 客户端核心：QUIC 连接、记住的主机、H.264 硬解；TUI 直接用，GUI（Go + mygo）经 app/core/rust 的 C ABI 用"
+
+[lib]
+name = "lolidesk_core"
+
+[dependencies]
+lolidesk-proto.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+sha2.workspace = true
+hex.workspace = true
+dirs.workspace = true
+serde.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3.2", features = ["CFDictionary", "CFString", "CFNumber", "CFArray", "CFBase"] }
+objc2-core-media = "0.3.2"
+objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer", "CVReturn", "CVBase", "CVPixelBufferIOSurface", "objc2-io-surface"] }
+objc2-io-surface = "0.3.2"
+objc2-video-toolbox = { version = "0.3.2", features = ["VTDecompressionSession", "VTDecompressionProperties", "VTErrors", "VTBase", "VTSession", "objc2-core-media", "objc2-core-video"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-video-toolbox = { version = "0.3.2", features = ["VTCompressionSession", "VTCompressionProperties", "VTErrors", "VTBase", "VTSession", "objc2-core-media", "objc2-core-video"] }

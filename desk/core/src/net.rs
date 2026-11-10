@@ -1,7 +1,8 @@
 //! QUIC 连接：自签证书按 sha256 指纹钉扎（第一次 TOFU），控制流 Hello 过 token。
+//! 新主机先只握手拿指纹（[`fingerprint`]），用户核对过再带着钉扎连、发 token：token 不会发给没核对过的证书。
 
 use std::{
-    net::SocketAddr,
+    net::{SocketAddr, ToSocketAddrs},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -79,27 +80,73 @@ impl ServerCertVerifier for Pin {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Welcome {
     pub host: String,
     pub os: String,
     pub version: String,
     pub desktop: bool,
+    pub persistent: bool,
 }
 
 pub struct Client {
     pub conn: Connection,
     pub welcome: Welcome,
-    control: Mutex<Option<(SendStream, RecvStream)>>,
+    pub addr: SocketAddr,
+    control: tokio::sync::Mutex<(SendStream, RecvStream)>,
     _endpoint: quinn::Endpoint,
 }
 
-pub async fn connect(
-    addr: SocketAddr,
-    token: &str,
-    pinned: Option<[u8; 32]>,
-    client_name: &str,
-) -> Result<(Arc<Client>, [u8; 32])> {
+/// 主机名或地址，可带端口（默认 10190）。
+pub fn resolve(host: &str) -> Result<SocketAddr> {
+    let host = host.trim();
+    let has_port = host.parse::<SocketAddr>().is_ok()
+        || (host.starts_with('[') && host.contains("]:"))
+        || (!host.starts_with('[') && host.matches(':').count() == 1);
+    let with_port = if has_port {
+        host.to_string()
+    } else {
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+        if bare.contains(':') {
+            format!("[{bare}]:{}", proto::DEFAULT_PORT)
+        } else {
+            format!("{bare}:{}", proto::DEFAULT_PORT)
+        }
+    };
+    with_port
+        .to_socket_addrs()
+        .with_context(|| format!("解析 {host}"))?
+        .next()
+        .with_context(|| format!("{host} 没有地址"))
+}
+
+fn endpoint_for(addr: SocketAddr) -> Result<quinn::Endpoint> {
+    let bind: SocketAddr = if addr.is_ipv6() {
+        "[::]:0".parse()?
+    } else {
+        "0.0.0.0:0".parse()?
+    };
+    Ok(quinn::Endpoint::client(bind)?)
+}
+
+/// 只握手、不发 token：拿主机证书的指纹给用户核对。
+pub async fn fingerprint(addr: SocketAddr) -> Result<[u8; 32]> {
+    let (cfg, pin) = client_config(None)?;
+    let endpoint = endpoint_for(addr)?;
+    let conn = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect_with(cfg, addr, proto::SERVER_NAME)?,
+    )
+    .await
+    .with_context(|| format!("连 {addr} 超时"))?
+    .with_context(|| format!("连 {addr}"))?;
+    let fp = pin.seen.lock().unwrap().context("握手没拿到证书指纹")?;
+    conn.close(0u32.into(), b"fingerprint");
+    endpoint.wait_idle().await;
+    Ok(fp)
+}
+
+fn client_config(pinned: Option<[u8; 32]>) -> Result<(quinn::ClientConfig, Arc<Pin>)> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let pin = Arc::new(Pin {
         expected: pinned,
@@ -123,17 +170,25 @@ pub async fn connect(
     t.stream_receive_window(quinn::VarInt::from_u32(8 << 20));
     t.send_window(8 << 20);
     cfg.transport_config(Arc::new(t));
+    Ok((cfg, pin))
+}
 
-    let bind: SocketAddr = if addr.is_ipv6() {
-        "[::]:0".parse()?
-    } else {
-        "0.0.0.0:0".parse()?
-    };
-    let endpoint = quinn::Endpoint::client(bind)?;
-    let conn = endpoint
-        .connect_with(cfg, addr, proto::SERVER_NAME)?
-        .await
-        .with_context(|| format!("连 {addr}"))?;
+/// 连上并 Hello。`pinned` 为 None 时接受任何证书（调用方已经让用户核对过，或者 CLI 的 `-y`）。
+pub async fn connect(
+    addr: SocketAddr,
+    token: &str,
+    pinned: Option<[u8; 32]>,
+    client_name: &str,
+) -> Result<(Arc<Client>, [u8; 32])> {
+    let (cfg, pin) = client_config(pinned)?;
+    let endpoint = endpoint_for(addr)?;
+    let conn = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect_with(cfg, addr, proto::SERVER_NAME)?,
+    )
+    .await
+    .with_context(|| format!("连 {addr} 超时"))?
+    .with_context(|| format!("连 {addr}"))?;
     let fp = pin.seen.lock().unwrap().context("握手没拿到证书指纹")?;
 
     let (mut send, mut recv) = open(&conn, StreamKind::Control).await?;
@@ -152,11 +207,13 @@ pub async fn connect(
             os,
             version,
             desktop,
+            persistent,
         }) => Welcome {
             host,
             os,
             version,
             desktop,
+            persistent,
         },
         Some(ControlResp::Denied(why)) => bail!("主机拒绝：{why}"),
         other => bail!("Hello 回应不对：{other:?}"),
@@ -165,7 +222,8 @@ pub async fn connect(
         Arc::new(Client {
             conn,
             welcome,
-            control: Mutex::new(Some((send, recv))),
+            addr,
+            control: tokio::sync::Mutex::new((send, recv)),
             _endpoint: endpoint,
         }),
         fp,
@@ -183,25 +241,31 @@ impl Client {
         open(&self.conn, kind).await
     }
 
-    /// 控制流是一问一答，所以拿出来用完放回去。
+    /// 控制流是一问一答：同一时间只有一个请求在上面。
     pub async fn control(&self, req: ControlReq) -> Result<ControlResp> {
-        let taken = self.control.lock().unwrap().take();
-        let (mut send, mut recv) = match taken {
-            Some(s) => s,
-            None => bail!("控制流正忙"),
-        };
-        let r = async {
-            proto::send(&mut send, &req).await?;
-            proto::recv::<ControlResp>(&mut recv)
-                .await?
-                .context("控制流被主机关了")
-        }
-        .await;
-        *self.control.lock().unwrap() = Some((send, recv));
-        r
+        let mut guard = self.control.lock().await;
+        let (send, recv) = &mut *guard;
+        proto::send(send, &req).await?;
+        proto::recv::<ControlResp>(recv)
+            .await?
+            .context("控制流被主机关了")
     }
 
     pub fn rtt(&self) -> Duration {
         self.conn.rtt()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+
+    #[test]
+    fn resolve_adds_port() {
+        assert_eq!(resolve("127.0.0.1").unwrap().to_string(), "127.0.0.1:10190");
+        assert_eq!(resolve("127.0.0.1:9").unwrap().to_string(), "127.0.0.1:9");
+        assert_eq!(resolve("::1").unwrap().to_string(), "[::1]:10190");
+        assert_eq!(resolve("[::1]").unwrap().to_string(), "[::1]:10190");
+        assert_eq!(resolve("[::1]:7").unwrap().to_string(), "[::1]:7");
     }
 }

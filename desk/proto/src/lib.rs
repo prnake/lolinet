@@ -6,11 +6,17 @@
 //!
 //! 设计取舍见仓库根目录的 docs/lolidesk.md：没有 libp2p、中继这一层，
 //! 因为设备已经在 lolinet 的 overlay 上，彼此可直达。
+//!
+//! 版本 2：远程桌面可选分辨率、帧率和画质，键盘按物理键位（W3C `code`）收发。
+//! 终端两端都是 libghostty-vt：主机的终端是会话的唯一真相，客户端收它的 Mirror 帧（转义序列）照着画，
+//! 自己按当前模式给按键编码，把字节发回来。
+//! ALPN 不变：版本不一致时由 Hello 回一个看得懂的 Denied，而不是 TLS 握手失败。
+//! `Hello` 和 `Denied` 的位置、字段永远不改，旧客户端连新主机（或反过来）才拿得到这句话。
 
 use bytes::Bytes;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const ALPN: &[u8] = b"lolidesk/1";
 pub const DEFAULT_PORT: u16 = 10190;
 /// 证书是自签的，SNI 固定；客户端靠指纹钉扎（TOFU）认主机。
@@ -54,6 +60,8 @@ pub enum ControlReq {
     },
     ListDisplays,
     ListSessions,
+    /// 主机上装了哪些 agent（claude、codex……），给「新建」菜单用。
+    ListLaunchers,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,18 +71,24 @@ pub enum ControlResp {
         os: String,
         version: String,
         desktop: bool,
+        /// 主机存会话的历史和目录：重启后会话带着历史回来（程序重新起）。
+        persistent: bool,
     },
     Denied(String),
     Displays(Vec<DisplayInfo>),
     Sessions(Vec<SessionInfo>),
     Error(String),
+    Launchers(Vec<Launcher>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayInfo {
     pub id: u32,
+    /// 原生像素
     pub width: u32,
     pub height: u32,
+    /// 刷新率（Hz），不知道是 0
+    pub refresh: u16,
     pub primary: bool,
     pub name: String,
 }
@@ -83,46 +97,107 @@ pub struct DisplayInfo {
 pub struct SessionInfo {
     pub id: u32,
     pub title: String,
+    /// 开会话时给的命令；空的是登录 shell
     pub command: String,
+    /// 前台程序的名字（终端前台进程组的组长），不知道是空
+    pub foreground: String,
+    pub cwd: String,
     pub cols: u16,
     pub rows: u16,
     pub viewers: u32,
+    /// 开始时间（Unix 秒）
+    pub started: u64,
+    /// 主机重启后恢复的会话：历史是上一次的，程序是新起的
+    pub restored: bool,
+    /// 程序已经退出（会话留着给人看输出，关掉才没）
+    pub exited: Option<i32>,
+}
+
+/// 「新建」菜单里的一项：id 用来认图标，command 空的是登录 shell。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Launcher {
+    pub id: String,
+    pub name: String,
+    pub command: String,
 }
 
 // ---------------------------------------------------------------- 终端流
 
+/// 终端的尺寸：格子数和一格的像素（不知道是 0）。程序问像素尺寸、按像素报鼠标（模式 1016）时要用。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermSize {
+    pub cols: u16,
+    pub rows: u16,
+    pub cell_w: u16,
+    pub cell_h: u16,
+}
+
+impl TermSize {
+    pub fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            cols,
+            rows,
+            cell_w: 0,
+            cell_h: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClearKind {
+    /// 清掉滚动历史和光标所在行以上的屏幕，光标行移到顶上（⌘K）
+    Screen,
+    /// 只清滚动历史
+    Scrollback,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TermReq {
-    /// 新开一个会话（PTY + 主机侧终端模型）。
+    /// 新开一个会话（PTY + 主机上的 libghostty-vt 终端）。command 在登录 shell 里跑，退出后留在 shell。
     Open {
-        cols: u16,
-        rows: u16,
+        size: TermSize,
         command: Option<String>,
         cwd: Option<String>,
     },
-    /// 接上已有会话；主机先发 Snapshot 再续推输出。
+    /// 接上已有会话：主机先回 Resized（会话现在的尺寸），再发第一帧（从头画）。
     Attach {
         id: u32,
-        cols: u16,
-        rows: u16,
+        size: TermSize,
     },
-    Input(Input),
-    /// 主机改完 PTY 和模型后会给所有观看者发一份新 Snapshot。
-    Resize {
-        cols: u16,
-        rows: u16,
-    },
+    /// 键入、粘贴、鼠标、焦点的字节：客户端按终端当前的模式编好了码。
+    Input(Vec<u8>),
+    /// 客户端终端放得下的尺寸。会话只有一个尺寸：听用户最后在用的那个客户端（Claim）。
+    Resize(TermSize),
+    /// 用户在这个客户端里了（键入、点击、切过来）：会话改用它的尺寸。
+    Claim,
+    Clear(ClearKind),
+    /// 结束会话：挂断程序，会话从列表里去掉。
     Kill,
 }
 
-/// 客户端发的是「语义键」，由主机按它持有的终端模式（DECCKM、键盘应用模式、括号粘贴）编码成字节。
-/// TUI 客户端直接透传本地终端的字节用 Raw。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Input {
-    Key { key: Key, mods: Mods },
-    Text(String),
-    Paste(String),
-    Raw(Vec<u8>),
+pub enum TermEvent {
+    Opened {
+        id: u32,
+    },
+    /// 主机终端的一帧（Mirror）：把客户端终端从上一帧带到主机现在的样子的转义序列，
+    /// 客户端当程序输出喂给自己的终端。每条流的第一帧从头画（含滚动历史）。
+    Frame(Vec<u8>),
+    /// 会话换了尺寸：客户端终端在这里换（旧尺寸的帧之后、新尺寸的帧之前）。
+    Resized {
+        cols: u16,
+        rows: u16,
+    },
+    Title(String),
+    Bell,
+    /// 程序发的桌面通知（OSC 9 / 777）
+    Notify {
+        title: String,
+        body: String,
+    },
+    /// 程序退出了；会话留着（看输出），客户端关掉或 Kill 才没
+    Exited(i32),
+    Error(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,195 +220,95 @@ impl Mods {
     pub fn sup(self) -> bool {
         self.0 & Self::SUPER != 0
     }
-    /// xterm 的修饰键参数：1 + shift(1) + alt(2) + ctrl(4)
-    pub fn xterm_param(self) -> u8 {
-        1 + (self.shift() as u8) + ((self.alt() as u8) << 1) + ((self.ctrl() as u8) << 2)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Key {
-    Char(char),
-    Enter,
-    Tab,
-    Backspace,
-    Escape,
-    Space,
-    Up,
-    Down,
-    Left,
-    Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    Insert,
-    Delete,
-    F(u8),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TermEvent {
-    Opened {
-        id: u32,
-    },
-    /// 整屏重建：data 是从主机模型序列化出的转义序列（光标、颜色、模式都在里面），客户端清屏后回放即可。
-    Snapshot {
-        cols: u16,
-        rows: u16,
-        data: Vec<u8>,
-    },
-    Output(Vec<u8>),
-    Title(String),
-    Bell,
-    Exited(i32),
-    Error(String),
-}
-
-/// 主机侧按终端模式把语义键编码成字节。
-pub fn encode_key(key: Key, mods: Mods, app_cursor: bool, app_keypad: bool) -> Vec<u8> {
-    let _ = app_keypad;
-    let m = mods.xterm_param();
-    let csi_mod = |fin: char, base: &str| -> Vec<u8> {
-        if m > 1 {
-            format!("\x1b[1;{m}{fin}").into_bytes()
-        } else {
-            base.as_bytes().to_vec()
-        }
-    };
-    let tilde = |n: u8| -> Vec<u8> {
-        if m > 1 {
-            format!("\x1b[{n};{m}~").into_bytes()
-        } else {
-            format!("\x1b[{n}~").into_bytes()
-        }
-    };
-    let cursor = |fin: char| -> Vec<u8> {
-        if m > 1 {
-            format!("\x1b[1;{m}{fin}").into_bytes()
-        } else if app_cursor {
-            format!("\x1bO{fin}").into_bytes()
-        } else {
-            format!("\x1b[{fin}").into_bytes()
-        }
-    };
-    match key {
-        Key::Char(c) => {
-            let mut out = Vec::new();
-            if mods.alt() {
-                out.push(0x1b);
-            }
-            if mods.ctrl() {
-                let u = c.to_ascii_uppercase();
-                match u {
-                    'A'..='Z' => out.push(u as u8 - b'@'),
-                    '@' | ' ' | '2' => out.push(0),
-                    '[' | '3' => out.push(0x1b),
-                    '\\' | '4' => out.push(0x1c),
-                    ']' | '5' => out.push(0x1d),
-                    '^' | '6' => out.push(0x1e),
-                    '_' | '-' | '7' => out.push(0x1f),
-                    '?' | '8' => out.push(0x7f),
-                    _ => out.extend(c.to_string().into_bytes()),
-                }
-            } else {
-                out.extend(c.to_string().into_bytes());
-            }
-            out
-        }
-        Key::Enter => {
-            if mods.alt() {
-                b"\x1b\r".to_vec()
-            } else {
-                b"\r".to_vec()
-            }
-        }
-        Key::Tab => {
-            if mods.shift() {
-                b"\x1b[Z".to_vec()
-            } else {
-                b"\t".to_vec()
-            }
-        }
-        Key::Backspace => {
-            if mods.alt() {
-                b"\x1b\x7f".to_vec()
-            } else if mods.ctrl() {
-                b"\x08".to_vec()
-            } else {
-                b"\x7f".to_vec()
-            }
-        }
-        Key::Escape => b"\x1b".to_vec(),
-        Key::Space => {
-            if mods.ctrl() {
-                vec![0]
-            } else if mods.alt() {
-                b"\x1b ".to_vec()
-            } else {
-                b" ".to_vec()
-            }
-        }
-        Key::Up => cursor('A'),
-        Key::Down => cursor('B'),
-        Key::Right => cursor('C'),
-        Key::Left => cursor('D'),
-        Key::Home => cursor('H'),
-        Key::End => cursor('F'),
-        Key::Insert => tilde(2),
-        Key::Delete => tilde(3),
-        Key::PageUp => tilde(5),
-        Key::PageDown => tilde(6),
-        Key::F(n) => match n {
-            1 => csi_mod('P', "\x1bOP"),
-            2 => csi_mod('Q', "\x1bOQ"),
-            3 => csi_mod('R', "\x1bOR"),
-            4 => csi_mod('S', "\x1bOS"),
-            5 => tilde(15),
-            6 => tilde(17),
-            7 => tilde(18),
-            8 => tilde(19),
-            9 => tilde(20),
-            10 => tilde(21),
-            11 => tilde(23),
-            12 => tilde(24),
-            _ => Vec::new(),
-        },
-    }
 }
 
 // ---------------------------------------------------------------- 远程桌面
 
+/// 画质：决定码率（每像素每帧多少 bit）。分辨率和帧率另外选。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Quality {
-    /// 长边 1280，低码率
-    Smooth,
-    /// 长边 1920
-    Balanced,
-    /// 原生像素
-    Sharp,
+    /// 省流
+    Low,
+    /// 标准
+    Medium,
+    /// 清晰
+    High,
+    /// 极清：适合看小字
+    Ultra,
+}
+
+impl Quality {
+    /// H.264 屏幕内容的每像素每帧 bit 数。
+    pub fn bits_per_pixel(self) -> f64 {
+        match self {
+            Self::Low => 0.05,
+            Self::Medium => 0.1,
+            Self::High => 0.18,
+            Self::Ultra => 0.3,
+        }
+    }
+}
+
+/// 一次远程桌面的画面参数。主机按显示器实际能给的收紧（不放大、帧率不超过刷新率）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoSettings {
+    /// 编码画面的长边（像素）；0 = 原生
+    pub long_edge: u32,
+    /// 最高帧率；画面不动时不发帧
+    pub fps: u8,
+    pub quality: Quality,
+}
+
+impl Default for VideoSettings {
+    fn default() -> Self {
+        Self {
+            long_edge: 1920,
+            fps: 60,
+            quality: Quality::High,
+        }
+    }
+}
+
+/// 按长边算编码尺寸：偶数、保持比例、不放大。
+pub fn target_size(long_edge: u32, px_w: u32, px_h: u32) -> (u32, u32) {
+    let long = px_w.max(px_h).max(1);
+    let cap = if long_edge == 0 { long } else { long_edge };
+    let scale = (cap as f64 / long as f64).min(1.0);
+    let even = |v: f64| ((v.round() as u32) & !1).max(2);
+    (even(px_w as f64 * scale), even(px_h as f64 * scale))
+}
+
+/// 码率（bit/s）。前 30 帧按满额算，30 帧以上的部分减半（帧率高时相邻帧更像），夹在 1–150 Mbps。
+pub fn bitrate(quality: Quality, w: u32, h: u32, fps: u8) -> u32 {
+    let fps = fps.max(1) as f64;
+    let frames = fps.min(30.0) + (fps - 30.0).max(0.0) * 0.5;
+    let bps = w as f64 * h as f64 * quality.bits_per_pixel() * frames;
+    bps.clamp(1.0e6, 150.0e6) as u32
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeskReq {
     Start {
         display: u32,
-        quality: Quality,
-        max_fps: u8,
+        video: VideoSettings,
     },
     Stop,
     /// 丢帧后请求一个关键帧（主机下一帧强制 IDR）。
     Keyframe,
-    Quality(Quality),
+    /// 换分辨率 / 帧率 / 画质：主机重开采集和编码器，再发一次 Ready。
+    Configure(VideoSettings),
     Input(DeskInput),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeskEvent {
-    /// 编码分辨率（像素）。
+    /// 实际生效的编码参数。
     Ready {
         width: u32,
         height: u32,
+        fps: u8,
+        /// bit/s
+        bitrate: u32,
     },
     Stopped(String),
     Error(String),
@@ -359,19 +334,25 @@ pub enum DeskInput {
         button: MouseButton,
         down: bool,
     },
-    /// dx / dy 单位是「行」
+    /// dx / dy 是画面高度的比例（归一化），主机乘上显示器高度换成像素滚动。
+    /// 正值是内容往下 / 往右走（向上滚、向左滚），和 macOS 的滚轮事件同号。
     Scroll {
         x: f32,
         y: f32,
         dx: f32,
         dy: f32,
     },
+    /// 物理按键：`code` 是 W3C `KeyboardEvent.code` 的名字（KeyA、ShiftLeft、Tab……），按位置不按布局。
+    /// 修饰键自己也按下 / 松开；`mods` 是这一刻按着的修饰键，主机拿它校正自己记的状态。
     Key {
-        key: Key,
-        mods: Mods,
+        code: String,
         down: bool,
+        mods: Mods,
     },
+    /// 已经组好的文字（输入法、粘贴），按 Unicode 注入，不依赖远端键盘布局。
     Text(String),
+    /// 客户端失焦：松开所有还按着的键和鼠标键。
+    ReleaseAll,
 }
 
 /// datagram 头：magic(1) frame(4) index(2) count(2) flags(1)
@@ -493,7 +474,7 @@ pub mod palette {
     pub const BG: [u8; 3] = [0x00, 0x00, 0x00];
     pub const CURSOR: [u8; 3] = [0xce, 0xff, 0x1c];
 
-    const BASE16: [[u8; 3]; 16] = [
+    pub const BASE16: [[u8; 3]; 16] = [
         [0x1c, 0x1c, 0x1c],
         [0xff, 0x5c, 0x49],
         [0x2f, 0xd0, 0x7f],
@@ -578,48 +559,54 @@ mod tests {
     }
 
     #[test]
-    fn key_encoding() {
-        let none = Mods::default();
-        assert_eq!(encode_key(Key::Up, none, false, false), b"\x1b[A");
-        assert_eq!(encode_key(Key::Up, none, true, false), b"\x1bOA");
+    fn video_sizes() {
+        assert_eq!(target_size(0, 3024, 1964), (3024, 1964));
+        assert_eq!(target_size(1920, 3024, 1964), (1920, 1246));
+        assert_eq!(target_size(1920, 1280, 800), (1280, 800));
+        assert_eq!(target_size(1280, 1080, 1920), (720, 1280));
+        let b = bitrate(Quality::Medium, 1920, 1080, 30);
+        assert!((6_000_000..7_000_000).contains(&b), "{b}");
+        assert!(bitrate(Quality::Medium, 1920, 1080, 60) > b);
+        assert!(bitrate(Quality::Ultra, 1920, 1080, 60) > bitrate(Quality::High, 1920, 1080, 60));
+        assert_eq!(bitrate(Quality::Low, 64, 64, 5), 1_000_000);
+        assert_eq!(bitrate(Quality::Ultra, 7680, 4320, 120), 150_000_000);
+    }
+
+    /// Hello / Denied 的编码永远不能变：旧版本的对端靠它们读出「版本不匹配」。
+    #[test]
+    fn hello_and_denied_are_stable() {
+        let hello = ControlReq::Hello {
+            version: 1,
+            token: "t".into(),
+            client: "c".into(),
+        };
         assert_eq!(
-            encode_key(Key::Up, Mods(Mods::SHIFT), true, false),
-            b"\x1b[1;2A"
+            postcard::to_stdvec(&hello).unwrap(),
+            [0, 1, 1, b't', 1, b'c']
         );
-        assert_eq!(
-            encode_key(Key::Char('c'), Mods(Mods::CTRL), false, false),
-            vec![3]
-        );
-        assert_eq!(
-            encode_key(Key::Char('x'), Mods(Mods::ALT), false, false),
-            b"\x1bx"
-        );
-        assert_eq!(
-            encode_key(Key::Tab, Mods(Mods::SHIFT), false, false),
-            b"\x1b[Z"
-        );
-        assert_eq!(encode_key(Key::F(5), none, false, false), b"\x1b[15~");
-        assert_eq!(
-            encode_key(Key::F(1), Mods(Mods::CTRL), false, false),
-            b"\x1b[1;5P"
-        );
-        assert_eq!(
-            encode_key(Key::Delete, Mods(Mods::CTRL | Mods::SHIFT), false, false),
-            b"\x1b[3;6~"
-        );
-        assert_eq!(encode_key(Key::Backspace, none, false, false), b"\x7f");
+        let denied = ControlResp::Denied("x".into());
+        assert_eq!(postcard::to_stdvec(&denied).unwrap(), [1, 1, b'x']);
     }
 
     #[test]
     fn message_roundtrip() {
-        let msg = TermReq::Input(Input::Key {
-            key: Key::Char('é'),
-            mods: Mods(Mods::ALT),
-        });
+        let msg = TermReq::Open {
+            size: TermSize {
+                cols: 120,
+                rows: 36,
+                cell_w: 9,
+                cell_h: 18,
+            },
+            command: Some("claude".into()),
+            cwd: None,
+        };
         let bytes = postcard::to_stdvec(&msg).unwrap();
         let back: TermReq = postcard::from_bytes(&bytes).unwrap();
         assert!(
-            matches!(back, TermReq::Input(Input::Key { key: Key::Char('é'), mods }) if mods.alt())
+            matches!(back, TermReq::Open { size, command: Some(c), cwd: None } if size.cell_h == 18 && c == "claude")
         );
+        let ev = TermEvent::Frame(b"\x1b[H".to_vec());
+        let back: TermEvent = postcard::from_bytes(&postcard::to_stdvec(&ev).unwrap()).unwrap();
+        assert!(matches!(back, TermEvent::Frame(b) if b == b"\x1b[H"));
     }
 }

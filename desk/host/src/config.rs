@@ -162,10 +162,10 @@ pub fn install_launch_agent() -> Result<()> {
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- lolidesk-host install 写的；日志在 {logs}/host.log -->
+<!-- lolidesk host install 写的；日志在 {logs}/host.log -->
 <plist version="1.0"><dict>
   <key>Label</key><string>{AGENT_LABEL}</string>
-  <key>ProgramArguments</key><array><string>{exe}</string><string>run</string></array>
+  <key>ProgramArguments</key><array><string>{exe}</string><string>host</string><string>run</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>{logs}/host.log</string>
