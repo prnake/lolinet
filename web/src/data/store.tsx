@@ -1,12 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { liveBackend, type Backend } from "./api";
+import { ApiError, liveBackend, type Backend } from "./api";
 import { demoBackend } from "./demo";
 import { buildMesh, type Mesh } from "./model";
 import type { AgentInfo, Snapshot } from "./types";
 
 const POLL_MS = 3000;
 
-type Phase = "connecting" | "ready" | "offline";
+// login：manager 要先登录（info 里 login_required 且没登录，或者拉快照时 401）
+type Phase = "connecting" | "ready" | "offline" | "login";
 
 type MeshState = {
   phase: Phase;
@@ -45,6 +46,8 @@ export function MeshProvider({ children }: { children: ReactNode }) {
       setUpdatedAt(Date.now());
       setError(null);
     } catch (e) {
+      // manager 的会话过期（或控制台那边登出了）：回到登录页
+      if (e instanceof ApiError && e.status === 401) setPhase((p) => (p === "offline" ? p : "login"));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       inflight.current = false;
@@ -59,8 +62,9 @@ export function MeshProvider({ children }: { children: ReactNode }) {
       .then(async (i) => {
         if (dead) return;
         setInfo(i);
+        if (i.login_required && !i.logged_in) return setPhase("login");
         await pull();
-        if (!dead) setPhase("ready");
+        if (!dead) setPhase((p) => (p === "login" ? p : "ready"));
       })
       .catch(() => !dead && setPhase("offline"));
     return () => {

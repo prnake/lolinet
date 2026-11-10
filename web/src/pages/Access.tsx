@@ -152,8 +152,8 @@ function ConsoleDown({ error }: { error: Error }) {
   );
 }
 
-/** 浏览器自己登录（agent 读不到 state/mesh-console.json 时）。 */
-function Login({ onDone }: { onDone: () => void }) {
+/** 浏览器自己登录（agent 读不到 state/mesh-console.json 时）；manager 整站登录也是这个，账号就是控制台的。 */
+export function Login({ onDone, title = "登录控制台", sub }: { onDone: () => void; title?: string; sub?: string }) {
   const { backend } = useMesh();
   const [user, setUser] = useState("admin");
   const [pw, setPw] = useState("");
@@ -168,6 +168,7 @@ function Login({ onDone }: { onDone: () => void }) {
       onDone();
     } catch (x) {
       setErr(x instanceof ApiError && x.status === 401 ? "用户名或密码不对" : String(x instanceof Error ? x.message : x));
+      setPw("");
     } finally {
       setBusy(false);
     }
@@ -178,8 +179,8 @@ function Login({ onDone }: { onDone: () => void }) {
         <form onSubmit={submit} className="stack-4">
           <Mark size={36} state="off" />
           <div>
-            <div className="login__title">登录控制台</div>
-            <div className="login__sub">easytier-web · {nodesDoc.network.console.replace("https://", "")}</div>
+            <div className="login__title">{title}</div>
+            <div className="login__sub">{sub ?? `easytier-web · ${nodesDoc.network.console.replace("https://", "")}`}</div>
           </div>
           <Field label="用户名" value={user} onChange={(e) => setUser(e.target.value)} mono />
           <Field label="密码" type="password" value={pw} onChange={(e) => setPw(e.target.value)} error={err ?? undefined} autoFocus />

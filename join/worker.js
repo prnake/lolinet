@@ -11,6 +11,8 @@
 // 公开接口不出现任何名字：relay 用区域代码当 id（页面上写城市），设备用 d-<10 位十六进制>（HMAC(devid_key, 主机名)，
 // relay 和设备各自算好再报，Worker 根本拿不到设备名）。设备只公开硬件、位置，以及它直连了哪些接入点。
 // relay 名字只用来验签和在 DO 里关联历史，不出 Worker。
+// 管理面（web/agent/mesh_manager.py，跑在签发 relay 上、只在内网）经 /v1/manager/* 写配对包、取设备的探针上报密钥，
+// 签名密钥 = HMAC(PROBE_MASTER, "manager")，部署时派生好放到那台 relay：它不用拿账号级 Cloudflare token，也不用拿主密钥。
 import { DurableObject } from "cloudflare:workers";
 
 const joinHost = (env) => new URL(env.BASE_URL).hostname;
@@ -31,6 +33,9 @@ export default {
     const url = new URL(req.url);
     if (url.hostname === joinHost(env) && url.pathname === "/v1/probe/report") {
       return req.method === "POST" ? report(req, env) : text("method not allowed", 405);
+    }
+    if (url.hostname === joinHost(env) && url.pathname.startsWith("/v1/manager/")) {
+      return req.method === "POST" ? manager(req, env, url.pathname) : text("method not allowed", 405);
     }
     if (req.method !== "GET" && req.method !== "HEAD") return text("method not allowed", 405);
     if (url.hostname === joinHost(env)) return join(req, env, url);
@@ -142,6 +147,58 @@ async function report(req, env) {
   msg.set(body, prefix.length);
   if (!(await crypto.subtle.verify("HMAC", await nodeKey(env, node), sig, msg))) return text("bad signature", 403);
   return hub(env).fetch("https://hub/report", { method: "POST", headers: { "x-probe-node": node, "x-probe-ts": String(ts) }, body });
+}
+
+// ---------- 管理面 ----------
+
+const MANAGER_MAX = 64 * 1024;
+const PAIR_ID = /^[0-9a-f]{32}$/;
+
+/** HMAC(PROBE_MASTER, label) 的原始字节：管理面签名密钥（"manager"）、设备上报密钥（"probe:d-…"）。 */
+async function derive(env, label) {
+  const master = await crypto.subtle.importKey("raw", hex(env.PROBE_MASTER), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", master, enc(label)));
+}
+
+const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+/**
+ * 签名 = HMAC(manager_key, "<ts>.<path>.<body>")，带上 path，一个接口的请求拿到另一个接口重放不了。
+ *   POST /v1/manager/pair       {id: sha256(配对码) 前 32 位, blob: 加密后的配置（base64）, ttl: 秒}  -> KV pair:<id>，和 pair.py 写的一样
+ *   POST /v1/manager/probe-key  {id: d-<10 位十六进制>}  -> {key}：设备上报密钥 HMAC(master, "probe:<id>")，pair.py 本机算的同一把
+ */
+async function manager(req, env, path) {
+  const ts = Number(req.headers.get("x-manager-ts"));
+  const sig = hex(req.headers.get("x-manager-sig") || "");
+  if (!Number.isInteger(ts) || Math.abs(Date.now() / 1000 - ts) > SKEW) return text("bad timestamp", 403);
+  if (!sig || sig.length !== 32) return text("bad signature", 403);
+  if (Number(req.headers.get("content-length") || 0) > MANAGER_MAX) return text("too large", 413);
+  const body = new Uint8Array(await req.arrayBuffer());
+  if (body.byteLength > MANAGER_MAX) return text("too large", 413);
+  const prefix = enc(`${ts}.${path}.`);
+  const msg = new Uint8Array(prefix.length + body.length);
+  msg.set(prefix);
+  msg.set(body, prefix.length);
+  const key = await crypto.subtle.importKey("raw", await derive(env, "manager"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  if (!(await crypto.subtle.verify("HMAC", key, sig, msg))) return text("bad signature", 403);
+  let d;
+  try {
+    d = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return text("bad json", 400);
+  }
+  if (path === "/v1/manager/pair") {
+    const ttl = Number(d?.ttl);
+    if (!PAIR_ID.test(d?.id || "") || typeof d.blob !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(d.blob)) return text("bad pairing", 400);
+    if (!Number.isInteger(ttl) || ttl < 60 || ttl > 86400) return text("ttl must be 60-86400", 400);
+    await env.PAIRING.put(`pair:${d.id}`, d.blob, { expirationTtl: ttl });
+    return json({ ok: true, expires_at: Math.floor(Date.now() / 1000) + ttl });
+  }
+  if (path === "/v1/manager/probe-key") {
+    if (!DEVICE_ID.test(d?.id || "")) return text("bad device id", 400);
+    return json({ key: toHex(await derive(env, `probe:${d.id}`)) });
+  }
+  return text("not found", 404);
 }
 
 // ---------- 状态与历史 ----------

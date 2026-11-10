@@ -52,6 +52,20 @@ open http://127.0.0.1:10188/
 
 Other agent flags: `--cli` (path to `easytier-cli`), `--console` (defaults to `network.console`; use `http://127.0.0.1:11211` on the issuer relay), `--console-ip` (the console's overlay address, used instead of DNS because a local resolver may hand out fake IPs), `--console-state`, `--read-only`, `--static` (defaults to `web/dist`), `--dump`.
 
+## Manager on the issuer relay
+
+`web/agent/mesh_manager.py` is the same console, kept running on the issuer relay (`network.issuer`, next to `easytier-web`) and published by nginx on the relay's overlay address only, e.g. `https://manager.<edge_zone>` as a DNS-only record pointing at the overlay IP, with `allow <network.cidr>; deny all`. Any device in the network opens it in a browser; nothing has to run locally.
+
+| | |
+| :-- | :-- |
+| **Sign-in** | The whole site needs a sign-in with an `easytier-web` account. The browser sends md5(password); the manager forwards it to the console and, on success, sets its own session cookie (HttpOnly, Secure, SameSite=Strict, 12 h). The console's session cookie stays on the server. Ten failures from one address lock it out for ten minutes. The manager never stores the console password |
+| **Settings** | `#/settings`: pairing defaults (credential lifetime, pairing-code lifetime, default relays in order, `wss` or `tcp`, public probe on or off) and switches written into new device configs (`latency_first`, `enable_kcp_proxy`, an extra `udp://` peer per relay). A live preview renders the config a new device would get. With the defaults, the config is byte-for-byte what `scripts/device_config.py` renders |
+| **Pairing** | Done on the server, not through `pair.py`: get the device's probe key from the Worker, sign a non-reusable credential with the signed-in user's console session, render the config, encrypt it with `openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256` (decrypted once as a self-check), store it with `POST /v1/manager/pair`. If any step after signing fails, the credential is revoked |
+| **Secrets on the relay** | `manager_key = HMAC(PROBE_MASTER, "manager")` signs `/v1/manager/*` requests (`HMAC(manager_key, "<ts>.<path>.<body>")`, ±300 s); `devid_key = HMAC(PROBE_MASTER, "devid")` turns device names into public probe ids. No Cloudflare token, no probe master, no console password. The Worker derives the same key from its `PROBE_MASTER`, so no new secret is needed |
+| **Audit** | Sign-ins, failed sign-ins, pairings, revocations and settings changes are logged with the user and the overlay address |
+
+Run it with `--config <json>` (network, relays with public address and EasyTier port, `base_url`, `network_id`, optional `seed_devices`), `--secrets <json>` (`manager_key`, `devid_key`), `--state <dir>` (settings, device registry), `--console http://127.0.0.1:11211`, `--rpc`, `--cli`, and `--allow-host <manager domain>`. It refuses to listen on anything but loopback. Under systemd, `DynamicUser=yes` with `LoadCredential=` for the two JSON files and `StateDirectory=` works well.
+
 ## Develop
 
 Start the agent first, then `npm run dev`. Vite serves on port 5188 and proxies `/api` to the agent; set `MESH_AGENT=http://…` to point it elsewhere.
@@ -108,5 +122,4 @@ The dev server proxies `/v1` to `LOLINET_BASE_URL` (or `https://<network.join>`)
 
 ## Roadmap
 
-- Deploy on the issuer relay (`network.issuer`): run the agent there with `--console http://127.0.0.1:11211 --allow-host <console domain>`, and have nginx serve this front end at the console domain's `/` (with the official front end moved to a sub-path). The issuer sees the whole network.
 - Restyle the menu bar app after DESIGN.md.

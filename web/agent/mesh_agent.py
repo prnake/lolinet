@@ -291,8 +291,10 @@ def do_pair(args, req: dict) -> tuple[int, dict]:
     name, ip = str(req.get("name", "")), str(req.get("ip", ""))
     try:
         ttl = int(req.get("ttl_days", 365))
+        minutes = int(req.get("code_minutes", 15))
     except (TypeError, ValueError):
-        return 400, {"message": "有效期要是整数天"}
+        return 400, {"message": "有效期要是整数"}
+    transport = req.get("transport") or "wss"
     peers = [str(p) for p in req.get("peers") or []]
     m = IP_RE.match(ip)
     if not NAME_RE.match(name):
@@ -301,10 +303,14 @@ def do_pair(args, req: dict) -> tuple[int, dict]:
         return 400, {"message": "地址必须在 10.188.0.0/16 里"}
     if not 1 <= ttl <= 365:
         return 400, {"message": "有效期 1–365 天"}
+    if not 1 <= minutes <= 1440:
+        return 400, {"message": "配对码有效期 1–1440 分钟"}
+    if transport not in ("wss", "tcp"):
+        return 400, {"message": "传输只能是 wss 或 tcp"}
     if not all(re.match(r"^[a-z]+$", p) for p in peers):
         return 400, {"message": "接入点名不合法"}
     cmd = ["uv", "run", "--quiet", str(MESH_DIR / "scripts/pair.py"), "new",
-           "--name", name, "--ip", ip, "--ttl-days", str(ttl)]
+           "--name", name, "--ip", ip, "--ttl-days", str(ttl), "--code-minutes", str(minutes), "--transport", transport]
     if peers:
         cmd += ["--peers", ",".join(peers)]
     if req.get("probe") is False:  # 默认装公开探针
@@ -323,7 +329,7 @@ def do_pair(args, req: dict) -> tuple[int, dict]:
         "code": code.group(1),
         "credential_id": cid.group(1) if cid else None,
         "command": f"curl -fsSL https://{JOIN_HOST}/i | sudo sh -s {code.group(1)}",
-        "expires_at": int(time.time()) + 900,
+        "expires_at": int(time.time()) + minutes * 60,
     }
 
 
