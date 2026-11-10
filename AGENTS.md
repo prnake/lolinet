@@ -39,7 +39,7 @@ Devices in the field depend on these. Changing one needs a migration path, not j
 
 ## Upgrading EasyTier
 
-Bump `EASYTIER_REF` and `EASYTIER_SHA` in `easytier/build.env`, rebase both patches onto the new tag (rename the files to the new version), and update the version everywhere listed above. CI checks that the tag still points at the SHA, applies the patches, and runs the SNI check.
+Bump `EASYTIER_REF` and `EASYTIER_SHA` in `easytier/build.env`, rebase every patch in `patches/` onto the new tag (rename the files to the new version), and update the version everywhere listed above. CI checks that the tag still points at the SHA, applies the patches, and runs the SNI check (`easytier/check_sni.py`) and the tunnel-preference check (`easytier/check_udp_pref.py`).
 
 ## Conventions
 

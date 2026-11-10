@@ -12,7 +12,7 @@ device ──wss :443, your SNI──▶ relay ◀── tcp / udp, every pair �
             KV: one-time pairing ciphertext · R2: install.sh, packages, manifest, probe page · Durable Object: probe state
 ```
 
-The network itself is plain [EasyTier](https://github.com/EasyTier/EasyTier) v2.7.0 with two patches. Everything else in this repository sits around it: the `lolinet` binary that runs it on devices, the scripts that sign credentials and issue pairing codes, the join site that hands them out, and the console and probe that show the result.
+The network itself is plain [EasyTier](https://github.com/EasyTier/EasyTier) v2.7.0 with three patches. Everything else in this repository sits around it: the `lolinet` binary that runs it on devices, the scripts that sign credentials and issue pairing codes, the join site that hands them out, and the console and probe that show the result.
 
 ## The network
 
@@ -42,9 +42,12 @@ Peer URLs use the relay's public IP, not its DNS name: on some networks the loca
 [`easytier/build.env`](../easytier/build.env) pins the upstream tag and commit (CI checks that the tag still points there) and lists the patches in order.
 
 - **[`easytier-v2.7.0-wss-sni.patch`](../patches/easytier-v2.7.0-wss-sni.patch)**: upstream EasyTier sends the host from the URL as SNI, and for an IP address that is `localhost`. The patch takes the SNI from the URL's `sni` query parameter, or from `ET_WSS_SNI` when the URL has none (peer URLs learned from other nodes carry no query), and strips the parameter from the WebSocket request.
+- **[`easytier-v2.7.0-udp-tunnel-pref.patch`](../patches/easytier-v2.7.0-udp-tunnel-pref.patch)**: upstream EasyTier keeps several connections to a peer but sends everything over one default connection, re-picked every 5 s by latency. So a QUIC stream (lolidesk) can end up inside a TCP or WSS tunnel and stall behind every retransmit, and a KCP stream can end up inside a UDP tunnel, where it collapses under loss. The patch sets a per-send preference. The sending node looks at the inner packet before encrypting it: UDP prefers a UDP tunnel, and KCP or QUIC proxy packets prefer TCP or WSS. A relay can't see the inner packet, so it sends KCP and QUIC packets (their type is in the header) over TCP or WSS, and forwards other packets over UDP when they arrived over UDP. Nothing on the wire changes, and when no connection of the preferred kind exists the old default connection is used. The UDP hole puncher also keeps trying when the only direct connection is TCP. Relays need both `tcp://` and `udp://` peers to each other, and devices a `udp://` peer next to each `wss://` one, for this to matter.
 - **[`easytier-v2.7.0-lolinet.patch`](../patches/easytier-v2.7.0-lolinet.patch)**: adds `lolinet` as a third binary of the `easytier` crate and makes `easytier-cli`'s `main` public, so `lolinet` can call it.
 
 [`easytier/check_sni.py`](../easytier/check_sni.py) proves the first patch works. It opens a TCP port as a fake relay, lets `easytier-core` connect over WSS, parses the TLS ClientHello it sends, and checks the SNI, both with `?sni=` and with `ET_WSS_SNI`. It doesn't look for strings in the binary: on x86_64, short constants end up as instruction immediates and can't be found. CI runs it on every build that its runner can execute, against both `easytier-core` and `lolinet` linked under that name.
+
+[`easytier/check_udp_pref.py`](../easytier/check_udp_pref.py) proves the tunnel preference. It starts three nodes on loopback (device, relay, device), each pair joined over both TCP and UDP, and counts the bytes each connection sends on both hops. In one scenario the UDP links are 20 ms slower, so the default is TCP: UDP traffic must still take UDP. In the other the TCP links are slower and KCP is on: KCP traffic must still take TCP. Run with `--expect-baseline` against an unpatched build, it checks that both cases follow the default connection instead, so the test can tell the two apart. CI runs it against `lolinet`.
 
 ## The `lolinet` binary
 

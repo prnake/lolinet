@@ -72,7 +72,7 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 
 ## 怎么连起来的
 
-内核是 [EasyTier](https://github.com/EasyTier/EasyTier)，打了两个小补丁。外面这层（命令行、准入站、配对、控制台、公开探针）是和 Claude 一起 vibe coding 写出来的。
+内核是 [EasyTier](https://github.com/EasyTier/EasyTier)，打了三个小补丁。外面这层（命令行、准入站、配对、控制台、公开探针）是和 Claude 一起 vibe coding 写出来的。
 
 ```
 设备 ──wss 443，自定义 SNI──▶ relay ◀── tcp / udp 两两互联 ──▶ relay ◀──▶ relay …
@@ -150,7 +150,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 | 路径 | 内容 |
 | :-- | :-- |
 | [`lolinet/`](lolinet/README.md) | `lolinet` 命令行的源码、`build.sh`、发布清单生成脚本 |
-| `easytier/`、`patches/` | 钉住的 EasyTier 版本、两个补丁、SNI 实测脚本 |
+| `easytier/`、`patches/` | 钉住的 EasyTier 版本、三个补丁、实测脚本 |
 | `join/` | 准入站：Cloudflare Worker、`install.sh`、`deploy.py` |
 | `scripts/` | `pair.py` 出配对码，`revoke.py` 吊销，`device_config.py` 渲染配置 |
 | `probe/` | 公开探针上报（只用 Python 标准库）和它的服务文件 |

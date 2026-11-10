@@ -72,7 +72,7 @@ lolinet cli …                         # stock easytier-cli (lolinet core … i
 
 ## How it fits together
 
-The core is [EasyTier](https://github.com/EasyTier/EasyTier) with two small patches. Everything around it (the CLI, join site, pairing, console and public probe) was vibe coded with Claude.
+The core is [EasyTier](https://github.com/EasyTier/EasyTier) with three small patches. Everything around it (the CLI, join site, pairing, console and public probe) was vibe coded with Claude.
 
 ```
 device ──wss :443, your SNI──▶ relay ◀── tcp / udp, every pair ──▶ relay ◀──▶ relay …
@@ -150,7 +150,7 @@ A remote terminal and remote desktop that run over the network, shipped separate
 | Path | Contents |
 | :-- | :-- |
 | [`lolinet/`](lolinet/README.md) | Source of the `lolinet` CLI, `build.sh`, and the release manifest generator |
-| `easytier/`, `patches/` | The pinned EasyTier version, the two patches, and the SNI check |
+| `easytier/`, `patches/` | The pinned EasyTier version, the three patches, and the checks that prove them |
 | `join/` | The join site: Cloudflare Worker, `install.sh`, `deploy.py` |
 | `scripts/` | `pair.py` issues pairing codes, `revoke.py` revokes, `device_config.py` renders configs |
 | `probe/` | The public probe reporter (Python standard library only) and its service files |
