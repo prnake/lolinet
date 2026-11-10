@@ -185,6 +185,19 @@ def share(d: dict, kind: str) -> float:
     return max(0, d.get(kind, 0)) / total if total else 0.0
 
 
+def dump_logs(tmp: str, slow: str) -> None:
+    """CI 里临时目录拿不到，失败时把每个节点日志的最后几行打出来。"""
+    for name in ("r", "a", "b"):
+        path = os.path.join(tmp, f"{slow}-{name}.log")
+        try:
+            lines = open(path, errors="replace").read().splitlines()
+        except OSError:
+            continue
+        print(f"   --- {name}.log（最后 15 行）")
+        for line in lines[-15:]:
+            print("   " + line[:300])
+
+
 def run_scenario(core: str, tmp: str, slow: str, kcp: bool, baseline: bool) -> bool:
     """slow = 哪种隧道加 20 ms 延迟；kcp = A、B 是否开 KCP 代理。返回是否符合预期。"""
     r_tcp, r_udp = free_port(), free_port(socket.SOCK_DGRAM)
@@ -203,7 +216,9 @@ def run_scenario(core: str, tmp: str, slow: str, kcp: bool, baseline: bool) -> b
 
     common = ["--network-name", "udppref-" + secrets.token_hex(4), "--network-secret", secrets.token_hex(16),
               "--secure-mode", "true", "--no-tun", "true", "--disable-p2p", "true",
-              "--disable-udp-hole-punching", "true", "--disable-tcp-hole-punching", "true", "--stun-servers"]
+              "--disable-udp-hole-punching", "true", "--disable-tcp-hole-punching", "true", "--stun-servers",
+              # Linux 上默认 bind_device=true，出站 socket 绑到默认网卡，连不到 127.0.0.1
+              "--bind-device", "false"]
     peers = ["-p", f"tcp://127.0.0.1:{tcp_entry}", "-p", f"udp://127.0.0.1:{udp_entry}"]
     dev_flags = ["--enable-kcp-proxy", "true"] if kcp else []
     nodes = {
@@ -233,6 +248,7 @@ def run_scenario(core: str, tmp: str, slow: str, kcp: bool, baseline: bool) -> b
             time.sleep(1)
         else:
             print("FAIL: 连接没有在 90 s 内就绪", ka, kb, f"logs in {tmp}")
+            dump_logs(tmp, slow)
             return False
         time.sleep(6)  # 默认连接每 5 s 按延迟重选一次
         print("   延迟 us  A→R:", lat(core, rpc["a"], "r"), " R→B:", lat(core, rpc["r"], "b"))
@@ -269,6 +285,7 @@ def run_scenario(core: str, tmp: str, slow: str, kcp: bool, baseline: bool) -> b
         ta, tr, tgot = res["tcp"]
         if ugot < 0.5 or tgot < 0.99:
             print(f"FAIL: 流量没送到（udp {ugot:.0%}，tcp {tgot:.0%}），logs in {tmp}")
+            dump_logs(tmp, slow)
             return False
         if baseline:
             # 没打补丁都跟着默认连接走：场景 1 默认 tcp，UDP 流量也走 tcp；场景 2 默认 udp，KCP 包也走 udp
