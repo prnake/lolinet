@@ -8,9 +8,9 @@
 用法:
   uv run join/deploy.py worker              上传 worker.js、绑定 KV/R2/DO/探针密钥、挂自定义域（HOSTNAMES）、关掉 workers.dev
   uv run join/deploy.py install             上传探针包 dl/mesh-probe.tar.gz（install.sh 装探针用），再上传 install.sh；
-                                            准入站上还没有四个平台的 lolinet 包（Actions → easytier → publish）就不传
+                                            准入站上还没有四个平台的 lolinet 包（先跑下面的 release）就不传
   uv run join/deploy.py dist <tarball>...   上传 dl/<文件名> 和 dl/<文件名>.sha256
-  uv run join/deploy.py release <目录>       easytier.yml publish 用：目录里的 easytier-* / lolinet-* 包、探针包，最后是清单
+  uv run join/deploy.py release <目录>       目录是一版 GitHub Release 的文件或 build 的产物：传 easytier-* / lolinet-* 包、探针包，最后是清单
                                             dl/lolinet.json（lolinet upgrade 按它自动升级，见 lolinet/release.py）
   uv run join/deploy.py site                上传探针页面（先 cd web && npm run build:probe）到 R2 site/
 
@@ -244,7 +244,7 @@ def require_lolinet() -> None:
         if not ok:
             missing.append(url)
     if missing:
-        raise SystemExit("install.sh 要下载的 lolinet 包还不在准入站上，先发布（Actions → easytier → Run workflow，勾 publish）：\n  "
+        raise SystemExit("install.sh 要下载的 lolinet 包还不在准入站上，先把一版 Release 的包传上来（join/deploy.py release <目录>）：\n  "
                          + "\n  ".join(missing))
 
 
@@ -276,11 +276,15 @@ def main() -> None:
         out = Path(args[0])
         packages = {f.name: f.read_bytes() for f in sorted(out.glob("*.tar.gz")) if f.name.startswith(("easytier-", "lolinet-"))}
         m = lolinet_manifest({k: v for k, v in packages.items() if k.startswith("lolinet-")})
+        # 目录是一版 GitHub Release 的文件时，清单和探针包原样传（设备从哪个来源升级拿到的都是同一份）；清单要和包对得上
+        given, probe = out / "lolinet.json", out / PROBE_NAME
+        if given.is_file() and json.loads(given.read_text()) != m:
+            raise SystemExit(f"{given} 和目录里的 lolinet 包对不上")
         for name, data in packages.items():
             put_dist(name, data)
-        put_dist(PROBE_NAME, probe_bundle())
+        put_dist(PROBE_NAME, probe.read_bytes() if probe.is_file() else probe_bundle())
         # 清单最后传：设备看到新清单时，它指的包都已经在了
-        put_object("dl/lolinet.json", (json.dumps(m, indent=1) + "\n").encode(), "application/json")
+        put_object("dl/lolinet.json", given.read_bytes() if given.is_file() else (json.dumps(m, indent=1) + "\n").encode(), "application/json")
         print(f"dl/lolinet.json：lolinet {m['version']}")
     elif cmd == "dist":
         for f in map(Path, args):

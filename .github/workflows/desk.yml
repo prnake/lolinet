@@ -1,7 +1,8 @@
 # lolidesk（desk/，Rust 工作区）：编 lolidesk-host 和 lolidesk，macOS arm64 / x86_64、Linux x86_64（Linux 只有终端，没有采屏）。
 # 独立发包，不编进 lolinet：lolinet 保持小体积的静态二进制（build.yml 的 Verify 会查）。
-# fmt、clippy、测试、编译，再在回环上实跑一次终端会话；产物是 artifact。
-# 这里不建 GitHub Release：设备按 releases/latest 找 lolinet.json，别的 Release 抢了 latest 会让自动升级找不到清单。
+# PR 和 main 上都跑：fmt、clippy、测试、编译，再在回环上实跑一次终端会话；产物是 artifact。
+# 在 main 上手动运行并勾 release，就发一个 lolidesk-<版本> 的 GitHub Release。它不能占 latest：
+# 设备按 releases/latest 找 lolinet.json，别的 Release 抢了 latest 会让自动升级找不到清单。
 name: desk
 
 on:
@@ -11,6 +12,11 @@ on:
   pull_request:
     paths: [desk/**, .github/workflows/desk.yml]
   workflow_dispatch:
+    inputs:
+      release:
+        description: 发一个 GitHub Release（tag lolidesk-<版本>，不占 latest），只在 main 上生效
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -107,3 +113,31 @@ jobs:
           path: desk/lolidesk-*.tar.gz
           if-no-files-found: error
 
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lolidesk-*
+          path: out
+          merge-multiple: true
+      - name: GitHub Release
+        run: |
+          # 版本取包里 BUILD-INFO 的第一行（lolidesk <版本>）
+          V=$(tar -xOzf out/lolidesk-linux-x86_64.tar.gz BUILD-INFO | sed -n '1s/^lolidesk //p')
+          [ -n "$V" ] || { echo "BUILD-INFO 里没有版本"; exit 1; }
+          TAG="lolidesk-$V"
+          (cd out && for f in lolidesk-*.tar.gz; do sha256sum "$f" > "$f.sha256"; done && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          BEFORE=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS --target "$GITHUB_SHA" --latest=false --title "lolidesk $V" \
+            --notes "lolidesk $V：主机端 lolidesk-host 和客户端 lolidesk，macOS arm64 / x86_64、Linux x86_64（Linux 只有终端）。独立发包，不编进 lolinet。"
+          # releases/latest 还得是 lolinet 的那一版
+          AFTER=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          [ "$AFTER" = "$BEFORE" ] || { echo "releases/latest 从 ${BEFORE:-无} 变成了 $AFTER"; exit 1; }

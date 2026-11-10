@@ -9,7 +9,7 @@ ROOT=$(pwd)
 . easytier/build.env
 SRC=${LOLINET_SRC:-$ROOT/.build/easytier}
 TARGET=${TARGET:-}
-# 和 easytier.yml 一致：aarch64 用 mimalloc，x86_64 用 jemalloc
+# 和 CI（build.yml）一致：aarch64 用 mimalloc，x86_64 用 jemalloc
 case "${TARGET:-$(uname -m)}" in *aarch64*|*arm64*) ARCH=aarch64; FEATURES=${FEATURES:-mimalloc} ;; *) ARCH=x86_64; FEATURES=${FEATURES:-jemalloc} ;; esac
 case "${TARGET:-$(uname -s)}" in *darwin*|*Darwin*) OS=macos ;; *) OS=linux ;; esac
 

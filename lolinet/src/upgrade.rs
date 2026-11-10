@@ -6,8 +6,9 @@
 //! - 都没有就用 GitHub `prnake/lolinet`。
 //!
 //! 清单写的是「应该跑哪个版本」，不比新旧：和本机不一样就换（想回退就把旧版本重新发布一次）。
-//! 包和清单放在同一个目录（准入站 dl/、GitHub 某个 Release），按清单最终的 URL（跟随跳转后）拼出包的地址，
-//! 所以 GitHub 的 releases/latest 会钉在同一个 Release 上。下载用系统 curl，sha256 不对就不换。
+//! 包和清单放在同一个目录（准入站 dl/、GitHub 某个 Release），按清单的地址拼出包的地址。清单的地址只跟「文件名不变」的跳转：
+//! GitHub 的 releases/latest/download/ 先跳到 releases/download/<tag>/（钉在这一版上），再跳到一次性的存储地址，
+//! 后面那个目录里没有别的文件，不能拿来拼。下载用系统 curl，sha256 不对就不换。
 
 use std::{
     fs,
@@ -94,10 +95,10 @@ impl Drop for Tmp {
     }
 }
 
-/// 下载到 dest，返回跟随跳转后的最终 URL
-fn fetch(url: &str, dest: &Path) -> Result<String> {
+/// 下载到 dest（跟随跳转）
+fn fetch(url: &str, dest: &Path) -> Result<()> {
     let out = Command::new("curl")
-        .args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "--max-time", "600", "-w", "%{url_effective}", "-o"])
+        .args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "--max-time", "600", "-o"])
         .arg(dest)
         .arg(url)
         .output()
@@ -105,7 +106,32 @@ fn fetch(url: &str, dest: &Path) -> Result<String> {
     if !out.status.success() {
         bail!("下载 {url} 失败：{}", String::from_utf8_lossy(&out.stderr).trim());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    Ok(())
+}
+
+/// 清单的稳定地址：从 url 出发，只跟文件名不变的跳转（最多 5 次）。包和探针的地址从它拼
+fn pinned(url: &str) -> Result<String> {
+    fn name(u: &str) -> &str {
+        let base = u.split(['?', '#']).next().unwrap_or(u);
+        &base[base.rfind('/').map_or(0, |i| i + 1)..]
+    }
+    let mut at = url.to_owned();
+    for _ in 0..5 {
+        let out = Command::new("curl")
+            .args(["-fsS", "--retry", "2", "--connect-timeout", "20", "--max-time", "60", "-o", "/dev/null", "-w", "%{redirect_url}"])
+            .arg(&at)
+            .output()
+            .context("跑 curl")?;
+        if !out.status.success() {
+            bail!("下载 {at} 失败：{}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        let next = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if next.is_empty() || name(&next) != name(&at) {
+            break;
+        }
+        at = next;
+    }
+    Ok(at)
 }
 
 /// 清单所在目录里的另一个文件
@@ -140,7 +166,8 @@ struct Manifest {
 
 fn manifest(url: &str, tmp: &Path) -> Result<Manifest> {
     let path = tmp.join("lolinet.json");
-    let effective = fetch(url, &path)?;
+    let at = pinned(url)?;
+    fetch(&at, &path)?;
     let v: Value = serde_json::from_slice(&fs::read(&path)?).with_context(|| format!("{url} 不是 JSON"))?;
     let entry = v.pointer(&format!("/lolinet/{}", platform())).with_context(|| format!("清单里没有 {}", platform()))?;
     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned).with_context(|| format!("清单缺 {k}"));
@@ -149,7 +176,7 @@ fn manifest(url: &str, tmp: &Path) -> Result<Manifest> {
         file: s(entry, "file")?,
         sha256: s(entry, "sha256")?,
         probe: v.pointer("/probe/file").and_then(Value::as_str).map(str::to_owned),
-        url: effective,
+        url: at,
     })
 }
 
