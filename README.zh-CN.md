@@ -135,7 +135,7 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 | :-- | :-- |
 | **发布清单** | `lolinet.json` 写的是设备应该跑的版本，以及每个平台的文件名和 sha256。本机版本和它不一样就换，所以把旧版本重新发布一次就是回退 |
 | **来源** | `install.sh` 从哪里下载成功就跟哪里：GitHub Releases（`github:prnake/lolinet`），GitHub 连不上时是准入站的 `dl/lolinet.json`。也可以用 `--upgrade-source` 指定任何清单 URL |
-| **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。探针的 `reporter.py` 也一样换 |
+| **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。设备的探针编在 `lolinet` 里，跟着一起换 |
 | **不吵** | 每 6 小时跑一次，只有换了版本或出错时才写日志。`lolinet status` 能看到它开没开 |
 
 ### 本地控制台
@@ -160,7 +160,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 | `easytier/`、`patches/` | 钉住的 EasyTier 版本、三个补丁、实测脚本 |
 | `join/` | 准入站：Cloudflare Worker、`install.sh`、`deploy.py` |
 | `scripts/` | `pair.py` 出配对码，`revoke.py` 吊销，`device_config.py` 渲染配置 |
-| `probe/` | 公开探针上报（只用 Python 标准库）和它的服务文件 |
+| `probe/` | relay 的公开探针上报（只用 Python 标准库）。设备的探针编在 `lolinet` 里（`lolinet probe`，格式和签名相同） |
 | [`web/`](web/README.md) | 本地控制台、公开探针页面、控制台的 agent |
 | [`desk/`](desk/README.md) | lolidesk，Rust 工作区 |
 | [`nodes.example.yaml`](nodes.example.yaml) | 节点清单模板 |

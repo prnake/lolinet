@@ -10,7 +10,8 @@
 签名：X-Probe-Sig = hex(HMAC-SHA256(key, "<ts>." + body))，key = HMAC-SHA256(master, "probe:<name>")。
 master 只在 Worker 和$LOLINET_HOME/state/mesh-probe.json 里；一台 relay 被攻破只能伪造它自己的卡片。
 
-设备模式（配置里 "mode": "device"，name 是 d-<10 位十六进制>，由 probe/device.py 生成，和设备名无关）：
+设备模式（配置里 "mode": "device"，name 是 d-<10 位十六进制>，由 probe/device.py 生成，和设备名无关）。
+装了 lolinet 的设备用 lolinet 内置的探针（lolinet probe，同样的格式和签名，配对时装）；这里的设备模式留给 Docker 里的设备：
 只报硬件和位置（型号、处理器、内存、存储总量、系统、架构、配置的位置或最近的接入点），每 60 秒一次心跳；
 不报主机名、地址、序列号、负载。macOS 和 Linux 都能跑（macOS 自带的 python3 3.9 就行）。
 

@@ -63,7 +63,8 @@ Peer URLs use the relay's public IP, not its DNS name: on some networks the loca
 
 - removes that service, which would compete for the same TUN device and credential;
 - copies `/etc/easytier/loli.toml` to `/etc/lolinet/loli.toml` if the new one doesn't exist yet, and leaves the old file in place;
-- replaces `easytier-core` and `easytier-cli` in the old directory (`/usr/local/libexec/easytier/` on macOS, `/opt/easytier/` on Linux) with symlinks to `lolinet`, so the probe and older scripts keep working.
+- replaces `easytier-core` and `easytier-cli` in the old directory (`/usr/local/libexec/easytier/` on macOS, `/opt/easytier/` on Linux) with symlinks to `lolinet`, so no-tun clients, a not-yet-migrated Python probe and older scripts keep working.
+- moves a device-mode Python probe (`/etc/mesh-probe/reporter.json`) to the built-in one, keeping its public id.
 
 **Credential expiry.** `pair.py` appends `# credential_id` and `# credential_expiry_unix` to the config as TOML comments. EasyTier ignores them; `lolinet status` reads them to show the days left. The config is mode 600, so this line needs `sudo`.
 
@@ -86,7 +87,7 @@ admin                         console (issuer)        join site (Worker + KV)   
 - **Code**: 12 characters from an alphabet without look-alikes (no `0`, `O`, `1`, `I`, `L`), shown in groups of four.
 - **Encryption**: PBKDF2-SHA256 with 200,000 rounds derives the key and IV, then AES-256-CBC, in OpenSSL's `Salted__` format. The device decrypts with `openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256`, which every macOS and Linux has.
 - **The Worker** stores the ciphertext under a hash of the code, deletes it on the first `GET`, and allows each IP 20 attempts per 10 minutes. `HEAD` requests are refused so they can't use up a code. The code itself never reaches the Worker.
-- **The probe** rides along: unless the code was made with `--no-probe`, the config ends with a `# probe = {…}` line holding the device's public id and report key. `install.sh` and `lolinet up` take that line out before the config goes to EasyTier.
+- **The probe** rides along: unless the code was made with `--no-probe`, the config ends with a `# probe = {…}` line holding the device's public id and report key. `lolinet up` moves that line to `/etc/lolinet/probe.json` and installs the probe service; it never reaches EasyTier.
 - **Before redeeming**, `install.sh` checks that the machine is supported (macOS, or Linux with systemd) and downloads and verifies `lolinet`, so a code isn't spent on a machine that can't use it or can't get the client.
 - **Where `lolinet` comes from.** The latest GitHub Release, pinned to one tag through the `releases/latest` redirect. If GitHub is unreachable or too slow (common from mainland China), the join site's `dl/`, which holds the same release's files. `lolinet up` then points auto-upgrade at the source that worked, so a device never flips between two sources that are briefly on different versions.
 - **Without a code** the same script upgrades a device already in the network: it reuses the config on the machine and runs `lolinet up` only if the version, the service or the upgrade job needs it.
@@ -105,13 +106,13 @@ admin                         console (issuer)        join site (Worker + KV)   
 2. The sha256 must match the manifest.
 3. The new binary must run on this machine and print the manifest's version from `--version`.
 
-Then it replaces `/usr/local/bin/lolinet` atomically and restarts the service. If the probe is installed and the release's `reporter.py` differs, that is replaced too and the probe restarted. The job logs only switches and errors.
+Then it replaces `/usr/local/bin/lolinet` atomically and restarts the service. The probe is part of the binary, so it switches with it; each run also tidies the probe (takes over a Python one, reinstalls a service file this version writes differently). The job logs only switches and errors.
 
 ## Public probe
 
 The join site's home page shows the network's health to anyone, without naming anything.
 
-**Reports.** [`probe/reporter.py`](../probe/reporter.py) needs only the Python standard library (macOS's `/usr/bin/python3` 3.9 is enough) and runs without root.
+**Reports.** Devices report with `lolinet probe`, built into `lolinet` ([`src/probe.rs`](../lolinet/src/probe.rs)): it reads hardware from `system_profiler` / `sysctl` (macOS) or `/proc` and `/sys/class/dmi` (Linux), asks the local kernel for the nearest relay, and sends through the system's curl with the key on stdin. It starts as root and drops to `nobody`. Relays, and devices in Docker that can't run the `lolinet` service, use [`probe/reporter.py`](../probe/reporter.py), which needs only the Python standard library (macOS's `/usr/bin/python3` 3.9 is enough) and runs without root. Both send the same format with the same signature.
 
 - **Relays** report every 30 seconds: CPU, memory, disk, network rate and traffic, load, uptime, OS and EasyTier version from `/proc` and `easytier-cli -o json peer`, plus their links to other relays and to devices.
 - **Devices** send a heartbeat every 60 seconds with hardware only: model, chip, memory, total storage, OS and architecture, and a location. The location is a fixed city, or "near <city>" for the nearest relay by measured latency. Never a hostname, address, serial number or load.

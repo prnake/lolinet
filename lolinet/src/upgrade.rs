@@ -1,4 +1,5 @@
-//! 自动升级：按发布清单 lolinet.json 把 /usr/local/bin/lolinet（和装了的探针 reporter.py）换成发布的版本。
+//! 自动升级：按发布清单 lolinet.json 把 /usr/local/bin/lolinet 换成发布的版本（公开探针编在里面，一起换）。
+//! 每次（不管换没换）顺带把探针理一遍：以前 install.sh 装的 python 版接管过来，服务文件跟上这一版。
 //!
 //! 清单来源（/etc/lolinet/lolinet.json 的设置，`lolinet up` 写）：
 //! - `source` = `github:<owner>/<repo>`：GitHub Releases 最新一版的 lolinet.json；或者直接是清单 URL；
@@ -21,12 +22,11 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-use crate::{BIN, VERSION, service, write_file};
+use crate::{BIN, VERSION, probe, service, write_file};
 
 pub const SETTINGS: &str = "/etc/lolinet/lolinet.json";
 pub const DEFAULT_GITHUB: &str = "prnake/lolinet";
 pub const INTERVAL_HOURS: u64 = 6;
-const PROBE: &str = if cfg!(target_os = "macos") { "/usr/local/libexec/mesh-probe/reporter.py" } else { "/opt/mesh-probe/reporter.py" };
 
 pub struct Settings {
     pub base_url: Option<String>,
@@ -144,7 +144,7 @@ fn sha256(path: &Path) -> Result<String> {
     Ok(hex(&Sha256::digest(fs::read(path)?)))
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -161,7 +161,6 @@ struct Manifest {
     version: String,
     file: String,
     sha256: String,
-    probe: Option<String>,
 }
 
 fn manifest(url: &str, tmp: &Path) -> Result<Manifest> {
@@ -175,7 +174,6 @@ fn manifest(url: &str, tmp: &Path) -> Result<Manifest> {
         version: s(&v, "version")?,
         file: s(entry, "file")?,
         sha256: s(entry, "sha256")?,
-        probe: v.pointer("/probe/file").and_then(Value::as_str).map(str::to_owned),
         url: at,
     })
 }
@@ -207,11 +205,15 @@ pub fn run(check: bool, dry_run: bool, auto: bool, source: Option<String>) -> Re
         } else {
             replace(&m, &tmp.0, dry_run, auto)?;
         }
-        if let Some(file) = &m.probe {
-            probe(&m, file, &tmp.0, check || dry_run, auto)?;
-        }
         Ok(())
     })();
+    // 公开探针：python 版接管过来、服务文件跟上这一版；和这次下载成不成功无关
+    if !check && !dry_run {
+        let stamp = if auto { format!("{} ", now()) } else { String::new() };
+        if let Err(e) = probe::reconcile(false, &|m| println!("{stamp}{m}")) {
+            println!("{stamp}公开探针：{e:#}");
+        }
+    }
     if auto {
         // 定时任务的输出进 /var/log/lolinet/upgrade.log：只记换了什么和出错，平时不写
         if let Err(e) = &res {
@@ -249,39 +251,12 @@ fn replace(m: &Manifest, tmp: &Path, dry_run: bool, auto: bool) -> Result<()> {
     fs::set_permissions(&tmp_bin, fs::Permissions::from_mode(0o755))?;
     fs::rename(&tmp_bin, BIN)?;
     let restarted = service::state().is_some() && service::restart().is_ok();
+    service::restart_probe();
     println!(
         "{}lolinet {VERSION} -> {}{}",
         if auto { format!("{} ", now()) } else { String::new() },
         m.version,
         if restarted { "，服务已重启" } else { "" }
     );
-    Ok(())
-}
-
-/// 装了探针（join/install.sh 装的）才管：reporter.py 和发布的不一样就换、重启探针服务。探针包的 sha256 在同目录的 .sha256 里
-fn probe(m: &Manifest, file: &str, tmp: &Path, look_only: bool, auto: bool) -> Result<()> {
-    if !Path::new(PROBE).exists() {
-        return Ok(());
-    }
-    let tgz = tmp.join(file);
-    let sum = tmp.join(format!("{file}.sha256"));
-    fetch(&sibling(&m.url, file), &tgz)?;
-    fetch(&sibling(&m.url, &format!("{file}.sha256")), &sum)?;
-    let want = fs::read_to_string(&sum)?.split_whitespace().next().unwrap_or("").to_owned();
-    let got = sha256(&tgz)?;
-    if got != want {
-        bail!("{file} 的 sha256 不对：{got}，{file}.sha256 写的是 {want}");
-    }
-    let new = untar(&tgz, &tmp.join("probe"), "reporter.py")?;
-    if fs::read(&new)? == fs::read(PROBE)? {
-        return Ok(());
-    }
-    if look_only {
-        println!("探针 reporter.py 有新版本（{file}）");
-        return Ok(());
-    }
-    write_file(PROBE, &fs::read(&new)?, 0o644)?;
-    service::restart_probe();
-    println!("{}探针 reporter.py 已更新并重启", if auto { format!("{} ", now()) } else { String::new() });
     Ok(())
 }

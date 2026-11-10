@@ -1,6 +1,6 @@
 //! lolinet：基于 EasyTier 的组网命令行。EasyTier（easytier/build.env 的版本 + patches/）整个编进同一个二进制，
 //! 按 argv[0] 分发：叫 easytier-core / easytier-cli 时就是原版（`lolinet up` 把老路径的这两个名字链接过来，
-//! 探针、no-tun 客户端、老脚本照用）；叫 lolinet 时管后台服务、看状态。构建见 lolinet/build.sh。
+//! no-tun 客户端、老脚本照用）；叫 lolinet 时管后台服务、看状态、跑公开探针。构建见 lolinet/build.sh。
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 use mimalloc::MiMalloc;
@@ -23,6 +23,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 #[path = "../easytier-cli.rs"]
 mod et_cli;
+mod probe;
 mod service;
 mod status;
 mod upgrade;
@@ -70,7 +71,8 @@ enum Cmd {
     Peers,
     /// 路由表（easytier-cli route）
     Routes,
-    /// 装成系统服务并启动（要 root）；会接管 join 脚本以前装的 easytier 服务，默认带自动升级
+    /// 装成系统服务并启动（要 root）；会接管 join 脚本以前装的 easytier 服务，默认带自动升级。
+    /// 配置末尾有配对时的 `# probe = {...}` 就一起装公开探针
     Up {
         /// 换成这份配置（配对得到的 loli.toml）；不给就用现有的
         #[arg(short, long)]
@@ -85,7 +87,7 @@ enum Cmd {
         #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
         auto_upgrade: Option<bool>,
     },
-    /// 按发布清单升级 lolinet 和探针（要 root）；定时任务每 6 小时跑一次 --auto
+    /// 按发布清单升级 lolinet（要 root）；定时任务每 6 小时跑一次 --auto
     Upgrade {
         /// 只看发布的版本，不下载不换（不要 root）
         #[arg(long)]
@@ -102,6 +104,11 @@ enum Cmd {
     },
     /// 停掉并卸载系统服务（要 root），配置和二进制保留
     Down,
+    /// 公开探针：准入站首页的设备卡片，只报硬件和位置（不带子命令就是 show）
+    Probe {
+        #[command(subcommand)]
+        cmd: Option<ProbeCmd>,
+    },
     /// 重启后台进程（要 root）
     Restart,
     /// 看内核日志
@@ -128,6 +135,29 @@ enum Cmd {
     Cli {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProbeCmd {
+    /// 打印这一轮要报的内容，不发（配置是 600，要 sudo）
+    Show {
+        /// 探针配置，默认 /etc/lolinet/probe.json
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// 照常采一次并真发出去，看准入站收没收
+    Send {
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// 关掉（要 root）：从公开页面撤下、卸载服务、删配置；以后要再装得重新配对
+    Off,
+    /// 服务入口：常驻，每 60 秒上报一次（launchd / systemd 调它）
+    #[command(hide = true)]
+    Run {
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -174,6 +204,12 @@ fn lolinet(args: Args) -> Result<()> {
             need_root()?;
             service::restart()
         }
+        Cmd::Probe { cmd } => match cmd.unwrap_or(ProbeCmd::Show { config: None }) {
+            ProbeCmd::Show { config } => probe::show(config, false),
+            ProbeCmd::Send { config } => probe::show(config, true),
+            ProbeCmd::Off => probe::off(),
+            ProbeCmd::Run { config } => probe::run(config),
+        },
         Cmd::Logs { follow, lines } => {
             let mut tail = Command::new("tail");
             tail.arg("-n").arg(lines.to_string());
@@ -226,13 +262,18 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     fs::set_permissions("/etc/lolinet", fs::Permissions::from_mode(0o755))?;
     let migrate = !Path::new(CONFIG).exists() && Path::new(OLD_CONFIG).exists();
     let src = config.or_else(|| migrate.then(|| OLD_CONFIG.into()));
+    let mut probe_cfg = None;
     if let Some(src) = &src {
         if !tool("easytier-core").arg("--check-config").arg("-c").arg(src).status()?.success() {
             bail!("配置检查没过：{}", src.display());
         }
         let text = fs::read_to_string(src).with_context(|| format!("读 {}", src.display()))?;
-        // 配对包末尾给探针的那一行不进 EasyTier 配置（join/install.sh 也是这么处理的）
-        let text: String = text.lines().filter(|l| !l.starts_with("# probe = ")).map(|l| format!("{l}\n")).collect();
+        // 配对包末尾给探针的那一行（scripts/pair.py 写的公开 id + 上报密钥）单独存，不进 EasyTier 配置
+        match probe::from_pairing(&text) {
+            Ok(p) => probe_cfg = p,
+            Err(e) => eprintln!("配置里的探针那一行用不了，这次不装公开探针：{e:#}"),
+        }
+        let text: String = text.lines().filter(|l| !l.starts_with(probe::PAIR_LINE)).map(|l| format!("{l}\n")).collect();
         write_file(CONFIG, text.as_bytes(), 0o600)?;
         println!("配置 {} -> {CONFIG}", src.display());
     } else if !Path::new(CONFIG).exists() {
@@ -255,6 +296,16 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     st.save()?;
     service::install()?;
     service::install_upgrade(st.auto)?;
+    // 公开探针：这次的配置带了就换上；以前 install.sh 装的 python 版接管过来。探针出错不影响入网
+    let probe_res = (|| {
+        if let Some(p) = &probe_cfg {
+            probe::save(p)?;
+        }
+        probe::reconcile(true, &|m| println!("{m}"))
+    })();
+    if let Err(e) = probe_res {
+        eprintln!("公开探针没装上：{e:#}");
+    }
     // 等内核起来、管理口连得上，再给 peer 几秒握手
     for _ in 0..30 {
         if status::node().is_some() {
@@ -281,8 +332,8 @@ fn install_self() -> Result<()> {
     Ok(())
 }
 
-/// 老路径的 easytier-core / easytier-cli 换成指向 lolinet 的链接：探针（reporter.py 找 easytier-cli）、
-/// no-tun 客户端（如菜单栏 App）和以前的脚本不用改。
+/// 老路径的 easytier-core / easytier-cli 换成指向 lolinet 的链接：no-tun 客户端（如菜单栏 App）、
+/// 还没换成内置探针的 python 版（reporter.py 找 easytier-cli）和以前的脚本不用改。
 fn link_legacy_names() -> Result<()> {
     fs::create_dir_all(OLD_BIN_DIR)?;
     for name in ["easytier-core", "easytier-cli"] {

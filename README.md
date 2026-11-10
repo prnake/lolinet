@@ -135,7 +135,7 @@ The details are in [Architecture](docs/architecture.md).
 | :-- | :-- |
 | **Manifest** | `lolinet.json` names the version devices should run, with each platform's file and sha256. If the local version differs, the device switches, so publishing an old version again rolls back |
 | **Sources** | Whichever `install.sh` downloaded from: GitHub Releases (`github:prnake/lolinet`), or the join site's `dl/lolinet.json` when GitHub was out of reach. Or any manifest URL with `--upgrade-source` |
-| **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The probe's `reporter.py` is updated the same way |
+| **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The device probe is built into `lolinet` and switches with it |
 | **Quiet** | Runs every 6 hours and writes a log line only when it switches versions or fails. `lolinet status` shows whether it is on |
 
 ### Local console
@@ -160,7 +160,7 @@ A remote terminal and remote desktop that run over the network, shipped separate
 | `easytier/`, `patches/` | The pinned EasyTier version, the three patches, and the checks that prove them |
 | `join/` | The join site: Cloudflare Worker, `install.sh`, `deploy.py` |
 | `scripts/` | `pair.py` issues pairing codes, `revoke.py` revokes, `device_config.py` renders configs |
-| `probe/` | The public probe reporter (Python standard library only) and its service files |
+| `probe/` | The relays' public probe reporter (Python standard library only). Devices use the one built into `lolinet` (`lolinet probe`, same format and signature) |
 | [`web/`](web/README.md) | The local console, the public probe page, and the console's agent |
 | [`desk/`](desk/README.md) | lolidesk, a Rust workspace |
 | [`nodes.example.yaml`](nodes.example.yaml) | Template for your node list |

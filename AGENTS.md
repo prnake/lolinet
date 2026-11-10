@@ -18,7 +18,7 @@ Run what covers your change before saying it works, and say what you didn't run.
 Devices in the field depend on these. Changing one needs a migration path, not just an edit.
 
 - **No secrets, no real node list.** `nodes.yaml`, `.env` and `state/` are git-ignored; secrets are generated at deploy time into `$LOLINET_HOME/state/` (mode 600) and Worker secrets. Examples use `example.com` domains and `203.0.113.0/24` addresses.
-- **Installed paths and names are stable**: `/usr/local/bin/lolinet`, `/etc/lolinet/`, `/var/log/lolinet/`, `/etc/mesh-probe/`, the launchd labels `co.lo-li.*`, the systemd units `lolinet.service`, `lolinet-upgrade.{service,timer}`, `mesh-probe.service`, and the legacy paths `lolinet up` takes over (`/etc/easytier/loli.toml`, `/usr/local/libexec/easytier/`, `/opt/easytier/`, `Application Support/lo-li mesh/probe`).
+- **Installed paths and names are stable**: `/usr/local/bin/lolinet`, `/etc/lolinet/`, `/var/log/lolinet/`, `/etc/mesh-probe/`, the launchd labels `co.lo-li.*`, the systemd units `lolinet.service`, `lolinet-upgrade.{service,timer}`, `lolinet-probe.service`, `mesh-probe.service` (relays), and the legacy paths `lolinet up` takes over (`/etc/easytier/loli.toml`, `/usr/local/libexec/easytier/`, `/opt/easytier/`, `Application Support/lo-li mesh/probe`, the device-mode `/etc/mesh-probe/`).
 - **Release format is a contract** with `lolinet upgrade` and `install.sh`: package names `lolinet-<macos|linux>-<aarch64|x86_64>.tar.gz` with the binary at the archive root, `BUILD-INFO`'s first line `lolinet <version>`, the `lolinet.json` schema, packages next to the manifest. `DEFAULT_GITHUB` in `lolinet/src/upgrade.rs` is the fallback source.
 - **`releases/latest` is always a lolinet release.** Devices on `github:` sources fetch `releases/latest/download/lolinet.json`. lolidesk releases use `--latest=false`.
 - **The public probe names nothing.** No relay or device names, overlay or public addresses, SNI, console host or secret fields in `web/dist-probe/` or `/v1/probe`. `meshNodes({ public: true })` in `web/vite.nodes.ts` and `web/scripts/check-probe-bundle.mjs` enforce it; the probe build must not import from `web/src/data/store`.
@@ -30,7 +30,7 @@ Devices in the field depend on these. Changing one needs a migration path, not j
 | What | Where |
 | :-- | :-- |
 | Pairing crypto (PBKDF2-SHA256, 200,000 rounds, AES-256-CBC, `sha256(code)[:32]` as the KV key) | `scripts/pair.py`, `join/install.sh` |
-| Probe key derivations (`probe:<name>`, `devid`) and the signature format | `join/worker.js`, `probe/reporter.py`, `probe/device.py`, `join/deploy.py` |
+| Probe key derivations (`probe:<name>`, `devid`) and the signature format | `join/worker.js`, `probe/reporter.py`, `probe/device.py`, `lolinet/src/probe.rs`, `join/deploy.py` |
 | The four platforms | `.github/workflows/build.yml`, `lolinet/release.py`, `join/deploy.py`, `lolinet/build.sh`, `join/install.sh` |
 | Probe bundle file list | `lolinet/release.py` (`PROBE_FILES`), `join/install.sh`, `lolinet/src/upgrade.rs` |
 | Node list lookup (`LOLINET_NODES` → `nodes.yaml` → `nodes.example.yaml`) | `join/deploy.py`, `scripts/device_config.py`, `probe/device.py`, `web/vite.nodes.ts`, `web/scripts/check-probe-bundle.mjs` |

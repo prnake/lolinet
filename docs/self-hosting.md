@@ -83,7 +83,7 @@ export LOLINET_BASE_URL=https://join.edge.example.com
 uv run join/deploy.py worker                          # the Worker, KV / R2 / Durable Object bindings, custom domains
 (cd web && npm ci && npm run build:probe) && uv run join/deploy.py site   # the public probe page
 gh release download <lolinet-… tag> --repo prnake/lolinet --dir out   # a lolinet release, or your own build
-uv run join/deploy.py release out                     # packages, probe bundle, then the manifest dl/lolinet.json
+uv run join/deploy.py release out                     # packages, then the manifest dl/lolinet.json
 uv run join/deploy.py install                         # install.sh, once the packages are there
 ```
 
@@ -189,7 +189,7 @@ The join site needs all four platforms: `linux-x86_64`, `linux-aarch64`, `macos-
 
 ### Releasing from a fork
 
-- **lolinet:** run the `build` workflow on `main` with **release** checked, or push a `v*` tag. It publishes `lolinet-<version>` with the four `lolinet-*` and `easytier-*` packages, the probe bundle, `SHA256SUMS` and `lolinet.json`, and marks it latest.
+- **lolinet:** run the `build` workflow on `main` with **release** checked, or push a `v*` tag. It publishes `lolinet-<version>` with the four `lolinet-*` and `easytier-*` packages, `SHA256SUMS` and `lolinet.json`, and marks it latest.
 - **lolidesk:** run the `desk` workflow on `main` with **release** checked. It publishes `lolidesk-<version>` without marking it latest.
 
 Devices that follow GitHub read `releases/latest/download/lolinet.json`, so `latest` must always be a lolinet release. Publish lolinet before your first lolidesk release: when a repository has only one release, GitHub treats it as latest whatever the flag says.
