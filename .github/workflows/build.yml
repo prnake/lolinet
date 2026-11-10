@@ -109,8 +109,17 @@ jobs:
 
       - name: Verify
         run: |
-          file pkg/easytier-core
-          if [ "$RUNNER_OS" = Linux ]; then file pkg/easytier-core | grep -qE 'statically linked|static-pie'; fi
+          file pkg/easytier-core pkg/easytier-cli pkg-lolinet/lolinet
+          # Linux 产物必须是静态链接（路由器、容器里直接跑）。lolinet 只装 EasyTier 内核和命令行，体积设上限：
+          # 带图形界面或系统框架依赖的东西（desk/ 的 lolidesk）独立发包，不往这个二进制里并。
+          if [ "$RUNNER_OS" = Linux ]; then
+            for b in pkg/easytier-core pkg/easytier-cli pkg-lolinet/lolinet; do
+              file "$b" | grep -qE 'statically linked|static-pie' || { echo "$b 不是静态链接"; exit 1; }
+            done
+          fi
+          SIZE=$(($(wc -c < pkg-lolinet/lolinet))); TAR=$(($(wc -c < out/lolinet-${{ matrix.name }}.tar.gz)))
+          echo "lolinet: 二进制 $SIZE 字节，包 $TAR 字节"
+          [ "$SIZE" -le 33554432 ] && [ "$TAR" -le 14680064 ] || { echo "lolinet 超过体积上限（二进制 32 MiB / 包 14 MiB）"; exit 1; }
           # 补丁生效：本机起一个假 relay，解析 easytier-core 发出的 ClientHello 核对 SNI（没打补丁会是 localhost）。
           # 不靠在二进制里找字符串：x86_64 上短常量会被编进指令立即数，找不到。
           # 交叉编译的产物 runner 跑得动（如 Rosetta）就也测，跑不动就只靠上面 git apply 成功保证补丁在。

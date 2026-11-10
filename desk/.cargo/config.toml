@@ -1,0 +1,6 @@
+# screencapturekit 的 Swift 桥接让二进制依赖系统 Swift 运行时（@rpath/libswift*.dylib），要给出 /usr/lib/swift 这个 rpath。
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]

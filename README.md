@@ -24,6 +24,7 @@
 | `scripts/` | `pair.py` 签凭据、出配对码；`revoke.py` 吊销凭据；`device_config.py` 渲染设备配置 |
 | `probe/` | 公开探针上报，relay 和设备都用，只依赖 Python 标准库 |
 | `web/` | 前端：本地控制台（拓扑、节点、凭据、配对）和公开探针页面。设计语言叫「猫眼」，见 [web/DESIGN.md](web/DESIGN.md) |
+| [`desk/`](desk/README.md) | lolidesk：网里的远程终端和远程桌面。主机端 `lolidesk-host`，客户端 `lolidesk` 带图形界面和终端界面。独立发包，不编进 `lolinet` |
 
 ## 怎么连
 

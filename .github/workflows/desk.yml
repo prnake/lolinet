@@ -1,0 +1,105 @@
+# lolidesk（desk/，Rust 工作区）：编 lolidesk-host 和 lolidesk，macOS arm64 / x86_64、Linux x86_64（Linux 只有终端，没有采屏）。
+# 独立发包，不编进 lolinet：lolinet 保持小体积的静态二进制（build.yml 的 Verify 会查）。
+# fmt、clippy、测试、编译，再在回环上实跑一次终端会话；产物是 artifact。
+# 这里不建 GitHub Release：设备按 releases/latest 找 lolinet.json，别的 Release 抢了 latest 会让自动升级找不到清单。
+name: desk
+
+on:
+  push:
+    branches: [main]
+    paths: [desk/**, .github/workflows/desk.yml]
+  pull_request:
+    paths: [desk/**, .github/workflows/desk.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desk-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-aarch64, os: macos-15, target: aarch64-apple-darwin, native: true }
+          - { name: macos-x86_64, os: macos-15, target: x86_64-apple-darwin, native: false }
+          - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, native: true }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desk
+          key: ${{ matrix.target }}
+      - name: Linux build deps (egui / wgpu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -qqy libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgtk-3-dev
+
+      - name: fmt + clippy
+        working-directory: desk
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Test
+        if: matrix.native
+        working-directory: desk
+        run: cargo test --locked --workspace --target ${{ matrix.target }}
+
+      - name: Build
+        working-directory: desk
+        run: cargo build --locked --release --workspace --target ${{ matrix.target }}
+
+      - name: Package
+        working-directory: desk
+        run: |
+          OS=$([ "${{ runner.os }}" = macOS ] && echo macos || echo linux)
+          ARCH=$(echo ${{ matrix.target }} | cut -d- -f1)
+          mkdir -p pkg
+          cp target/${{ matrix.target }}/release/lolidesk-host target/${{ matrix.target }}/release/lolidesk pkg/
+          printf 'lolidesk %s\ntarget %s\nbuilt from %s@%s run %s\n' "$(git describe --always)" "${{ matrix.target }}" \
+            "${{ github.repository }}" "${{ github.sha }}" "${{ github.run_number }}" > pkg/BUILD-INFO
+          # 和 lolinet 的包同一种格式：tar 根目录直接是二进制
+          COPYFILE_DISABLE=1 tar -czf lolidesk-$OS-$ARCH.tar.gz -C pkg lolidesk-host lolidesk BUILD-INFO
+          ls -l pkg && shasum -a 256 lolidesk-$OS-$ARCH.tar.gz
+
+      # 回环上起主机，客户端（TUI，stdin 是管道）开一个会话、跑一条命令、退出 shell。
+      # 回显里只有 $((6*7))，输出里出现 42 说明命令真的在主机的 PTY 里跑了、字节也回到了客户端。
+      # 远程桌面测不了：runner 没有屏幕录制权限。交叉编译的产物 runner 跑得动（Rosetta）就也测。
+      - name: Smoke test (loopback terminal session)
+        working-directory: desk
+        timeout-minutes: 3
+        run: |
+          file pkg/lolidesk-host pkg/lolidesk
+          if ! ./pkg/lolidesk-host --version >/dev/null 2>&1; then
+            ${{ matrix.native }} && { ./pkg/lolidesk-host --version; exit 1; }
+            echo "这台 runner 跑不了 ${{ matrix.target }}，跳过"; exit 0
+          fi
+          ./pkg/lolidesk-host --version
+          TOKEN=$(./pkg/lolidesk-host token | awk '/^token/{print $2}')
+          SHELL=/bin/bash ./pkg/lolidesk-host run --listen 127.0.0.1:10190 > host.log 2>&1 &
+          HOST=$!
+          sleep 2
+          ( sleep 2; printf 'echo HELLO-$((6*7))\n'; sleep 2; printf 'exit\n'; sleep 2 ) \
+            | ./pkg/lolidesk 127.0.0.1 --token "$TOKEN" --tui -y > term.out 2> term.err || { cat term.err host.log; exit 1; }
+          grep -a -q 'HELLO-42' term.out || { cat term.err host.log; echo "终端输出里没有 HELLO-42"; exit 1; }
+          # 错的 token 必须被拒
+          if ./pkg/lolidesk 127.0.0.1 --token 00000000 --sessions -y >/dev/null 2>&1; then echo "错的 token 没被拒"; exit 1; fi
+          ./pkg/lolidesk 127.0.0.1 --sessions
+          kill $HOST
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lolidesk-${{ matrix.name }}
+          path: desk/lolidesk-*.tar.gz
+          if-no-files-found: error
+

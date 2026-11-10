@@ -1,0 +1,13 @@
+[package]
+name = "lolidesk-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "lolidesk 线协议：消息、帧、按键编码、调色板"
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+serde.workspace = true
+postcard.workspace = true
+quinn.workspace = true
