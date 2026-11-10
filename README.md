@@ -54,7 +54,7 @@ uv run scripts/pair.py new --name laptop --ip 10.188.16.11
 curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
 ```
 
-<sub>The script downloads `lolinet` from the latest GitHub Release (or the join site's `dl/` if GitHub is unreachable or slow), checks its sha256 and test-runs it, then redeems the code, decrypts the config on the device, installs `lolinet` to `/usr/local/bin`, registers the launchd or systemd service, and turns on auto-upgrade (every 6 hours). It also installs the public probe, which reports only hardware and a rough location; pair with `--no-probe` to leave it out. On Linux it needs systemd. For Docker or a NAS without sudo, see [devices without systemd](docs/self-hosting.md#devices-without-systemd).</sub>
+<sub>The script downloads `lolinet` from the latest GitHub Release (or the join site's `dl/` if GitHub is unreachable or slow), checks its sha256 and test-runs it, then redeems the code, decrypts the config on the device, installs `lolinet` to `/usr/local/bin`, registers the launchd or systemd service, and turns on auto-upgrade (every 6 hours). It also installs the public probe, which reports only hardware and a rough location; pair with `--no-probe` to leave it out. Once a [lolidesk](docs/lolidesk.md) release is published, it installs `lolidesk` and `lolidesk-host` too, without starting the host. On Linux it needs systemd. For Docker or a NAS without sudo, see [devices without systemd](docs/self-hosting.md#devices-without-systemd).</sub>
 
 Already in, or installed by an older script? Run it without a code. It uses the config already on the machine, installs or upgrades `lolinet`, and does nothing if it is current:
 
@@ -135,7 +135,7 @@ The details are in [Architecture](docs/architecture.md).
 | :-- | :-- |
 | **Manifest** | `lolinet.json` names the version devices should run, with each platform's file and sha256. If the local version differs, the device switches, so publishing an old version again rolls back |
 | **Sources** | Whichever `install.sh` downloaded from: GitHub Releases (`github:prnake/lolinet`), or the join site's `dl/lolinet.json` when GitHub was out of reach. Or any manifest URL with `--upgrade-source` |
-| **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The probe's `reporter.py` is updated the same way |
+| **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The probe's `reporter.py` and any installed lolidesk binaries are updated the same way |
 | **Quiet** | Runs every 6 hours and writes a log line only when it switches versions or fails. `lolinet status` shows whether it is on |
 
 ### Local console

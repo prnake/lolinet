@@ -85,7 +85,7 @@ enum Cmd {
         #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
         auto_upgrade: Option<bool>,
     },
-    /// 按发布清单升级 lolinet 和探针（要 root）；定时任务每 6 小时跑一次 --auto
+    /// 按发布清单升级 lolinet、探针和装了的 lolidesk（要 root）；定时任务每 6 小时跑一次 --auto
     Upgrade {
         /// 只看发布的版本，不下载不换（不要 root）
         #[arg(long)]

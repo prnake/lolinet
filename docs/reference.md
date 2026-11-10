@@ -25,7 +25,7 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet up [options]` *root* | Install the binary and the service and start it. Takes over an `easytier` service that an earlier join script installed. Prints the status at the end |
 | `lolinet down` *root* | Stop and remove the service. The config and binary stay |
 | `lolinet restart` *root* | Restart the kernel |
-| `lolinet upgrade [options]` *root* | Switch to the version the release manifest names (see below) |
+| `lolinet upgrade [options]` *root* | Switch to the version the release manifest names (see below). Also updates the probe and the lolidesk binaries, if installed |
 | `lolinet run [-c FILE]` | The service's entry point: run the EasyTier kernel in the foreground with `/etc/lolinet/loli.toml` |
 | `lolinet core …` | Stock `easytier-core`, arguments passed through |
 | `lolinet cli …` | Stock `easytier-cli`, arguments passed through, aimed at the local service's admin port |
@@ -74,6 +74,13 @@ The public probe, when installed:
 | Config (id and report key) | `/etc/mesh-probe/reporter.json` | `/etc/mesh-probe/reporter.json`, passed with `LoadCredential` |
 | Service | `/Library/LaunchDaemons/co.lo-li.mesh-probe.plist` | `/etc/systemd/system/mesh-probe.service` |
 | Log | `/var/log/mesh-probe.log` | journald |
+
+lolidesk, once a lolidesk release is published:
+
+| Path | |
+| :-- | :-- |
+| `/usr/local/bin/lolidesk-host` | The lolidesk host. `install.sh` installs it but doesn't start it. `lolinet upgrade` replaces it when `lolidesk.json` names another version |
+| `/usr/local/bin/lolidesk` | The lolidesk client, updated the same way |
 
 Paths from before `lolinet`, which `lolinet up` takes over: the config `/etc/easytier/loli.toml` (copied if `/etc/lolinet/loli.toml` doesn't exist yet), and the binary directory `/usr/local/libexec/easytier/` on macOS or `/opt/easytier/` on Linux, where `easytier-core` and `easytier-cli` become symlinks to `lolinet`.
 
@@ -142,6 +149,7 @@ Optional. `device_config.py` renders configs for devices listed here; `pair.py` 
 | `PROBE_MASTER` | `deploy.py` | The probe master key, 64 lowercase hex digits. Required in CI; locally it comes from `state/mesh-probe.json` and is generated if missing |
 | `ET_WSS_SNI` | patched `easytier-core` | Default SNI for WSS URLs without `?sni=`, such as peer URLs learned from other nodes |
 | `LOLINET_VERSION` | `lolinet` build | The version compiled in; `build.sh` and CI set it from `git describe` |
+| `LOLIDESK_VERSION` | lolidesk build | The version `lolidesk-host --version` and `lolidesk --version` print; `make desk` and CI set it from `git describe`, otherwise it is the Cargo version |
 | `MESH_AGENT` | `npm run dev` | Where the dev server proxies `/api`. Default `http://127.0.0.1:10188` |
 | `MESH_JOIN` | `npm run dev:probe` | Where the probe dev server proxies `/v1`. Default: the join site |
 
@@ -170,6 +178,7 @@ Run them with `uv run`; each declares its own dependencies.
 | `join/deploy.py site` | Upload `web/dist-probe/` as the join site's home page |
 | `join/deploy.py release DIR` | Upload `lolinet-*` and `easytier-*` packages, the probe bundle, then `dl/lolinet.json` |
 | `join/deploy.py install` | Upload the probe bundle and `install.sh`, once all four `lolinet` packages and `dl/lolinet.json` are on the join site |
+| `join/deploy.py lolidesk DIR` | Upload the four `lolidesk-*` packages from a lolidesk release, then `dl/lolidesk.json` |
 | `join/deploy.py dist FILE…` | Upload any files to `dl/` with a `.sha256` next to each |
 | `probe/device.py relay --name N --out FILE` | A relay's probe config: report key, device-id key and report URL |
 | `probe/device.py config --name N --out FILE [options]` | A device's probe config, for devices not installed by `install.sh` |
@@ -210,6 +219,8 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 
 **Where it downloads.** GitHub first: the redirect of `https://github.com/$LOLINET_GITHUB/releases/latest` pins the tag, and every file comes from that release. If GitHub is unreachable, slower than 50 KB/s for 20 seconds, or has no usable manifest, it uses `<join site>/dl/`. The package's sha256 must match that release's `lolinet.json`, and the new binary must print the manifest's version. `lolinet up` gets `--upgrade-source github:<repo>` or `base` to match where the download came from.
 
+**lolidesk.** All three commands also handle lolidesk. They read `lolidesk.json` from the newest `lolidesk-*` release on GitHub (through the API, since these releases don't take `latest`), or from `<join site>/dl/` when `lolinet` came from there or GitHub has none. Pairing and `sudo sh` install `lolidesk-host` and `lolidesk` to `/usr/local/bin`, or replace them, when their `--version` differs; each must pass the sha256 check and a test run first, and one that doesn't is skipped. `check` says whether they would be installed or updated. A lolidesk problem never fails the script.
+
 ## Release artifacts
 
 A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same files:
@@ -237,7 +248,21 @@ A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same f
 
 All four packages must carry the same version. Package URLs are resolved next to the manifest's URL, so a manifest and its packages always sit in one directory.
 
-lolidesk ships as `lolidesk-<version>` releases with `lolidesk-<macos|linux>-<arch>.tar.gz` (`lolidesk-host`, `lolidesk`, `BUILD-INFO`). These are never marked latest. See [lolidesk](lolidesk.md#distribution).
+The `dist` workflow uploads every release to the join site's `dl/` unchanged, packages first and the manifest last, so a device never sees a manifest whose packages aren't there yet.
+
+lolidesk ships as `lolidesk-<version>` releases, published by the `desk` workflow on every push to `main` that changes `desk/` and never marked latest. Each holds `lolidesk-<os>-<arch>.tar.gz` for the same four platforms (`lolidesk-host`, `lolidesk` and `BUILD-INFO`, whose first line is `lolidesk <version>`), `*.sha256`, `SHA256SUMS` and the manifest `lolidesk.json`:
+
+```json
+{
+ "version": "<lolidesk-host --version>",
+ "lolidesk": {
+  "macos-aarch64": {"file": "lolidesk-macos-aarch64.tar.gz", "sha256": "…"},
+  "…": {}
+ }
+}
+```
+
+On the join site these sit in `dl/` next to `lolinet.json`. See [lolidesk](lolidesk.md#distribution).
 
 ## Ports
 

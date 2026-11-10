@@ -2,7 +2,7 @@
 # The checks mirror what CI runs (.github/workflows/{build,desk,web}.yml), so they can run locally.
 #
 #   make lolinet        lolinet for this machine → .build/out/lolinet-<os>-<arch>.tar.gz
-#   make desk           lolidesk-host and lolidesk → desk/target/release/
+#   make desk           lolidesk-host and lolidesk → desk/target/release/ (--version prints git describe, as in CI)
 #   make web            local console (web/dist) and public probe page (web/dist-probe)
 #   make check          web + scripts + desk checks
 #   make check-sni CORE=path/to/easytier-core   prove the WSS SNI patch works on a built binary
@@ -25,7 +25,7 @@ lolinet:
 	sh lolinet/build.sh
 
 desk:
-	cd desk && cargo build --locked --release --workspace
+	cd desk && LOLIDESK_VERSION=$$(git describe --always --dirty 2>/dev/null || echo dev) cargo build --locked --release --workspace
 
 web/node_modules: web/package-lock.json
 	cd web && npm ci

@@ -23,7 +23,7 @@ cargo build --locked --release --workspace    # target/release/lolidesk-host, ta
 | :-- | :-- |
 | **macOS** | Xcode 26 or later (macOS 26 SDK). The capture library's Metal bridge uses types from that SDK. CI sets `DEVELOPER_DIR` to Xcode 26 on the `macos-15` image |
 | **Linux** | Terminal only. egui / wgpu need `libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgtk-3-dev` |
-| **Targets in CI** | `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` |
+| **Targets in CI** | `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (on the `ubuntu-24.04-arm` runner) |
 
 ## Smoke test
 
@@ -41,4 +41,4 @@ The remote desktop can't be tested in CI: the runner has no Screen Recording per
 
 ## Packaging
 
-CI packs `lolidesk-<macos|linux>-<aarch64|x86_64>.tar.gz` with `lolidesk-host`, `lolidesk` and `BUILD-INFO` at the root. A release is manual (run `desk` on `main` with *release* ticked) and never takes `releases/latest`.
+CI builds with `LOLIDESK_VERSION=$(git describe --always)`, so `--version` prints the commit, and packs `lolidesk-<macos|linux>-<aarch64|x86_64>.tar.gz` with `lolidesk-host`, `lolidesk` and `BUILD-INFO` at the root. Every push to `main` that changes `desk/` (other than `.md` files) publishes a `lolidesk-<commit>` release with the manifest `lolidesk.json` once all four builds pass. It never takes `releases/latest`. `install.sh` installs from it and `lolinet upgrade` keeps installed binaries at its version. See [Distribution](../docs/lolidesk.md#distribution).

@@ -1,7 +1,7 @@
 # 编 EasyTier（easytier-core + easytier-cli，打了 patches/ 里的补丁）和 lolinet（同一份 EasyTier 编进一个二进制）：
 # 上游版本和补丁在 easytier/build.env。四个平台，PR 和 main 上都编，产物是 artifact；推 v* tag（或在 main 上手动勾 release）就发一个 GitHub Release，
 # 带 lolinet.json 清单：设备 lolinet upgrade 的来源是 github:prnake/lolinet 时按它自动升级。这一版要是 releases/latest（lolidesk 的 Release 不占 latest）。
-# 包只在这里编和发；准入站的下载点把 Release 里的文件原样传过去：join/deploy.py release <目录>。
+# 包只在这里编和发；发完由 dist.yml 把 Release 里的文件原样传到准入站 dl/（join/deploy.py release <目录>）。
 name: build
 
 on:
@@ -149,6 +149,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -162,11 +164,23 @@ jobs:
       - name: Manifest
         run: python3 lolinet/release.py out
       - name: GitHub Release
+        id: release
         run: |
           V=$(python3 -c 'import json; print(json.load(open("out/lolinet.json"))["version"])')
           TAG=${GITHUB_REF_NAME}; case $GITHUB_REF in refs/tags/v*) ;; *) TAG="lolinet-$V" ;; esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           (cd out && sha256sum *.tar.gz > SHA256SUMS)
           gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS out/lolinet.json --target "$GITHUB_SHA" --latest --title "lolinet $V" \
             --notes "lolinet $V（EasyTier 在 easytier/build.env，补丁在 patches/）。设备 lolinet upgrade --source github:${GITHUB_REPOSITORY} 按 lolinet.json 升级。"
           # releases/latest 要指到这一版：设备按 releases/latest/download/lolinet.json 找清单
           test "$(gh release view --json tagName -q .tagName)" = "$TAG"
+
+  # 同一版的文件传到准入站 dl/，清单最后传（没配 Cloudflare 的 secret 就跳过，见 dist.yml）
+  dist:
+    needs: release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dist.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    secrets: inherit

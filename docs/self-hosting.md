@@ -172,11 +172,25 @@ See [Local console](console.md) for its flags.
 
 ## 7 · Upgrade devices
 
-Devices installed by `install.sh` check the join site's `dl/lolinet.json` every 6 hours and switch to the version it names. To roll out a new version, upload a release:
+Devices installed by `install.sh` check every 6 hours where they were installed from (GitHub's latest release, or the join site's `dl/lolinet.json`) and switch to the version it names. The same run updates the probe and any installed lolidesk binaries.
+
+**Let CI keep the join site in step.** The [`dist`](../.github/workflows/dist.yml) workflow uploads every lolinet and lolidesk release to the join site's `dl/` as soon as it is published, and uploads `install.sh` when a change to it reaches `main`. Add these repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | |
+| :-- | :-- |
+| `CLOUDFLARE_API_TOKEN` | A token with write access to the join site's R2 bucket. Nothing else is needed |
+| `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account |
+| `LOLINET_BASE_URL` | The join site, for example `https://join.edge.example.com`. A secret so it is masked in the public logs |
+| `LOLINET_NODES_YAML` | Optional. Your whole `nodes.yaml`, if its `cloudflare.bucket` isn't `lolinet-dist` |
+
+Without the first three, `dist` skips quietly. It doesn't deploy the Worker or the probe page: those need your real node list and `PROBE_MASTER` (sections 3 and 4). To upload a release again, run `dist` by hand with its tag; with no tag it uploads `install.sh`.
+
+By hand, the same thing is:
 
 ```sh
 gh release download <tag> --repo prnake/lolinet --dir out
-uv run join/deploy.py release out
+uv run join/deploy.py release out        # a lolinet-… release
+uv run join/deploy.py lolidesk out       # a lolidesk-… release
 ```
 
 To roll back, upload the older release again. A device can follow GitHub instead of your join site with `sudo lolinet up --upgrade-source github:<owner>/<repo>`. Devices that were set up with `easytier-core` by an earlier join script switch over with one `sudo lolinet up`.
@@ -190,6 +204,8 @@ The join site needs all four platforms: `linux-x86_64`, `linux-aarch64`, `macos-
 ### Releasing from a fork
 
 - **lolinet:** run the `build` workflow on `main` with **release** checked, or push a `v*` tag. It publishes `lolinet-<version>` with the four `lolinet-*` and `easytier-*` packages, the probe bundle, `SHA256SUMS` and `lolinet.json`, and marks it latest.
-- **lolidesk:** run the `desk` workflow on `main` with **release** checked. It publishes `lolidesk-<version>` without marking it latest.
+- **lolidesk:** every push to `main` that changes `desk/` publishes `lolidesk-<commit>` with `lolidesk.json` once the `desk` workflow passes, without marking it latest. To publish by hand, run `desk` on `main` with **release** checked.
+
+Either way, `dist` then copies the release to your join site if the secrets above are set.
 
 Devices that follow GitHub read `releases/latest/download/lolinet.json`, so `latest` must always be a lolinet release. Publish lolinet before your first lolidesk release: when a repository has only one release, GitHub treats it as latest whatever the flag says.
