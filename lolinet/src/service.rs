@@ -214,7 +214,7 @@ mod systemd {
         let unit = format!(
             "# lolinet up 写的；内核日志在 {LOG_DIR}/easytier.log，journald 只收参数错误和崩溃输出
 [Unit]
-Description=lo-li mesh (lolinet, EasyTier)
+Description=lolinet (EasyTier mesh)
 After=network-online.target
 Wants=network-online.target
 

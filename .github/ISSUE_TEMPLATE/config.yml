@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/prnake/lolinet/security/advisories/new
+    about: Report vulnerabilities privately, not in an issue. See SECURITY.md.
+  - name: A bug in EasyTier itself
+    url: https://github.com/EasyTier/EasyTier/issues
+    about: Problems in the EasyTier core that the patches here don't cause belong upstream.

@@ -1,8 +1,9 @@
 # lolinet 节点清单示例。复制成 nodes.yaml（或者用 LOLINET_NODES 指过去）再改。
-# 结构和 lo-li mesh（https://join.edge.lo-li.co）一样：6 台 relay、10.188.0.0/16；域名、SNI、设备换成了示例值。
+# 结构照着线上那套 lo-li mesh（https://join.edge.lo-li.co）：6 台 relay、10.188.0.0/16；域名、SNI、设备都是示例值。
 # 运行时的值（relay 公网地址、端口、实例 id、密钥）不写在这里，只放 $LOLINET_HOME/state/（见 README）。
 network:
-  name: loli
+  name: loli                  # EasyTier 的 network_name
+  title: lolinet              # 显示名：控制台侧栏、公开探针页、准入站和跳转页上写的网络名；不写就是 lolinet
   cidr: 10.188.0.0/16
   sni: speedtest.example.com  # 设备经 wss 443 连 relay 时 ClientHello 里的 SNI（patches/easytier-v2.7.0-wss-sni.patch 的 ?sni=）
   easytier: v2.7.0+sni        # 上游 v2.7.0 + WSS SNI 覆盖补丁
@@ -23,8 +24,10 @@ cloudflare:
   bucket: lolinet-dist
   redirects: [console]
 
+# 公开探针卡片上的规格 =「provider instance_type」；每台 relay 也可以自己写这两个键，没写的那段不显示
 relay_defaults:
-  instance_type: ecs.c9i.xlarge   # 公开探针卡片上显示的规格
+  provider: 阿里云
+  instance_type: ecs.c9i.xlarge
 
 # relay 用干员名。region 决定公开页面上的城市和地球上的位置（web/src/data/regions.ts）；net = relay 所在 VPC 10.<net>.0.0/16
 relays:

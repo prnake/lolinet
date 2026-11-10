@@ -107,7 +107,7 @@ export function ProbeApp() {
       <header className="probe__top">
         <a className="probe__brand" href="/">
           <Mark size={22} state={up === total ? "live" : up ? "connecting" : "off"} />
-          <span className="probe__name">lo-li mesh</span>
+          <span className="probe__name">{nodesDoc.network.title}</span>
           <span className="cap">status</span>
         </a>
         <div className="probe__right">

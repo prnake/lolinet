@@ -3,7 +3,7 @@
 # requires-python = ">=3.9"
 # dependencies = []
 # ///
-"""lo-li mesh 控制台 agent：把本机 easytier-core 的状态和 easytier-web 控制台，经一个本地 HTTP 口交给 web 前端。
+"""lolinet 本地控制台 agent：把本机 easytier-core 的状态和 easytier-web 控制台，经一个本地 HTTP 口交给 web 前端。
 
   GET  /api/mesh/info       agent 能力：控制台鉴权方式、能不能配对、network_id
   GET  /api/mesh/snapshot   easytier-cli -o json 的 node / peer / route / peer-center（去掉配置文本和公网 IP）
@@ -490,7 +490,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--listen", default="127.0.0.1:10188")
-    ap.add_argument("--rpc", default="127.0.0.1:15888", help="easytier-core rpc portal（菜单栏 App 的内核是 15897）")
+    ap.add_argument("--rpc", default="127.0.0.1:15888", help="easytier-core rpc portal（TUN 系统服务 15888；no-tun 实例惯用 15897）")
     ap.add_argument("--cli", default=shutil.which("easytier-cli") or "/usr/local/libexec/easytier/easytier-cli")
     ap.add_argument("--console", default=nodes_field("console", r"https?://[^\s#]+"),
                     help="默认节点清单的 network.console；部署在控制台那台 relay 上时用 http://127.0.0.1:11211")
@@ -521,7 +521,7 @@ def main() -> None:
     host, port = hostport(args.listen)
     srv = http.server.ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
-    print(f"lo-li mesh agent {VERSION}  http://{host}:{port}/  rpc={args.rpc}  console={args.console}"
+    print(f"lolinet agent {VERSION}  http://{host}:{port}/  rpc={args.rpc}  console={args.console}"
           f" ({Handler.console.auth} auth{', socks ' + args.socks if args.socks else ''})"
           f"{'  pair=on' if pair_capable(args) else ''}{'  READ-ONLY' if args.read_only else ''}", file=sys.stderr)
     try:
