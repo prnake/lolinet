@@ -54,7 +54,7 @@ uv run scripts/pair.py new --name laptop --ip 10.188.16.11
 curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
 ```
 
-<sub>脚本先从 GitHub 最新的 Release 下载 `lolinet`（连不上或太慢就用准入站的 `dl/`），校验 sha256 并试跑一次，再兑换配对码，在设备上解密配置，把 `lolinet` 装到 `/usr/local/bin`，注册 launchd / systemd 服务，并打开自动升级（每 6 小时检查一次）。默认还会装公开探针，它只报硬件和大致位置；配对时加 `--no-probe` 就不装。Linux 上需要 systemd。Docker 和没有 sudo 的 NAS 见[没有 systemd 的设备](docs/self-hosting.md#devices-without-systemd)。</sub>
+<sub>脚本先从 GitHub 最新的 Release 下载 `lolinet`（连不上或太慢就用准入站的 `dl/`），校验 sha256 并试跑一次，再兑换配对码，在设备上解密配置，把 `lolinet` 装到 `/usr/local/bin`，注册 launchd / systemd 服务，并打开自动升级（每 6 小时检查一次）。默认还会装公开探针，它只报硬件和大致位置；配对时加 `--no-probe` 就不装。发布过 [lolidesk](docs/lolidesk.md) 之后，也会装 `lolidesk` 和 `lolidesk-host`，但不启动主机。Linux 上需要 systemd。Docker 和没有 sudo 的 NAS 见[没有 systemd 的设备](docs/self-hosting.md#devices-without-systemd)。</sub>
 
 已经入网，或者是旧脚本装的？不带配对码再跑一次。它用本机现有的配置装上或升级 `lolinet`，已是最新就什么都不动：
 
@@ -135,7 +135,7 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 | :-- | :-- |
 | **发布清单** | `lolinet.json` 写的是设备应该跑的版本，以及每个平台的文件名和 sha256。本机版本和它不一样就换，所以把旧版本重新发布一次就是回退 |
 | **来源** | `install.sh` 从哪里下载成功就跟哪里：GitHub Releases（`github:prnake/lolinet`），GitHub 连不上时是准入站的 `dl/lolinet.json`。也可以用 `--upgrade-source` 指定任何清单 URL |
-| **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。探针的 `reporter.py` 也一样换 |
+| **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。探针的 `reporter.py` 和装了的 lolidesk 也一样换 |
 | **不吵** | 每 6 小时跑一次，只有换了版本或出错时才写日志。`lolinet status` 能看到它开没开 |
 
 ### 本地控制台

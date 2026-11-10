@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "lolidesk-host", version, about = "lolidesk 主机端")]
+#[command(name = "lolidesk-host", version = lolidesk_proto::BUILD, about = "lolidesk 主机端")]
 struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,

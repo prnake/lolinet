@@ -14,7 +14,7 @@ use clap::Parser;
 use lolidesk_proto::Quality;
 
 #[derive(Parser)]
-#[command(name = "lolidesk", version, about = "lolidesk 客户端")]
+#[command(name = "lolidesk", version = lolidesk_proto::BUILD, about = "lolidesk 客户端")]
 struct Args {
     /// 主机：overlay 地址或主机名，可带端口（默认 10190）
     host: Option<String>,
@@ -114,7 +114,7 @@ fn main() -> Result<()> {
         addr,
         &token,
         pinned,
-        &format!("lolidesk {}", env!("CARGO_PKG_VERSION")),
+        &format!("lolidesk {}", lolidesk_proto::BUILD),
     ))?;
     if pinned.is_none() {
         let fp_hex = hex::encode(fp);

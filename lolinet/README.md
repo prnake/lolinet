@@ -7,9 +7,9 @@ Source of the `lolinet` CLI: EasyTier and a small command line in one binary tha
 | `src/main.rs` | Entry point, `argv[0]` dispatch, the clap commands, `up` / `down` / `run`, taking over older installs |
 | `src/service.rs` | The launchd and systemd services and the upgrade job |
 | `src/status.rs` | `lolinet status`, from the built-in `easytier-cli`'s JSON (the same data the console's agent and the probe read) |
-| `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch |
+| `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch; the probe and installed lolidesk binaries too |
 | `build.sh` | Local build: clone the pinned EasyTier, apply the patches, copy `src/` in, build, package |
-| `release.py` | Writes the release manifest `lolinet.json` and the probe bundle `mesh-probe.tar.gz` (standard library only) |
+| `release.py` | Writes the release manifest `lolinet.json` and the probe bundle `mesh-probe.tar.gz`, or with `--lolidesk` the lolidesk manifest `lolidesk.json` (standard library only) |
 
 ## Build
 

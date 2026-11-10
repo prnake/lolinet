@@ -29,8 +29,10 @@ CI runs three workflows on every pull request, each when its files change:
 | Workflow | Checks |
 | :-- | :-- |
 | [`build`](.github/workflows/build.yml) | EasyTier and `lolinet` for four platforms; static linking and size limits; the SNI check on every binary the runner can execute |
-| [`desk`](.github/workflows/desk.yml) | lolidesk fmt, clippy, tests and builds for three targets; a terminal session over loopback |
+| [`desk`](.github/workflows/desk.yml) | lolidesk fmt, clippy, tests and builds for four platforms; a terminal session over loopback; a `lolidesk-<commit>` release on every push to `main` |
 | [`web`](.github/workflows/web.yml) | The console and probe builds; no internal names in the public bundle; Worker, shell and Python syntax |
+
+A fourth workflow, [`dist`](.github/workflows/dist.yml), checks nothing: after `build` or `desk` publishes a release, it uploads the release to the join site, and it uploads `install.sh` when a change to it reaches `main`. It runs only with the Cloudflare secrets set (see [Self-hosting](docs/self-hosting.md#7--upgrade-devices)).
 
 To test the SNI check by hand after `make lolinet`:
 

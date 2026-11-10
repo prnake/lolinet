@@ -90,6 +90,7 @@ admin                         console (issuer)        join site (Worker + KV)   
 - **Before redeeming**, `install.sh` checks that the machine is supported (macOS, or Linux with systemd) and downloads and verifies `lolinet`, so a code isn't spent on a machine that can't use it or can't get the client.
 - **Where `lolinet` comes from.** The latest GitHub Release, pinned to one tag through the `releases/latest` redirect. If GitHub is unreachable or too slow (common from mainland China), the join site's `dl/`, which holds the same release's files. `lolinet up` then points auto-upgrade at the source that worked, so a device never flips between two sources that are briefly on different versions.
 - **Without a code** the same script upgrades a device already in the network: it reuses the config on the machine and runs `lolinet up` only if the version, the service or the upgrade job needs it.
+- **lolidesk** comes last, in both cases: `install.sh` installs or updates `lolidesk-host` and `lolidesk` in `/usr/local/bin` from the same source as `lolinet`, each only if it passes the sha256 check and runs on this machine. It doesn't start the host. Any failure here skips lolidesk and leaves the join alone.
 
 ## Auto-upgrade
 
@@ -106,6 +107,8 @@ admin                         console (issuer)        join site (Worker + KV)   
 3. The new binary must run on this machine and print the manifest's version from `--version`.
 
 Then it replaces `/usr/local/bin/lolinet` atomically and restarts the service. If the probe is installed and the release's `reporter.py` differs, that is replaced too and the probe restarted. The job logs only switches and errors.
+
+**lolidesk** follows its own manifest, `lolidesk.json`, because its releases are separate and never `latest`. From the join site or a manifest URL it is the file next to `lolinet.json`; from a `github:` source it is in the newest `lolidesk-*` release, which `lolinet` finds through the GitHub API. Only binaries already in `/usr/local/bin` are considered, and only when their `--version` differs from the manifest. They pass the same sha256 check and test run, and then the files are replaced. A running host isn't restarted, since that would end its terminal sessions; it picks up the new version on its next start.
 
 ## Public probe
 
@@ -137,4 +140,4 @@ Each report is signed as `X-Probe-Sig = hex(HMAC-SHA256(key, "<timestamp>." + bo
 
 ## Repository and deployment
 
-This repository holds code only. A deployment is the code plus a node list (`nodes.yaml`, or `LOLINET_NODES`) and an admin directory (`$LOLINET_HOME`) that hold everything specific to one network. All packages are built and released by this repository's workflows; the join site's download area is a copy of a release, uploaded unchanged with `join/deploy.py release`.
+This repository holds code only. A deployment is the code plus a node list (`nodes.yaml`, or `LOLINET_NODES`) and an admin directory (`$LOLINET_HOME`) that hold everything specific to one network. All packages are built and released by this repository's workflows; the join site's download area is a copy of the latest lolinet and lolidesk releases, uploaded unchanged by the [`dist`](../.github/workflows/dist.yml) workflow (or `join/deploy.py release` and `lolidesk` by hand).

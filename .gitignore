@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-probe/
 .build/
+desk/target/
 __pycache__/
 .DS_Store
 
