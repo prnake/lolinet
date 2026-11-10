@@ -3,7 +3,7 @@
 解析它发出的 TLS ClientHello，核对 SNI。
 
 两种情况都测：URL 里的 ?sni=，以及 URL 不带参数时的 ET_WSS_SNI 环境变量（打洞 / relay 互连靠它）。
-没打补丁的版本对 IP 地址会发 localhost，两种情况都会失败。只用标准库，CI（easytier.yml）和本机都能跑。
+没打补丁的版本对 IP 地址会发 localhost，两种情况都会失败。只用标准库，CI（build.yml）和本机都能跑。
 
 用法: python3 easytier/check_sni.py <easytier-core 路径>
 """

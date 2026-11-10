@@ -11,7 +11,7 @@
 用法（公开仓库 build.yml 发 GitHub Release）：
   python3 lolinet/release.py <放了 lolinet-*.tar.gz 的目录>
   在同一个目录写 lolinet.json、mesh-probe.tar.gz、mesh-probe.tar.gz.sha256。
-准入站用 join/deploy.py release（同样的函数，传到 dl/）。
+准入站用 join/deploy.py release <目录>：目录是那一版 Release 的文件，原样传到 dl/（清单用同样的函数再算一遍核对）。
 """
 from __future__ import annotations
 

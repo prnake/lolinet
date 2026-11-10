@@ -58,7 +58,9 @@ GUI 里：左栏「＋ 新终端」或点已有会话；点显示器开桌面；
 lolidesk 要链 ScreenCaptureKit 的 Swift 桥接、系统 Swift 运行时和 wgpu，只能动态链接，体积也大一个量级，并进去会把这两条都破坏掉。
 
 - 包名 `lolidesk-<macos|linux>-<aarch64|x86_64>.tar.gz`，根目录是 `lolidesk-host`、`lolidesk`、`BUILD-INFO`，和 lolinet 的包同一种格式。
-- CI 每次 push 都编 macOS arm64 / x86_64 和 Linux x86_64（Linux 只有终端）；发布是手动的，和 lolinet 的包放同一个下载点（带 `.sha256`）。
+- CI（`desk.yml`）在 PR 和 main 上都编 macOS arm64 / x86_64 和 Linux x86_64（Linux 只有终端）。
+- 发布是手动的：在 main 上运行 desk 并勾上 release，发一个 `lolidesk-<版本>` 的 GitHub Release。它不占 latest，lolinet 的自动升级认的是 latest。
+  准入站的下载点用 `join/deploy.py dist` 传同样的包（带 `.sha256`）。
 - 在 macOS 上编要 Xcode 26 以上（macOS 26 SDK）：采屏库带的 Metal 桥接用到了新 SDK 里的类型，旧 Xcode 编不过。
 - 安装脚本里的可选安装步骤还没做，现在是手动下载解压。
 

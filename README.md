@@ -75,7 +75,7 @@
 
    EasyTier v2.7.0 不认配置文件里的 `rpc_portal`。要在命令行加 `--rpc-portal 127.0.0.1:15888`，否则管理口会监听 0.0.0.0。
 
-2. **编客户端。** 本机目标用 `sh lolinet/build.sh`，产物是 `.build/out/lolinet-<os>-<arch>.tar.gz`。四个平台的 EasyTier 和 lolinet 由 Actions 里的 [build](.github/workflows/build.yml) 编译。
+2. **编客户端。** 本机目标用 `sh lolinet/build.sh`，产物是 `.build/out/lolinet-<os>-<arch>.tar.gz`。四个平台的 EasyTier 和 lolinet 由 Actions 里的 [build](.github/workflows/build.yml) 编译，编好的包在 [Releases](https://github.com/prnake/lolinet/releases)。
 
 3. **部署准入站。** 先在 Cloudflare 建好节点清单 `cloudflare` 段写的 KV namespace 和 R2 bucket，再执行：
 
@@ -84,8 +84,9 @@
    export LOLINET_BASE_URL=https://join.edge.example.com
    uv run join/deploy.py worker                         # Worker + KV / R2 / Durable Object 绑定 + 自定义域
    (cd web && npm ci && npm run build:probe) && uv run join/deploy.py site   # 公开探针页面
-   uv run join/deploy.py install                        # install.sh 和探针包
-   uv run join/deploy.py dist easytier-*.tar.gz         # 客户端（build 的产物）
+   gh release download --repo prnake/lolinet --dir out  # 最新一版的包和清单，也可以用自己 build 的产物
+   uv run join/deploy.py release out                    # 客户端包、探针包、升级清单 dl/lolinet.json
+   uv run join/deploy.py install                        # install.sh，要先有上面的包
    ```
 
 4. **加设备。** 本机要先在网里，或者用 `--socks` 指向一个 no-tun 实例：
@@ -103,11 +104,17 @@
 6. **自动升级。** `install.sh` 装的是 lolinet，并且默认带一个定时任务：每 6 小时按发布清单 `lolinet.json` 检查一次。
 
    - 清单默认在准入站的 `dl/lolinet.json`，由 `join/deploy.py release` 发布。
-   - 也可以改用 GitHub Releases：`sudo lolinet up --upgrade-source github:prnake/lolinet`。这个仓库推 `v*` tag 就会发一版带清单的 Release。
+   - 也可以改用 GitHub Releases：`sudo lolinet up --upgrade-source github:prnake/lolinet`。这个仓库每次发版都带清单，`releases/latest` 始终是 lolinet 的最新一版。
 
    每次换版本之前都会校验 sha256，并试跑一次新的二进制。手动升级用 `sudo lolinet upgrade`，只看有没有新版本用 `lolinet upgrade --check`，关掉自动升级用 `--auto-upgrade off`。详见 [lolinet/README.md](lolinet/README.md#自动升级)。
 
    以前用 `easytier-core` / `easytier-cli` 装的设备，跑一次 `sudo lolinet up` 就能切换过来。
+
+## 发布和改动
+
+- **包只在这个仓库编和发。** 在 main 上手动运行 [build](.github/workflows/build.yml) 并勾上 release，就发一版 `lolinet-<版本>`：四个平台的 `lolinet-*`、`easytier-*`、探针包和清单 `lolinet.json`。
+- **lolidesk 单独发。** 运行 [desk](.github/workflows/desk.yml) 并勾上 release，发 `lolidesk-<版本>`。它不占 `releases/latest`，自动升级认的是 latest。
+- **改动先开 PR。** CI（build、desk、web）通过后再合并，不直接推 `main`。
 
 ## 许可
 
