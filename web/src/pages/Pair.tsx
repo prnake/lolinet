@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { clock, ms } from "../data/format";
 import { nextFreeIp, nodesDoc } from "../data/model";
 import { useLoad, useMesh, useNow } from "../data/store";
-import type { PairResult, RegisteredDevice } from "../data/types";
+import type { PairResult, RegisteredDevice, Settings } from "../data/types";
 import { go } from "../router";
 import { Button, Cap, Chip, CodeBoxes, CommandPill, Cursor, Field, Headline, Icon, Mark, Panel, Segmented, swarmIndex, swarmVar, useToast } from "../ui";
 
@@ -11,22 +11,35 @@ const DEFAULT_PEERS = nodesDoc.network.device_peers ?? nodesDoc.relays.slice(0, 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const IP_RE = /^10\.188\.(\d{1,3})\.(\d{1,3})$/;
 
-const STEPS = [
-  { title: "填设备", body: "名字、地址、有效期。" },
-  { title: "在设备上执行", body: "一行命令，配对码 15 分钟内有效、只能用一次。" },
-  { title: "上线", body: "设备自己打洞，接到最近的接入点。" },
-];
+// 本机 agent（转调 pair.py）的默认值；manager 上用设置页存的
+const FALLBACK: Settings["pair"] = { ttl_days: 365, code_minutes: 15, peers: DEFAULT_PEERS, transport: "wss", probe: true };
+
+const minutesText = (m: number) => (m % 60 === 0 ? `${m / 60} 小时` : `${m} 分钟`);
 
 export function Pair() {
+  const { backend, info } = useMesh();
+  const sv = useLoad(() => (info?.manager ? backend.settings().then((v) => v.settings.pair) : Promise.resolve(null)), [backend, info?.manager]);
+  if (info?.manager && sv.loading && !sv.data) return null;
+  return <PairFlow defaults={sv.data ?? FALLBACK} />;
+}
+
+function PairFlow({ defaults }: { defaults: Settings["pair"] }) {
   const { mesh, backend, info } = useMesh();
   const toast = useToast();
   const devs = useLoad(() => (info?.registry ? backend.devices() : Promise.resolve([] as RegisteredDevice[])), [backend, info?.registry]);
   const [name, setName] = useState("");
   const [pool, setPool] = useState<"tun" | "app">("tun");
   const [ipEdit, setIpEdit] = useState<string | null>(null);
-  const [ttl, setTtl] = useState<"30" | "90" | "365">("365");
-  const [peers, setPeers] = useState<string[]>(DEFAULT_PEERS);
-  const [probe, setProbe] = useState<"on" | "off">("on");
+  const [ttl, setTtl] = useState(String(defaults.ttl_days));
+  const [peers, setPeers] = useState<string[]>(defaults.peers);
+  const [probe, setProbe] = useState<"on" | "off">(defaults.probe ? "on" : "off");
+  const [transport, setTransport] = useState<"wss" | "tcp">(defaults.transport);
+  const ttlOptions = [...new Set([30, 90, 365, defaults.ttl_days])].sort((a, b) => a - b).map((d) => ({ value: String(d), label: `${d} 天` }));
+  const STEPS = [
+    { title: "填设备", body: "名字、地址、有效期。" },
+    { title: "在设备上执行", body: `一行命令，配对码 ${minutesText(defaults.code_minutes)}内有效、只能用一次。` },
+    { title: "上线", body: "设备自己打洞，接到最近的接入点。" },
+  ];
   const [result, setResult] = useState<PairResult | null>(null);
   const [busy, setBusy] = useState(false);
   const now = useNow();
@@ -53,7 +66,7 @@ export function Pair() {
   const submit = async () => {
     setBusy(true);
     try {
-      setResult(await backend.pair({ name, ip, ttl_days: Number(ttl), peers, probe: probe === "on" }));
+      setResult(await backend.pair({ name, ip, ttl_days: Number(ttl), peers, probe: probe === "on", transport, code_minutes: defaults.code_minutes }));
     } catch (e) {
       toast(`生成失败：${e instanceof Error ? e.message : e}`, "bad");
     } finally {
@@ -123,15 +136,7 @@ export function Pair() {
             />
             <div className="formrow">
               <span className="field__label">有效期</span>
-              <Segmented
-                value={ttl}
-                onChange={setTtl}
-                options={[
-                  { value: "30", label: "30 天" },
-                  { value: "90", label: "90 天" },
-                  { value: "365", label: "365 天" },
-                ]}
-              />
+              <Segmented value={ttl} onChange={setTtl} options={ttlOptions} />
             </div>
             <div className="formrow formrow--top">
               <span className="field__label">接入点</span>
@@ -152,6 +157,17 @@ export function Pair() {
               </div>
             </div>
             <div className="formrow">
+              <span className="field__label">传输</span>
+              <Segmented
+                value={transport}
+                onChange={setTransport}
+                options={[
+                  { value: "wss", label: "wss · lolinet" },
+                  { value: "tcp", label: "tcp · 官方 EasyTier" },
+                ]}
+              />
+            </div>
+            <div className="formrow">
               <span className="field__label">公开探针</span>
               <Segmented
                 value={probe}
@@ -167,7 +183,7 @@ export function Pair() {
                 {busy ? "签发中…" : "生成配对码"}
               </Button>
               <span className="formfoot__note">
-                在控制台签一条不可复用的凭据，{ttl} 天后过期。
+                在控制台签一条不可复用的凭据，{ttl} 天后过期；配对码 {minutesText(defaults.code_minutes)}内有效。
                 {probe === "on" ? "安装时一起装公开探针（只报硬件和大致位置）。" : "不装公开探针。"}
               </span>
             </div>
@@ -189,7 +205,7 @@ export function Pair() {
                   )}
                 </p>
                 <CommandPill
-                  command={`uv run scripts/pair.py new --name ${name || "<名字>"} --ip ${ip} --ttl-days ${ttl}${probe === "off" ? " --no-probe" : ""}${info?.socks ? ` --socks ${info.socks}` : ""}`}
+                  command={`uv run scripts/pair.py new --name ${name || "<名字>"} --ip ${ip} --ttl-days ${ttl}${transport === "tcp" ? " --transport tcp" : ""}${probe === "off" ? " --no-probe" : ""}${info?.socks ? ` --socks ${info.socks}` : ""}`}
                 />
               </Panel>
             )}

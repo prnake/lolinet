@@ -69,13 +69,35 @@ export type AgentInfo = {
   agent: string;
   rpc: string;
   socks: string | null;
-  console: { url: string; auth: "agent" | "browser" };
+  /** session：manager 用控制台账号登录，会话 cookie 由 manager 发 */
+  console: { url: string; auth: "agent" | "browser" | "session" };
   network_id: string | null;
   pair: boolean;
   registry: boolean;
   /** 局域网访问时 agent 强制只读：不配对、不吊销 */
   read_only?: boolean;
   join: string;
+  /** 内网管理面（web/agent/mesh_manager.py）：整站要登录，有设置页 */
+  manager?: boolean;
+  login_required?: boolean;
+  logged_in?: boolean;
+  user?: string | null;
+};
+
+/** manager 的设置：配对默认值 + 新设备配置里的开关 */
+export type Settings = {
+  pair: { ttl_days: number; code_minutes: number; peers: string[]; transport: "wss" | "tcp"; probe: boolean };
+  device: { latency_first: boolean; enable_kcp_proxy: boolean; udp_peers: boolean };
+};
+
+export type SettingsView = {
+  settings: Settings;
+  defaults: Settings;
+  relays: { name: string; region: string | null; overlay_ip: string | null }[];
+  network: { name: string; cidr: string; edge_zone: string; issuer: string; console: string };
+  base_url: string;
+  /** 按当前设置渲染的示例配置（凭据、探针密钥是占位） */
+  preview: string;
 };
 
 export type TemporaryPeer = {
@@ -111,6 +133,8 @@ export type RegisteredDevice = {
   credential_id: string;
   expiry_unix: number;
   paired_at: string;
+  /** manager 里配对的：登录的控制台账号 */
+  paired_by?: string;
 };
 
 export type PairResult = {

@@ -27,6 +27,7 @@ const names = [...doc.relays.map((r) => r.name), ...(doc.devices ?? []).map((d) 
 const bad = [
   doc.network.sni,
   host(doc.network.console),
+  host(doc.network.manager),
   ...(doc.devices ?? []).map((d) => d.overlay_ip),
   ...paired.map((d) => d.overlay_ip),
   ...doc.relays.map((r) => r.overlay_ip),
