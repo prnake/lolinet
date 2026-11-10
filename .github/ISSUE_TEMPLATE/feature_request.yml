@@ -1,0 +1,22 @@
+name: Feature request
+description: Something lolinet should do. 希望 lolinet 能做的事。
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: English or Chinese are both fine. 中英文都可以。
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead

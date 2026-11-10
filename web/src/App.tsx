@@ -58,7 +58,7 @@ function Sidebar({ active }: { active: string }) {
     <aside className="side">
       <a className="side__brand" href="#/overview">
         <Mark size={24} state={phase === "ready" ? "live" : phase === "connecting" ? "connecting" : "off"} />
-        <span className="side__name">lo-li mesh</span>
+        <span className="side__name">{nodesDoc.network.title}</span>
       </a>
       <div className="side__net mono">
         {nodesDoc.network.name} · {nodesDoc.network.cidr}

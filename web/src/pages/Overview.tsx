@@ -104,7 +104,7 @@ function CoreDown({ rpc, errors }: { rpc: string; errors: string[] }) {
       <Mark size={40} state="off" />
       <div className="coredown__title">本机的 easytier-core 没有响应</div>
       <p className="coredown__body">
-        agent 读的是 <code>{rpc}</code>。打开菜单栏 App（内核管理口 15897），或者装好 TUN 版系统服务（15888），再用 <code>--rpc</code> 指过去。
+        agent 读的是 <code>{rpc}</code>。先 <code>sudo lolinet up</code> 装好系统服务（管理口 15888），或者起一个 no-tun 实例（如菜单栏 App，管理口 15897），再用 <code>--rpc</code> 指过去。
       </p>
       <CommandPill command={`python3 web/agent/mesh_agent.py --rpc 127.0.0.1:15897 --socks 127.0.0.1:18080`} />
       {errors[0] && <div className="coredown__err mono">{errors[0]}</div>}

@@ -1,6 +1,6 @@
-//! lolinet：lo-li mesh 的命令行。EasyTier（easytier/build.env 的版本 + patches/）整个编进同一个二进制，
+//! lolinet：基于 EasyTier 的组网命令行。EasyTier（easytier/build.env 的版本 + patches/）整个编进同一个二进制，
 //! 按 argv[0] 分发：叫 easytier-core / easytier-cli 时就是原版（`lolinet up` 把老路径的这两个名字链接过来，
-//! 探针、菜单栏 App、老脚本照用）；叫 lolinet 时管后台服务、看状态。构建见 lolinet/build.sh。
+//! 探针、no-tun 客户端、老脚本照用）；叫 lolinet 时管后台服务、看状态。构建见 lolinet/build.sh。
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 use mimalloc::MiMalloc;
@@ -56,7 +56,7 @@ const OLD_CONFIG: &str = "/etc/easytier/loli.toml";
 const OLD_BIN_DIR: &str = if cfg!(target_os = "macos") { "/usr/local/libexec/easytier" } else { "/opt/easytier" };
 
 #[derive(Parser)]
-#[command(name = "lolinet", version = VERSION, about = "lo-li mesh：后台服务和状态（EasyTier 编在同一个二进制里）")]
+#[command(name = "lolinet", version = VERSION, about = "lolinet：EasyTier 组网的后台服务和状态（EasyTier 编在同一个二进制里）")]
 struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -282,7 +282,7 @@ fn install_self() -> Result<()> {
 }
 
 /// 老路径的 easytier-core / easytier-cli 换成指向 lolinet 的链接：探针（reporter.py 找 easytier-cli）、
-/// 菜单栏 App（no-tun 内核）和以前的脚本不用改。
+/// no-tun 客户端（如菜单栏 App）和以前的脚本不用改。
 fn link_legacy_names() -> Result<()> {
     fs::create_dir_all(OLD_BIN_DIR)?;
     for name in ["easytier-core", "easytier-cli"] {

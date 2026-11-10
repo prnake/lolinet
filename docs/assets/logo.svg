@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 32 32" role="img" aria-label="lolinet">
+  <!-- 六辐星号 = 六个接入点，中间那一点是猫眼（web/src/ui/Mark.tsx、web/public/favicon.svg） -->
+  <rect width="32" height="32" rx="7.5" fill="#000"/>
+  <g fill="#8a8a8f">
+    <rect x="14.2" y="4.5" width="3.6" height="23" rx="1.2"/>
+    <rect x="14.2" y="4.5" width="3.6" height="23" rx="1.2" transform="rotate(60 16 16)"/>
+    <rect x="14.2" y="4.5" width="3.6" height="23" rx="1.2" transform="rotate(120 16 16)"/>
+  </g>
+  <circle cx="16" cy="16" r="3.2" fill="#ceff1c"/>
+</svg>

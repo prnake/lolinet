@@ -1,6 +1,6 @@
-# lo-li mesh 公开探针上报（probe/reporter.py）。只读 /proc 和 easytier-cli，不需要 root。
+# lolinet 公开探针上报（probe/reporter.py）。只读 /proc 和 easytier-cli，不需要 root。
 [Unit]
-Description=lo-li mesh public probe reporter
+Description=lolinet public probe reporter
 After=network-online.target easytier.service lolinet.service
 Wants=network-online.target
 

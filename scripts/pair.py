@@ -53,7 +53,14 @@ PBKDF2_ITER = 200000  # 和 join/install.sh 的 openssl -iter 一致
 
 
 def load_env() -> None:
-    for line in (HOME_DIR / ".env").read_text().splitlines():
+    """Cloudflare 凭据：环境变量 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID，或者 $LOLINET_HOME/.env 的 CLOUDFLARE_API / CLOUDFLARE_ID（和 join/deploy.py 一样）。"""
+    for short, std in (("CLOUDFLARE_API", "CLOUDFLARE_API_TOKEN"), ("CLOUDFLARE_ID", "CLOUDFLARE_ACCOUNT_ID")):
+        if os.environ.get(std):
+            os.environ.setdefault(short, os.environ[std])
+    env = HOME_DIR / ".env"
+    if not env.is_file():
+        return
+    for line in env.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
@@ -103,7 +110,7 @@ def new(args) -> None:
     load_env()
     cid, secret, expiry = console_credential(args.name, args.ttl_days, args.socks)
     config = render(args.name, args.ip, secret, args.peers.split(",") if args.peers else None, transport=args.transport)
-    # 菜单栏 App（app）读这两行注释显示「账号」和「凭证剩余」；TOML 注释，easytier-core 忽略。
+    # lolinet status 读这两行注释显示「凭据」和剩余天数（菜单栏 App 之类的客户端也可以读）；TOML 注释，easytier-core 忽略。
     config += f"\n# credential_id = {cid}\n# credential_expiry_unix = {expiry}\n"
     probe = None
     if not args.out and not args.no_probe:
@@ -116,7 +123,7 @@ def new(args) -> None:
     devices.append({"name": args.name, "overlay_ip": args.ip, "credential_id": cid, "expiry_unix": expiry,
                     "paired_at": dt.datetime.now().isoformat(timespec="seconds")})
     if args.out:
-        # 不走配对码：配置直接落本地（600），由调用方经 Netcatty SFTP 下发后删掉（Docker / 没有 sudo 的设备）
+        # 不走配对码：配置直接落本地（600），由调用方手工下发后删掉（Docker / 没有 sudo 的设备）
         args.out.write_text(config)
         os.chmod(args.out, 0o600)
     else:
@@ -138,7 +145,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("new")
     p.add_argument("--name", required=True)
-    p.add_argument("--ip", required=True, help="overlay IP，人用电脑 10.188.16.0/20，见 ipam.md")
+    p.add_argument("--ip", required=True, help="overlay IP，人用电脑 10.188.16.0/20，地址段见 nodes.example.yaml")
     p.add_argument("--ttl-days", type=int, default=365)
     p.add_argument("--code-minutes", type=int, default=15, help="配对码有效期（分钟，1–1440），一次性不变")
     p.add_argument("--peers", help=f"逗号分隔的 relay 名，默认 {','.join(DEFAULT_PEERS)}")
