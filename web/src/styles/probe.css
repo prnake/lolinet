@@ -1,4 +1,4 @@
-/* 公开探针页面（join.edge.lo-li.co 首页）。没有侧栏：顶栏 + 单列，最宽 1240px。只引用 tokens.css 的变量。 */
+/* 公开探针页面（准入站首页）。没有侧栏：顶栏 + 单列，最宽 1240px。只引用 tokens.css 的变量。 */
 
 .probe { min-height: 100vh; }
 

@@ -1,5 +1,5 @@
 //! macOS：ScreenCaptureKit 采集 → VideoToolbox 硬件 H.264（低延迟档）→ 每帧一个 Vec<u8>（proto::VideoFrame 编码）。
-//! 和 Vibe42 一样：Idle 帧不编码；光标不烧进画面（客户端用本地光标）；丢帧后靠关键帧请求恢复。
+//! Idle 帧不编码；光标不烧进画面（客户端用本地光标）；丢帧后靠关键帧请求恢复。
 
 #![allow(
     deprecated,

@@ -19,6 +19,7 @@ master 在 $LOLINET_HOME/state/mesh-probe.json（和 Worker secret PROBE_MASTER 
       --os "<系统名>" --os-release /host/os-release --disk /mnt/vol1=存储1 --disk /mnt/vol2=存储2 --out /tmp/x.json
   uv run probe/device.py install-mac --near chen                  # 本机：LaunchAgent，不要 root；主机名读本机 easytier
   uv run probe/device.py bye --name <主机名>                       # 从公开页面撤下（卸载了 / 改名了）
+  uv run probe/device.py relay --name chen --out /tmp/chen.json    # relay 的上报配置（下发到 relay 的 /etc/mesh-probe/reporter.json）
   uv run probe/device.py uninstall-mac"""
 from __future__ import annotations
 
@@ -56,7 +57,7 @@ def master() -> str:
 
 
 def devid_key() -> str:
-    """设备 id 的派生密钥：HMAC(master, "devid")。relay 也拿这把（probe/deploy.py 下发），拿它把看到的主机名换成同一个 id。"""
+    """设备 id 的派生密钥：HMAC(master, "devid")。relay 也拿这把（probe/device.py relay 写进 relay 的配置），拿它把看到的主机名换成同一个 id。"""
     return hmac.new(bytes.fromhex(master()), b"devid", hashlib.sha256).hexdigest()
 
 
@@ -77,6 +78,13 @@ def device_config(a: argparse.Namespace) -> dict:
     return cfg
 
 
+def relay_config(name: str) -> dict:
+    """relay 的上报配置（probe/reporter.py 的 relay 模式）：上报密钥 = HMAC(master, "probe:<relay 名>")，
+    devid_key 用来把 relay 看到的设备主机名换成公开 id。name 要和节点清单 relays 里的名字一致，Worker 按它验签。"""
+    return {"name": name, "url": report_url(), "devid_key": devid_key(),
+            "key": hmac.new(bytes.fromhex(master()), f"probe:{name}".encode(), hashlib.sha256).hexdigest()}
+
+
 def write_secret(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
@@ -84,7 +92,7 @@ def write_secret(path: Path, data: dict) -> None:
 
 
 def local_hostname() -> str | None:
-    """本机 easytier-core 的主机名（relay 看到的就是它）：TUN 系统服务 15888，菜单栏 App 15897。"""
+    """本机 easytier-core 的主机名（relay 看到的就是它）：TUN 系统服务 15888，no-tun 实例（如菜单栏 App）15897。"""
     cli = shutil.which("easytier-cli") or "/usr/local/libexec/easytier/easytier-cli"
     for rpc in ("127.0.0.1:15888", "127.0.0.1:15897"):
         try:
@@ -169,6 +177,9 @@ def main() -> None:
         p.add_argument("--cli", help="easytier-cli 路径")
         if name == "config":
             p.add_argument("--out", type=Path, required=True)
+    p = sub.add_parser("relay", help="relay 的上报配置（含上报密钥，600）")
+    p.add_argument("--name", required=True, help="relay 名（节点清单 relays 里的 name）")
+    p.add_argument("--out", type=Path, required=True)
     sub.add_parser("uninstall-mac")
     a = ap.parse_args()
     if a.cmd == "id":
@@ -178,6 +189,9 @@ def main() -> None:
         print(f"{a.name} -> {device_id(a.name)}：{a.out}（600，含上报密钥）")
     elif a.cmd == "bye":
         bye(device_id(a.name))
+    elif a.cmd == "relay":
+        write_secret(a.out, relay_config(a.name))
+        print(f"relay {a.name}：{a.out}（600，含上报密钥）")
     elif a.cmd == "install-mac":
         a.name = a.name or local_hostname()
         if not a.name:

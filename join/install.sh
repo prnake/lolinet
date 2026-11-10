@@ -1,5 +1,5 @@
 #!/bin/sh
-# lo-li mesh 一键安装 / 升级 lolinet（EasyTier 带 WSS SNI 补丁编在里面）：
+# lolinet 一键安装 / 升级（EasyTier 带 WSS SNI 补丁编在里面）：
 #   curl -fsSL <准入站>/i | sudo sh -s <配对码>   新设备：兑换一次性加密配置、本地解密、装 lolinet、注册系统服务（含公开探针）
 #   curl -fsSL <准入站>/i | sudo sh               已入网的设备：用本机现有配置装上 / 升级到最新的 lolinet，已是最新就不动
 #   curl -fsSL <准入站>/i | sh -s check           只看：最新版、本机版本、要不要装（下载校验一遍，不装，不要 sudo）
@@ -132,7 +132,7 @@ K=$CODE openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -a -A -pass 
 # pair.py 把探针配置（公开 id + 上报密钥）写在末尾的 `# probe = {...}` 一行：整份交给 lolinet up，它把这一行存到
 # /etc/lolinet/probe.json、装成系统服务（lolinet 内置，不要 python3），不留在 EasyTier 配置里
 up -c "$TMP/pair.toml"
-echo "已接入 lo-li mesh（lolinet ${VER}，${FROM}）。看状态：lolinet；日志：lolinet logs -f"
+echo "已接入 lolinet 网络（lolinet ${VER}，${FROM}）。看状态：lolinet；日志：lolinet logs -f"
 if ! grep -q '^# probe = ' "$TMP/pair.toml"; then
   echo "这台不装公开探针（配对时选了不装）。"
 elif ! "$NEW" probe --help >/dev/null 2>&1; then

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lo-li mesh 公开探针上报：每 30 秒把本机负载和 EasyTier 链路签名后推给准入站的 /v1/probe/report。
+"""lolinet 公开探针上报：每 30 秒把本机负载和 EasyTier 链路签名后推给准入站的 /v1/probe/report。
 
 只读：读 /proc、statvfs 和 `easytier-cli -o json peer`。报接入点之间的链路（overlay 10.188.0.0/24），
 设备只报匿名 id（配置里的 devid_key 对主机名做 HMAC）、是否直连和延迟，名字和地址不出 relay。
@@ -38,7 +38,7 @@ CLI = "/opt/easytier/easytier-cli"
 RPC = "127.0.0.1:15888"
 INTERVAL = 30
 DEVICE_INTERVAL = 60
-INFRA = ipaddress.ip_network("10.188.0.0/24")  # ipam.md：relay / 基础设施段
+INFRA = ipaddress.ip_network("10.188.0.0/24")  # relay / 基础设施段（地址段见 nodes.example.yaml）
 
 
 def config() -> dict:

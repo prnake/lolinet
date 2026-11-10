@@ -4,7 +4,7 @@
 //! u32 LE 长度前缀的 postcard 消息（[`send`] / [`recv`]）。远程桌面画面走 QUIC datagram：
 //! 每个 datagram 是 [`Frag`] 头 + 一段 [`VideoFrame`] 编码后的字节，客户端按 frame id 拼回来。
 //!
-//! 设计取舍见 ../README.md：比 Vibe42 少一层 libp2p / AP / 中继，
+//! 设计取舍见仓库根目录的 docs/lolidesk.md：没有 libp2p、中继这一层，
 //! 因为设备已经在 lolinet 的 overlay 上，彼此可直达。
 
 use bytes::Bytes;

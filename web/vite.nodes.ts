@@ -8,20 +8,25 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const NODES_YAML =
   process.env.LOLINET_NODES ?? [`${ROOT}nodes.yaml`, `${ROOT}nodes.example.yaml`].find((p) => existsSync(p)) ?? `${ROOT}nodes.yaml`;
 
-/** 读节点清单；LOLINET_BASE_URL 设了就用它的主机当 network.join */
+/** 读节点清单；LOLINET_BASE_URL 设了就用它的主机当 network.join；network.title（显示名）不写就是 lolinet */
 export function loadNodes() {
   // network.console 在 nodes.yaml 里出现了两次（节点名、URL），和 PyYAML 一样取后一个
   const doc = parse(readFileSync(NODES_YAML, "utf8"), { uniqueKeys: false });
   if (process.env.LOLINET_BASE_URL) doc.network.join = new URL(process.env.LOLINET_BASE_URL).host;
+  doc.network.title = String(doc.network.title ?? "").trim() || "lolinet";
   return doc;
 }
+
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 /** 准入站地址：LOLINET_BASE_URL，不设就是 https://<network.join> */
 export const baseUrl = () => (process.env.LOLINET_BASE_URL ?? `https://${loadNodes().network.join}`).replace(/\/+$/, "");
 
 /**
  * 节点清单是唯一来源：构建时读成 virtual:mesh-nodes，前端不手抄 relay 列表。
- * public = 公开探针用：只留网络名和域名后缀。relay 和设备的名字、EIP / VPC / overlay 地址、伪装 SNI、控制台地址都不进公开包。
+ * public = 公开探针用：只留网络名、显示名和域名后缀。relay 和设备的名字、EIP / VPC / overlay 地址、伪装 SNI、控制台地址都不进公开包。
+ * HTML 里的 %MESH_TITLE% 换成 network.title（index.html、probe.html 的标题和描述）。
  */
 export function meshNodes({ public: isPublic = false } = {}): Plugin {
   const id = "virtual:mesh-nodes";
@@ -34,12 +39,20 @@ export function meshNodes({ public: isPublic = false } = {}): Plugin {
       const { network, relays, devices } = loadNodes();
       const doc = isPublic
         ? {
-            network: { name: network.name, cidr: network.cidr, edge_zone: network.edge_zone, local_suffix: network.local_suffix, join: network.join },
+            network: {
+              name: network.name,
+              title: network.title,
+              cidr: network.cidr,
+              edge_zone: network.edge_zone,
+              local_suffix: network.local_suffix,
+              join: network.join,
+            },
             relays: [], // 公开页面只用接口里的区域代码，relay 名字也不进包
             devices: [],
           }
         : { network, relays, devices };
       return `export default ${JSON.stringify(doc)};`;
     },
+    transformIndexHtml: (html) => html.replaceAll("%MESH_TITLE%", escapeHtml(loadNodes().network.title)),
   };
 }

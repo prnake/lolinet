@@ -1,0 +1,58 @@
+name: Bug report
+description: Something doesn't work as the docs say. 有东西和文档说的不一样。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English or Chinese are both fine. 中英文都可以。
+        **Remove names, addresses, domains and keys** from anything you paste. A security problem? See [SECURITY.md](https://github.com/prnake/lolinet/blob/main/SECURITY.md) instead.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - lolinet (CLI, service, upgrade)
+        - install.sh / pairing
+        - join site (Worker)
+        - admin scripts (pair.py, revoke.py, deploy.py)
+        - public probe
+        - local console
+        - lolidesk
+        - build / CI / patches
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. sudo lolinet up …
+        2. …
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`lolinet --version`, or the lolidesk / commit you used"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: macOS 26.1 arm64 / Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: "`lolinet status`, `lolinet logs -n 100`, or the error. Remove names and addresses."
+      render: text
