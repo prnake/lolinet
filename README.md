@@ -27,7 +27,7 @@ then reach each other directly or through your relays, whichever is faster.
 
 lolinet puts the computers you code on (a laptop, a NAS, cloud boxes, a server at home) on one private network, the way Tailscale does. The difference is that the relays, the keys and the console are all yours:
 
-- **Join with one line.** `curl <join site>/i | sudo sh -s <pairing code>` installs the client, a background service and auto-upgrade. A code works once, for 15 minutes.
+- **Join with one line.** `curl <join site>/i | sudo sh -s <pairing code>` installs the client, a background service and auto-upgrade. A code works once, for 15 minutes. The same line without a code installs or upgrades the client on a device that is already in.
 - **No shared network secret.** Every device gets its own credential from your console. A credential lasts at most a year, can't be reused, and can be revoked on its own. A device's config holds no network secret.
 - **Built for cross-border links.** Devices reach relays over WSS on port 443 with a TLS server name you choose. TCP rides inside KCP, so ISP shaping of long TCP flows doesn't slow it down. Traffic takes the lowest-latency path across a full mesh of relays.
 - **One small binary.** `lolinet` has patched EasyTier built in. It installs the launchd or systemd service, shows which peers are direct and which are relayed, and upgrades itself only after checking the sha256 and test-running the new version.
@@ -54,7 +54,14 @@ uv run scripts/pair.py new --name laptop --ip 10.188.16.11
 curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
 ```
 
-<sub>The script redeems the code, decrypts the config on the device, checks the package's sha256, installs `lolinet` to `/usr/local/bin`, registers the launchd or systemd service, and turns on auto-upgrade (every 6 hours). It also installs the public probe, which reports only hardware and a rough location; pair with `--no-probe` to leave it out. On Linux it needs systemd. For Docker or a NAS without sudo, see [devices without systemd](docs/self-hosting.md#devices-without-systemd).</sub>
+<sub>The script downloads `lolinet` from the latest GitHub Release (or the join site's `dl/` if GitHub is unreachable or slow), checks its sha256 and test-runs it, then redeems the code, decrypts the config on the device, installs `lolinet` to `/usr/local/bin`, registers the launchd or systemd service, and turns on auto-upgrade (every 6 hours). It also installs the public probe, which reports only hardware and a rough location; pair with `--no-probe` to leave it out. On Linux it needs systemd. For Docker or a NAS without sudo, see [devices without systemd](docs/self-hosting.md#devices-without-systemd).</sub>
+
+Already in, or installed by an older script? Run it without a code. It uses the config already on the machine, installs or upgrades `lolinet`, and does nothing if it is current:
+
+```sh
+curl -fsSL https://join.edge.example.com/i | sudo sh       # install or upgrade
+curl -fsSL https://join.edge.example.com/i | sh -s check   # only say whether it would, no root
+```
 
 **3 · Check.** Run `lolinet`. It shows the service, this machine, the days left on its credential, and every relay and device: direct or relayed, latency and loss.
 
@@ -127,7 +134,7 @@ The details are in [Architecture](docs/architecture.md).
 | | |
 | :-- | :-- |
 | **Manifest** | `lolinet.json` names the version devices should run, with each platform's file and sha256. If the local version differs, the device switches, so publishing an old version again rolls back |
-| **Sources** | The join site's `dl/lolinet.json` (the default for devices installed by the script), GitHub Releases (`--upgrade-source github:prnake/lolinet`), or any manifest URL |
+| **Sources** | Whichever `install.sh` downloaded from: GitHub Releases (`github:prnake/lolinet`), or the join site's `dl/lolinet.json` when GitHub was out of reach. Or any manifest URL with `--upgrade-source` |
 | **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The probe's `reporter.py` is updated the same way |
 | **Quiet** | Runs every 6 hours and writes a log line only when it switches versions or fails. `lolinet status` shows whether it is on |
 

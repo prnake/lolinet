@@ -45,7 +45,11 @@ async function join(req, env, url) {
       const page = await site(env, "index.html");
       if (page.status === 200) return page; // 页面还没传上去时退回文字说明
     }
-    return text(`${title(env)} 准入\n\n  curl -fsSL ${baseUrl(env)}/i | sudo sh -s <配对码>\n\n状态：${baseUrl(env)}/v1/probe\n`);
+    return text(`${title(env)} 准入\n\n`
+      + `  新设备入网：               curl -fsSL ${baseUrl(env)}/i | sudo sh -s <配对码>\n`
+      + `  已入网，装上 / 升级 lolinet：curl -fsSL ${baseUrl(env)}/i | sudo sh\n`
+      + `  只看要不要升级：           curl -fsSL ${baseUrl(env)}/i | sh -s check\n\n`
+      + `状态：${baseUrl(env)}/v1/probe\n`);
   }
   if (path === "/favicon.svg" || /^\/assets\/[A-Za-z0-9._-]+$/.test(path)) return site(env, path.slice(1));
   if (path === "/v1/probe") return publicJson(await hub(env).fetch("https://hub/snapshot"));

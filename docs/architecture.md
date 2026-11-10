@@ -76,9 +76,10 @@ admin                         console (issuer)        join site (Worker + KV)   
   │ PUT pair:<sha256(code)[:32]> = ciphertext, TTL 15 min ─────▶
   │ shows: curl …/i | sudo sh -s CODE
   │                                                                   ◀── GET /i
+  │                                                                       download lolinet (GitHub, else dl/),
+  │                                                                       check sha256, test-run it
   │                                                                   ◀── GET /v1/pair/<sha256(code)[:32]>
   │                                                  ciphertext, then delete ──▶ openssl decrypt with CODE
-  │                                                                       download lolinet, check sha256
   │                                                                       lolinet up -c loli.toml
 ```
 
@@ -86,7 +87,9 @@ admin                         console (issuer)        join site (Worker + KV)   
 - **Encryption**: PBKDF2-SHA256 with 200,000 rounds derives the key and IV, then AES-256-CBC, in OpenSSL's `Salted__` format. The device decrypts with `openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256`, which every macOS and Linux has.
 - **The Worker** stores the ciphertext under a hash of the code, deletes it on the first `GET`, and allows each IP 20 attempts per 10 minutes. `HEAD` requests are refused so they can't use up a code. The code itself never reaches the Worker.
 - **The probe** rides along: unless the code was made with `--no-probe`, the config ends with a `# probe = {…}` line holding the device's public id and report key. `install.sh` and `lolinet up` take that line out before the config goes to EasyTier.
-- **Before redeeming**, `install.sh` checks that the machine is supported (macOS, or Linux with systemd), so a code isn't spent on a machine that can't use it.
+- **Before redeeming**, `install.sh` checks that the machine is supported (macOS, or Linux with systemd) and downloads and verifies `lolinet`, so a code isn't spent on a machine that can't use it or can't get the client.
+- **Where `lolinet` comes from.** The latest GitHub Release, pinned to one tag through the `releases/latest` redirect. If GitHub is unreachable or too slow (common from mainland China), the join site's `dl/`, which holds the same release's files. `lolinet up` then points auto-upgrade at the source that worked, so a device never flips between two sources that are briefly on different versions.
+- **Without a code** the same script upgrades a device already in the network: it reuses the config on the machine and runs `lolinet up` only if the version, the service or the upgrade job needs it.
 
 ## Auto-upgrade
 
@@ -94,7 +97,7 @@ admin                         console (issuer)        join site (Worker + KV)   
 
 **The manifest** (`lolinet.json`, written by [`lolinet/release.py`](../lolinet/release.py)) names the version devices should run. `lolinet` doesn't compare old and new: if the local version differs, it switches. Rolling back means publishing the old version again.
 
-**Where it looks.** The settings in `/etc/lolinet/lolinet.json` decide: an explicit source (`github:<owner>/<repo>` or a URL), else the join site's `<base_url>/dl/lolinet.json`, else GitHub `prnake/lolinet`. Packages are resolved next to the manifest. GitHub's `releases/latest/download/lolinet.json` first redirects to `releases/download/<tag>/lolinet.json`, which pins the version, and then to a one-time storage URL. `lolinet` follows only redirects that keep the file name, so it builds package URLs from the pinned directory and never from the storage URL.
+**Where it looks.** The settings in `/etc/lolinet/lolinet.json` decide: an explicit source (`github:<owner>/<repo>` or a URL), else the join site's `<base_url>/dl/lolinet.json`, else GitHub `prnake/lolinet`. `install.sh` sets the explicit source to whichever one it downloaded from. Packages are resolved next to the manifest. GitHub's `releases/latest/download/lolinet.json` first redirects to `releases/download/<tag>/lolinet.json`, which pins the version, and then to a one-time storage URL. `lolinet` follows only redirects that keep the file name, so it builds package URLs from the pinned directory and never from the storage URL.
 
 **Three checks before switching:**
 

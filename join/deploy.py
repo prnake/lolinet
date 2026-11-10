@@ -238,13 +238,15 @@ PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64")
 
 
 def require_lolinet() -> None:
-    """install.sh 下载 dl/lolinet-<平台>.tar.gz：包还没发布时上线新脚本，新设备就装不了，所以先查准入站上有没有。"""
+    """install.sh 先从 GitHub 最新的 Release 下载，连不上就退到准入站 dl/（lolinet.json + lolinet-<平台>.tar.gz）。
+    dl/ 是国内网络的退路：上线新脚本之前先查准入站上这些都在（dist.yml 从 Release 同步）。"""
     missing = []
-    for p in PLATFORMS:
-        url = f"{BASE_URL}/dl/lolinet-{p}.tar.gz.sha256"
+    for p in PLATFORMS + ("manifest",):
+        url = f"{BASE_URL}/dl/lolinet.json" if p == "manifest" else f"{BASE_URL}/dl/lolinet-{p}.tar.gz.sha256"
         try:
             with urlopen(Request(url, headers={"User-Agent": "lolinet-deploy"}), timeout=30) as r:
-                ok = r.status == 200 and len(r.read().split()[0]) == 64
+                body = r.read()
+                ok = r.status == 200 and (b'"version"' in body if p == "manifest" else len(body.split()[0]) == 64)
         except (URLError, OSError, IndexError):
             ok = False
         if not ok:

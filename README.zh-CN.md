@@ -27,7 +27,7 @@
 
 lolinet 把你写代码用的机器（笔记本、NAS、云上的机器、家里的服务器）放进同一张私有网络，和 Tailscale 一个思路。不同的是 relay、密钥、控制台都在你自己手里：
 
-- **一行命令入网。** `curl <准入站>/i | sudo sh -s <配对码>` 装好客户端、后台服务和自动升级。配对码 15 分钟内有效，只能用一次。
+- **一行命令入网。** `curl <准入站>/i | sudo sh -s <配对码>` 装好客户端、后台服务和自动升级。配对码 15 分钟内有效，只能用一次。已经入网的设备，同一行不带配对码就是装上或升级客户端。
 - **没有共享的网络密钥。** 每台设备一条控制台签发的凭据，最长 1 年、不可复用，可以单独吊销。设备配置里没有 network secret。
 - **为跨境链路做的。** 设备经 wss 443 连 relay，TLS 的 SNI 由你定。TCP 包进 KCP 走 UDP，绕开运营商对长 TCP 流的整形。按全网延迟表选路，relay 之间全互联。
 - **一个小二进制。** `lolinet` 里编进了打过补丁的 EasyTier。它负责装 launchd / systemd 服务，告诉你哪些节点是直连、哪些是中转；自动升级前先校验 sha256，再试跑一次新版本。
@@ -54,7 +54,14 @@ uv run scripts/pair.py new --name laptop --ip 10.188.16.11
 curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
 ```
 
-<sub>脚本兑换配对码，在设备上解密配置，校验安装包的 sha256，把 `lolinet` 装到 `/usr/local/bin`，注册 launchd / systemd 服务，并打开自动升级（每 6 小时检查一次）。默认还会装公开探针，它只报硬件和大致位置；配对时加 `--no-probe` 就不装。Linux 上需要 systemd。Docker 和没有 sudo 的 NAS 见[没有 systemd 的设备](docs/self-hosting.md#devices-without-systemd)。</sub>
+<sub>脚本先从 GitHub 最新的 Release 下载 `lolinet`（连不上或太慢就用准入站的 `dl/`），校验 sha256 并试跑一次，再兑换配对码，在设备上解密配置，把 `lolinet` 装到 `/usr/local/bin`，注册 launchd / systemd 服务，并打开自动升级（每 6 小时检查一次）。默认还会装公开探针，它只报硬件和大致位置；配对时加 `--no-probe` 就不装。Linux 上需要 systemd。Docker 和没有 sudo 的 NAS 见[没有 systemd 的设备](docs/self-hosting.md#devices-without-systemd)。</sub>
+
+已经入网，或者是旧脚本装的？不带配对码再跑一次。它用本机现有的配置装上或升级 `lolinet`，已是最新就什么都不动：
+
+```sh
+curl -fsSL https://join.edge.example.com/i | sudo sh       # 装上或升级
+curl -fsSL https://join.edge.example.com/i | sh -s check   # 只看要不要装，不要 root
+```
 
 **3 · 看状态。** 运行 `lolinet`。它会列出服务状态、本机、凭据剩余天数，以及每个接入点和设备：直连还是中转、延迟、丢包。
 
@@ -127,7 +134,7 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 | | |
 | :-- | :-- |
 | **发布清单** | `lolinet.json` 写的是设备应该跑的版本，以及每个平台的文件名和 sha256。本机版本和它不一样就换，所以把旧版本重新发布一次就是回退 |
-| **来源** | 准入站的 `dl/lolinet.json`（脚本装的设备默认用它）、GitHub Releases（`--upgrade-source github:prnake/lolinet`），或者任何清单 URL |
+| **来源** | `install.sh` 从哪里下载成功就跟哪里：GitHub Releases（`github:prnake/lolinet`），GitHub 连不上时是准入站的 `dl/lolinet.json`。也可以用 `--upgrade-source` 指定任何清单 URL |
 | **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。探针的 `reporter.py` 也一样换 |
 | **不吵** | 每 6 小时跑一次，只有换了版本或出错时才写日志。`lolinet status` 能看到它开没开 |
 

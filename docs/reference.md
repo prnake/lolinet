@@ -135,6 +135,7 @@ Optional. `device_config.py` renders configs for devices listed here; `pair.py` 
 | Variable | Used by | |
 | :-- | :-- | :-- |
 | `LOLINET_BASE_URL` | scripts, web build, `install.sh`, `lolinet up` | The join site, for example `https://join.edge.example.com`. Default `https://<network.join>`. The Worker writes it into `install.sh` when serving `/i` |
+| `LOLINET_GITHUB` | `install.sh` | The GitHub repository to download `lolinet` from. Default `prnake/lolinet` |
 | `LOLINET_NODES` | scripts, web build | Path to the node list |
 | `LOLINET_HOME` | scripts, agent | Admin data directory with `.env` and `state/`. Default `~/.config/lolinet`. `FLEET_REPO` is still read as a fallback |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | `deploy.py`, `pair.py` | Cloudflare credentials. In `$LOLINET_HOME/.env` they are `CLOUDFLARE_API` and `CLOUDFLARE_ID` |
@@ -168,7 +169,7 @@ Run them with `uv run`; each declares its own dependencies.
 | `join/deploy.py worker` | Upload the Worker with its bindings, attach the custom domains, turn off `workers.dev` |
 | `join/deploy.py site` | Upload `web/dist-probe/` as the join site's home page |
 | `join/deploy.py release DIR` | Upload `lolinet-*` and `easytier-*` packages, the probe bundle, then `dl/lolinet.json` |
-| `join/deploy.py install` | Upload the probe bundle and `install.sh`, once all four `lolinet` packages are on the join site |
+| `join/deploy.py install` | Upload the probe bundle and `install.sh`, once all four `lolinet` packages and `dl/lolinet.json` are on the join site |
 | `join/deploy.py dist FILE…` | Upload any files to `dl/` with a `.sha256` next to each |
 | `probe/device.py relay --name N --out FILE` | A relay's probe config: report key, device-id key and report URL |
 | `probe/device.py config --name N --out FILE [options]` | A device's probe config, for devices not installed by `install.sh` |
@@ -186,7 +187,7 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 | Request | |
 | :-- | :-- |
 | `GET /` | The public probe page for browsers; for anything else, a short text with the install command |
-| `GET /i` | `install.sh`, with the join site's address filled in |
+| `GET /i` | `install.sh`, with the join site's address filled in. See [`install.sh`](#installsh) |
 | `GET /dl/<file>` | Packages, `.sha256` files and `lolinet.json` from R2 |
 | `GET /v1/pair/<id>` | The pairing ciphertext, once. `<id>` is the first 32 hex digits of the code's sha256. 20 attempts per IP per 10 minutes |
 | `GET /v1/probe` | The public snapshot: relays by region, devices by anonymous id, links, availability. Cached 10 seconds, CORS open |
@@ -198,6 +199,16 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 **Worker bindings** set by `deploy.py worker`: `PAIRING` (KV), `DIST` (R2), `PROBE` (the `ProbeHub` Durable Object), `PROBE_MASTER` (secret), `RELAYS` (name, region and spec per relay), `BASE_URL`, `EDGE_ZONE` and `TITLE`.
 
 **Probe history.** Relays count as online for 90 seconds after a report, devices for 180. A device that hasn't reported for 7 days leaves the page. Heartbeats are kept 31 days in 5-minute buckets, link latency 2 days. A "day" on the page starts at 00:00 UTC+8.
+
+## `install.sh`
+
+| Command | |
+| :-- | :-- |
+| `curl <join site>/i \| sudo sh -s CODE` | New device: download and check `lolinet`, then redeem the code, `lolinet up -c` the config, install the probe |
+| `curl <join site>/i \| sudo sh` | Device already in: use `/etc/lolinet/loli.toml` (or the older `/etc/easytier/loli.toml`) and run `lolinet up`. Does nothing when the version matches and the service and upgrade job are in place. Updates an installed probe's `reporter.py`. Refuses relay configs (they hold `network_secret`). `repair` and `upgrade` are accepted as the argument too |
+| `curl <join site>/i \| sh -s check` | Download and check only, then print the latest version, the local one and whether to install. No root needed |
+
+**Where it downloads.** GitHub first: the redirect of `https://github.com/$LOLINET_GITHUB/releases/latest` pins the tag, and every file comes from that release. If GitHub is unreachable, slower than 50 KB/s for 20 seconds, or has no usable manifest, it uses `<join site>/dl/`. The package's sha256 must match that release's `lolinet.json`, and the new binary must print the manifest's version. `lolinet up` gets `--upgrade-source github:<repo>` or `base` to match where the download came from.
 
 ## Release artifacts
 
