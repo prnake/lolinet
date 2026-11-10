@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import nodesDoc from "virtual:mesh-nodes";
 
 /**
  * 标志：六辐星号 = 六个接入点，中间那一点是猫眼。
@@ -6,7 +7,7 @@ import type { CSSProperties } from "react";
  */
 export function Mark({ size = 28, state = "live" }: { size?: number; state?: "live" | "connecting" | "off" }) {
   return (
-    <svg className={`mark mark--${state}`} width={size} height={size} viewBox="0 0 32 32" aria-label="lo-li mesh">
+    <svg className={`mark mark--${state}`} width={size} height={size} viewBox="0 0 32 32" aria-label={nodesDoc.network.title}>
       <g className="mark__arms">
         {[0, 60, 120].map((r) => (
           <rect key={r} x="14" y="3" width="4" height="26" rx="1.4" transform={`rotate(${r} 16 16)`} />

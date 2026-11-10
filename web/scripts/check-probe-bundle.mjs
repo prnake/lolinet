@@ -1,6 +1,6 @@
 // 公开探针不能带内部信息：relay 和设备的名字、overlay 地址、伪装 SNI、控制台域名、密钥字段名。
 // 名单从 nodes.yaml 读（本机还会读 $LOLINET_HOME/state/mesh-devices.json 里配对过的设备），加了设备会自动纳入检查。
-//   node scripts/check-probe-bundle.mjs                 检查 dist-probe/（npm run build 之后，CI 的 cloudflare.yml 会跑）
+//   node scripts/check-probe-bundle.mjs                 检查 dist-probe/（npm run build 之后，CI 的 web.yml 会跑）
 //   node scripts/check-probe-bundle.mjs --api <URL>     检查线上 /v1/probe 的响应（部署后的冒烟测试）
 import { existsSync } from "node:fs";
 import { readdirSync, readFileSync } from "node:fs";

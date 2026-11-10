@@ -6,7 +6,7 @@ index d04a3a3..62a5b3e 100644
  path = "src/easytier-cli.rs"
  required-features = ["management", "cli"]
  
-+# lo-li mesh：core 和 cli 编进同一个二进制，按 argv[0] 分发（源码在 loli-network/lolinet/src，构建时拷到 src/lolinet）
++# lolinet：core 和 cli 编进同一个二进制，按 argv[0] 分发（源码在本仓库的 lolinet/src，构建时拷到 src/lolinet）
 +[[bin]]
 +name = "lolinet"
 +path = "src/lolinet/main.rs"

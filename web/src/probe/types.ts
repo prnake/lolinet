@@ -1,4 +1,4 @@
-// join.edge.lo-li.co/v1/probe 的结构（join/worker.js ProbeHub.snapshot）。公开数据里没有任何名字和地址：
+// 准入站 /v1/probe 的结构（join/worker.js ProbeHub.snapshot）。公开数据里没有任何名字和地址：
 // relay 的 id 是区域代码（页面上写城市），设备的 id 是 d-<十六进制>，设备只有硬件和位置。
 
 export type Pair = [number | null, number | null];

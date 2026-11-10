@@ -1,12 +1,13 @@
-// lo-li mesh 入口 Worker。绑定自定义域（join/deploy.py 按节点清单挂）：
+// lolinet 准入站 Worker。绑定自定义域（join/deploy.py 按节点清单挂）：
 //   BASE_URL 的主机        首次准入：安装脚本、配对码兑换（一次性密文）、客户端二进制（R2）；
-//   （如 join.edge.lo-li.co）首页是公开的只读拓扑探针（浏览器看页面，curl 看安装命令）
+//   （如 join.edge.example.com）首页是公开的只读拓扑探针（浏览器看页面，curl 看安装命令）
 //   <name>.<EDGE_ZONE>     其他名字：探测内网可达后跳到 <name>-local.<EDGE_ZONE>（内网服务本身不暴露公网）
 // 绑定：PAIRING = KV；DIST = R2（install.sh、dl/、site/ 探针页面）；
 //       PROBE = Durable Object ProbeHub（各 relay / 设备上报的状态和历史）；PROBE_MASTER = 上报签名主密钥；
 //       RELAYS = 节点清单里的 relay 名单（JSON：name / region / spec）；
 //       BASE_URL = 准入站地址（LOLINET_BASE_URL，不设就是节点清单的 network.join），发 install.sh 时填进去；
-//       EDGE_ZONE = 节点清单的 network.edge_zone。
+//       EDGE_ZONE = 节点清单的 network.edge_zone；
+//       TITLE = 网络的显示名（节点清单的 network.title，不设就是 lolinet）。
 // 公开接口不出现任何名字：relay 用区域代码当 id（页面上写城市），设备用 d-<10 位十六进制>（HMAC(devid_key, 主机名)，
 // relay 和设备各自算好再报，Worker 根本拿不到设备名）。设备只公开硬件、位置，以及它直连了哪些接入点。
 // relay 名字只用来验签和在 DO 里关联历史，不出 Worker。
@@ -14,6 +15,7 @@ import { DurableObject } from "cloudflare:workers";
 
 const joinHost = (env) => new URL(env.BASE_URL).hostname;
 const baseUrl = (env) => env.BASE_URL.replace(/\/+$/, "");
+const title = (env) => env.TITLE || "lolinet";
 const RATE_LIMIT = 20; // 每 IP 每 10 分钟兑换次数
 const REPORT_MAX = 16 * 1024;
 const SKEW = 300; // 上报时间戳和 Worker 时钟允许差多少秒
@@ -43,7 +45,7 @@ async function join(req, env, url) {
       const page = await site(env, "index.html");
       if (page.status === 200) return page; // 页面还没传上去时退回文字说明
     }
-    return text(`lo-li mesh 准入\n\n`
+    return text(`${title(env)} 准入\n\n`
       + `  新设备入网：               curl -fsSL ${baseUrl(env)}/i | sudo sh -s <配对码>\n`
       + `  已入网，装上 / 升级 lolinet：curl -fsSL ${baseUrl(env)}/i | sudo sh\n`
       + `  只看要不要升级：           curl -fsSL ${baseUrl(env)}/i | sh -s check\n\n`
@@ -120,7 +122,7 @@ function hex(s) {
   return Uint8Array.from(s.match(/../g) || [], (b) => parseInt(b, 16));
 }
 
-/** 每台 relay 的上报密钥 = HMAC-SHA256(主密钥, "probe:<名字>")；和 probe/deploy.py 一致。 */
+/** 每台 relay 的上报密钥 = HMAC-SHA256(主密钥, "probe:<名字>")；和 probe/device.py 一致。 */
 async function nodeKey(env, node) {
   const master = await crypto.subtle.importKey("raw", hex(env.PROBE_MASTER), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const raw = await crypto.subtle.sign("HMAC", master, enc(`probe:${node}`));
@@ -372,7 +374,7 @@ function probePage(url, env) {
   const target = local + url.pathname + url.search;
   // 猫眼（web/DESIGN.md）的最小版：纯黑 / 纸白、星号标志、等宽大写标注
   const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${label} · lo-li mesh</title><link rel="icon" href="${baseUrl(env)}/favicon.svg" type="image/svg+xml">
+<title>${label} · ${esc(title(env))}</title><link rel="icon" href="${baseUrl(env)}/favicon.svg" type="image/svg+xml">
 <style>
 :root{color-scheme:dark;--bg:#000;--fg:#f2f2f3;--fg3:rgb(255 255 255/.42);--line:rgb(255 255 255/.12);--eye:#ceff1c;--eyefg:#ceff1c;--arm:rgb(255 255 255/.36)}
 @media (prefers-color-scheme:light){:root{color-scheme:light;--bg:#f5f5f2;--fg:#111113;--fg3:rgb(0 0 0/.55);--line:rgb(0 0 0/.12);--eye:#c6f432;--eyefg:#4f6b00;--arm:rgb(0 0 0/.36)}}
@@ -387,7 +389,7 @@ a.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 @media (prefers-reduced-motion:reduce){.eye{animation:none}}
 </style>
 <main id="m"><svg width="56" height="56" viewBox="0 0 32 32" aria-hidden="true"><g class="arm"><rect x="14" y="3" width="4" height="26" rx="1.4"/><rect x="14" y="3" width="4" height="26" rx="1.4" transform="rotate(60 16 16)"/><rect x="14" y="3" width="4" height="26" rx="1.4" transform="rotate(120 16 16)"/></g><circle class="eye" cx="16" cy="16" r="3.4"/></svg>
-<div class="cap">lo-li mesh</div><h1>${label}</h1><p id="s">正在检测内网连接…</p>
+<div class="cap">${esc(title(env))}</div><h1>${label}</h1><p id="s">正在检测内网连接…</p>
 <nav><a class="primary" href="${target}">直接打开内网地址</a><a href="${baseUrl(env)}/">网络状态</a></nav></main>
 <script>
 const target = ${JSON.stringify(target)};
@@ -395,10 +397,12 @@ const ping = ${JSON.stringify(local + "/.well-known/mesh-ping")};
 const s = document.getElementById("s"), m = document.getElementById("m");
 fetch(ping, { mode: "no-cors", cache: "no-store", targetAddressSpace: "local", signal: AbortSignal.timeout(3000) })
   .then(() => { m.className = "ok"; s.textContent = "内网可达，正在跳转…"; location.replace(target); })
-  .catch(() => { m.className = "off"; s.textContent = "当前设备不在 lo-li 内网，或浏览器没允许访问本地网络。"; });
+  .catch(() => { m.className = "off"; s.textContent = ${JSON.stringify(`当前设备不在 ${title(env)} 内网，或浏览器没允许访问本地网络。`).replaceAll("<", "\\u003c")}; });
 </script></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
+
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json; charset=utf-8" } });
