@@ -25,6 +25,8 @@ rust_i18n::i18n!("locales", fallback = "en");
 mod et_cli;
 mod exit;
 mod invite;
+mod manager;
+mod mihomo;
 mod netcfg;
 mod probe;
 mod service;
@@ -116,8 +118,8 @@ enum Cmd {
     Down,
     /// 邀请另一台机器入网：问内网管理面要一个配对码，地址由中心分配（不要 root，也不要控制台账号）
     Invite {
-        /// desktop（有 TUN 的电脑）、userspace（无 TUN）、server（默认只有管理员能邀请）
-        #[arg(long, default_value = "desktop", value_parser = ["desktop", "userspace", "server"])]
+        /// desktop（有 TUN 的电脑）、userspace（无 TUN）、phone（mihomo 经 WireGuard 进网）、server（默认只有管理员能邀请）
+        #[arg(long, default_value = "desktop", value_parser = ["desktop", "userspace", "phone", "server"])]
         kind: String,
         /// 新机器的名字（小写字母、数字、-）；不给就是 <种类>-<4 位十六进制>
         #[arg(long)]
@@ -128,6 +130,17 @@ enum Cmd {
         /// 输出 JSON（给 Lolidesk.app 用）
         #[arg(long)]
         json: bool,
+    },
+    /// 这台电脑的 mihomo 配置：网内地址走 lolinet，规则和出口节点由内网管理面集中下发
+    Mihomo {
+        /// tun 或 userspace；不给就看本机内核是哪种
+        #[arg(long, value_parser = ["tun", "userspace"])]
+        mode: Option<String>,
+        /// 写到这个文件；不给就打到 stdout
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        manager: Option<String>,
     },
     /// 出口节点：网里别的机器经这台的 SOCKS5（端口 10180）上网，只对 overlay 开（不带子命令就是 status）
     Exit {
@@ -267,6 +280,7 @@ fn lolinet(args: Args) -> Result<()> {
             service::restart()
         }
         Cmd::Invite { kind, name, manager, json } => invite::run(kind, name, manager, json),
+        Cmd::Mihomo { mode, out, manager } => mihomo::run(mode, out, manager),
         Cmd::Exit { cmd } => match cmd.unwrap_or(ExitCmd::Status) {
             ExitCmd::Status => exit::status(),
             ExitCmd::On { port, allow, lan } => exit::on(port, allow, lan),
@@ -350,10 +364,10 @@ fn up(
             Err(e) => eprintln!("配置里的探针那一行用不了，这次不装公开探针：{e:#}"),
         }
         // 配对包末尾给 lolinet 自己的那一行：内网管理面在哪（lolinet invite 用），存进 lolinet.json
-        lolinet_line = invite::from_pairing(&text);
+        lolinet_line = manager::from_pairing(&text);
         let mut text: String = text
             .lines()
-            .filter(|l| !l.starts_with(probe::PAIR_LINE) && !l.starts_with(invite::PAIR_LINE))
+            .filter(|l| !l.starts_with(probe::PAIR_LINE) && !l.starts_with(manager::PAIR_LINE))
             .map(|l| format!("{l}\n"))
             .collect();
         if let Some(u) = userspace {

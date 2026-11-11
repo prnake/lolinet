@@ -136,6 +136,8 @@ The details are in [Architecture](docs/architecture.md).
 
 `sudo lolinet exit on` lends the node's internet connection to the rest of the network: a SOCKS5 server with TCP and UDP on port `10180`, reachable only from the overlay. It refuses loopback, cloud metadata and (unless `--lan`) private destinations. Point a browser, `curl --socks5-hostname` or a mihomo rule at it.
 
+**Phones and mihomo.** A phone joins through mihomo instead of a second VPN: `lolinet invite --kind phone` gives a link that decrypts a mihomo config in the phone's browser, with a WireGuard outbound to the issuer relay for the network's addresses. What is rejected, what goes direct and what goes out through which exit node is decided centrally on the manager and fetched over the network; `lolinet mihomo` writes the same config for a computer.
+
 ### Auto-upgrade
 
 | | |

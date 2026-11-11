@@ -13,12 +13,17 @@
 - 新机器用这份配置真的入网：issuer 的路由表里出现 10.188.32.1；
 - 凭据写进了 issuer 的 credential_file；
 - 策略：成员要 server 被拒（403）；不在路由表里的来源被拒（403）；超过每天次数被拒（429）；
-- 签发节点没有 credential_file 时拒绝（503）。
+- 签发节点没有 credential_file 时拒绝（503）；
+- 手机：lolinet invite --kind phone 在 issuer 的 WireGuard 入口加了客户端（10.188.48.1），配对包是 mihomo 配置
+  （wireguard 出站：地址、密钥、服务器和端口都对上入口给的）；
+- mihomo 集中下发：成员登记成出口，手机（经 WireGuard 来的地址）取到出口列表（socks5，dialer-proxy 是 lolinet，
+  最后一个是直连）和规则集；lolinet mihomo 出电脑的配置（tun / userspace 两种），YAML 能解析（有 PyYAML 或 ruby 时）。
 
 用法: python3 lolinet/check_invite.py <lolinet 二进制>
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import http.server
@@ -96,11 +101,14 @@ def nginx(upstream: int, client_ip: list):
         def log_message(self, *a):
             pass
 
-        def do_POST(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        def do_GET(self):
+            self.do_POST(method="GET")
+
+        def do_POST(self, method="POST"):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if method == "POST" else None
             headers = {k: v for k, v in self.headers.items() if k.lower() not in ("content-length", "x-forwarded-for", "connection")}
             headers["X-Forwarded-For"] = client_ip[0]
-            req = urllib.request.Request(f"http://127.0.0.1:{upstream}{self.path}", data=body, method="POST", headers=headers)
+            req = urllib.request.Request(f"http://127.0.0.1:{upstream}{self.path}", data=body, method=method, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
                     status, data = r.status, r.read()
@@ -129,6 +137,21 @@ def cli_json(cli: str, rpc: int, *args: str):
     return json.loads(out.stdout)
 
 
+def yaml_ok(text: str) -> bool:
+    """有 PyYAML 用它，没有就用 ruby 的；都没有算过（只少一项语法检查）"""
+    try:
+        import yaml  # noqa: PLC0415
+        return isinstance(yaml.safe_load(text), dict)
+    except ImportError:
+        pass
+    if shutil.which("ruby"):
+        r = subprocess.run(["ruby", "-ryaml", "-e", "exit(YAML.safe_load(STDIN.read).is_a?(Hash) ? 0 : 1)"], input=text, text=True,
+                           capture_output=True)
+        return r.returncode == 0
+    print("  （没有 PyYAML 也没有 ruby，跳过 YAML 语法检查）")
+    return True
+
+
 def wait_for(fn, timeout: float = 30):
     end = time.time() + timeout
     while time.time() < end:
@@ -150,7 +173,7 @@ def main() -> None:
     core, cli = tmp / "easytier-core", tmp / "easytier-cli"
     os.symlink(binary, core)
     os.symlink(binary, cli)
-    pa, ra, rm, rn, sm, sn = (free_port() for _ in range(6))
+    pa, ra, rm, rn, sm, sn, pw = (free_port() for _ in range(7))
     procs: list[subprocess.Popen] = []
 
     def start(name: str, conf: str, rpc: int) -> None:
@@ -174,6 +197,10 @@ network_secret = "{SECRET}"
 
 [secure_mode]
 enabled = true
+
+[vpn_portal_config]
+wireguard_listen = "127.0.0.1:{pw}"
+wireguard_private_key = "{base64.b64encode(os.urandom(32)).decode()}"
 
 [flags]
 no_tun = true
@@ -214,10 +241,12 @@ private_mode = true
         (state / "settings.json").write_text(json.dumps({
             "pair": {"ttl_days": 30, "code_minutes": 15, "peers": ["issuer"], "transport": "tcp", "probe": True},
             "device": {"latency_first": True, "enable_kcp_proxy": False, "udp_peers": False}}))
-        (state / "policy.json").write_text(json.dumps({"per_day": 2}))
+        (state / "policy.json").write_text(json.dumps({"per_day": 3}))
+        (state / "mihomo.json").write_text(json.dumps({"reject": ["DOMAIN-SUFFIX,ads.example.com"], "direct": ["GEOIP,CN"],
+                                                       "exit": ["DOMAIN-SUFFIX,openai.com"], "exit_order": ["laptop"]}))
         cfg = {
             "network": {"name": NETWORK, "cidr": "10.188.0.0/16", "sni": "speedtest.example.com", "edge_zone": "edge.example.com",
-                        "issuer": "issuer", "console": ""},
+                        "issuer": "issuer", "console": "", "local_suffix": "-local.edge.example.com"},
             "relays": [{"name": "issuer", "overlay_ip": "10.188.0.14", "eip": "127.0.0.1", "et_port": pa, "wss_port": 443}],
             "base_url": f"http://127.0.0.1:{wport}",
             "network_id": "chk",
@@ -263,6 +292,77 @@ private_mode = true
         check(any(d.get("overlay_ip") == new_ip and d.get("paired_by", "").endswith("@10.188.16.10") for d in devs),
               "设备登记里记了是谁邀请的")
 
+        # ---- 手机：WireGuard 入口 + mihomo 配置 ----
+        r = invite("phone")
+        ph = json.loads(r.stdout) if r.returncode == 0 else {}
+        check(r.returncode == 0 and ph.get("ip") == "10.188.48.1" and ph.get("command", "").endswith("/m#" + ph.get("code", "?")),
+              f"lolinet invite --kind phone：{ph.get('name')} {ph.get('ip')}，兑换地址 {ph.get('command')}（{r.stderr.strip()[-200:]}）")
+        portal = cli_json(str(cli), ra, "vpn-portal")
+        wgc = next((c for c in portal.get("clients", []) if c.get("name") == ph.get("name")), {})
+        check(wgc.get("virtual_ip", "").startswith("10.188.48.1"), f"issuer 的 WireGuard 入口里有这台手机：{wgc.get('virtual_ip')}")
+        pcode = ph.get("code", "").replace("-", "")
+        pblob = FakeWorker.blobs.get(hashlib.sha256(pcode.encode()).hexdigest()[:32], "")
+        pdec = subprocess.run(["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-md", "sha256", "-a", "-A",
+                               "-pass", "env:K"], input=pblob, capture_output=True, text=True, env={**os.environ, "K": pcode})
+        phone_yaml = pdec.stdout
+        wg_priv = next((ln.split("=", 1)[1].strip() for ln in wgc.get("client_config", "").splitlines() if ln.startswith("PrivateKey")), "?")
+        check(pdec.returncode == 0 and "type: wireguard" in phone_yaml and 'ip: "10.188.48.1"' in phone_yaml
+              and f'private-key: "{wg_priv}"' in phone_yaml and 'server: "127.0.0.1"' in phone_yaml and f"port: {pw}" in phone_yaml
+              and "/api/mesh/mihomo/proxies.yaml?via=lolinet" in phone_yaml and "IP-CIDR,10.188.0.0/16,lolinet,no-resolve" in phone_yaml,
+              "手机的配对包是 mihomo 配置：wireguard 出站的地址、私钥、服务器、端口都对，规则和出口经内网取")
+        check(yaml_ok(phone_yaml), "手机的 mihomo 配置是合法 YAML")
+        if FAILS:
+            print(phone_yaml[:1500])
+
+        def get(path: str, src: str) -> tuple:
+            client[0] = src
+            req = urllib.request.Request(f"http://127.0.0.1:{nport}{path}", method="GET", headers={"Host": "manager.test"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return resp.status, resp.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+
+        def post(path: str, src: str, obj: dict) -> int:
+            client[0] = src
+            req = urllib.request.Request(f"http://127.0.0.1:{nport}{path}", data=json.dumps(obj).encode(), method="POST",
+                                         headers={"Host": "manager.test", "X-Mesh-Agent": "1", "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return resp.status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        check(post("/api/mesh/exit", "10.188.16.10", {"port": 10180}) == 200, "成员 laptop 登记成出口（lolinet exit on 做的事）")
+        code_, prox = get("/api/mesh/mihomo/proxies.yaml?via=lolinet", "10.188.48.1")
+        check(code_ == 200 and '"laptop 出口"' in prox and 'server: "10.188.16.10"' in prox and "port: 10180" in prox
+              and 'dialer-proxy: "lolinet"' in prox and "type: direct" in prox and prox.index("laptop") < prox.index("type: direct"),
+              f"手机取到出口列表：laptop 的 socks5 经 WireGuard 拨，直连在最后（{code_}）")
+        check(yaml_ok(prox), "出口列表是合法 YAML")
+        code_, rules = get("/api/mesh/mihomo/rules/exit.yaml", "10.188.48.1")
+        check(code_ == 200 and '"DOMAIN-SUFFIX,openai.com"' in rules and yaml_ok(rules), "手机取到集中下发的「经出口」规则")
+        code_, _ = get("/api/mesh/mihomo/rules/exit.yaml", "10.188.99.98")
+        check(code_ == 403, f"网外来源取不到规则（{code_}）")
+        client[0] = "10.188.16.10"
+        outs = {}
+        for mode in ("userspace", "tun"):
+            r = subprocess.run([binary, "mihomo", "--mode", mode, "--manager", f"http://manager.test:{nport}@127.0.0.1"],
+                               capture_output=True, text=True, timeout=60)
+            outs[mode] = r.stdout if r.returncode == 0 else r.stderr
+        check("type: socks5, server: 127.0.0.1, port: 18080" in outs["userspace"]
+              and "IP-CIDR,10.188.0.0/16,lolinet,no-resolve" in outs["userspace"]
+              and "DOMAIN-REGEX,^[a-z0-9-]+\\-local\\.edge\\.example\\.com$,lolinet" in outs["userspace"],
+              "lolinet mihomo --mode userspace：网内地址交给本机 SOCKS5")
+        check("route-exclude-address" in outs["tun"] and "IP-CIDR,10.188.0.0/16,DIRECT,no-resolve" in outs["tun"] and "proxies: []" in outs["tun"],
+              "lolinet mihomo --mode tun：mihomo 的 TUN 让开 overlay 网段，网内地址直连")
+        check(all(yaml_ok(v) for v in outs.values()), "两份电脑配置都是合法 YAML")
+        if FAILS:
+            print(outs["userspace"][:2500])
+        check(post("/api/mesh/exit", "10.188.16.10", {"port": 0}) == 200
+              and '"laptop 出口"' not in get("/api/mesh/mihomo/proxies.yaml", "10.188.16.10")[1],
+              "lolinet exit off 撤下之后出口列表里没有它")
+        client[0] = "10.188.16.10"
+
         r = invite("server")
         check(r.returncode != 0 and "403" in r.stderr, f"成员不能邀请 server：{r.stderr.strip()[-120:]}")
         client[0] = "10.188.99.99"
@@ -273,7 +373,7 @@ private_mode = true
         out2 = json.loads(r.stdout) if r.returncode == 0 else {}
         check(out2.get("ip") == "10.188.16.1", f"第二个邀请（desktop）分到 desktop 池的第一个：{out2.get('ip')}")
         r = invite("desktop")
-        check(r.returncode != 0 and "429" in r.stderr, f"超过每天 2 个被拒：{r.stderr.strip()[-120:]}")
+        check(r.returncode != 0 and "429" in r.stderr, f"超过每天 3 个被拒：{r.stderr.strip()[-120:]}")
 
         # 签发节点没有 credential_file（它签的凭据重启就丢）：再起一个管理面，RPC 指向成员 laptop 的内核（它没配）
         m2 = free_port()

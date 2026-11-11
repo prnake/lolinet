@@ -10,12 +10,14 @@ Source of the `lolinet` CLI: EasyTier and a small command line in one binary tha
 | `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch; an installed lolidesk too |
 | `src/probe.rs` | `lolinet probe`: the device's public probe (hardware and location, signed like `probe/reporter.py`'s device mode), and taking over the older Python one |
 | `src/netcfg.rs` | Reading the overlay address and mode from `loli.toml`, and switching between TUN and userspace by editing two lines in place |
-| `src/invite.rs` | `lolinet invite`: ask the manager for a pairing code over the overlay (through the local SOCKS5 in userspace mode) |
+| `src/manager.rs` | Talking to the manager over the overlay with the system `curl` (through the local SOCKS5 in userspace mode), and where it is |
+| `src/invite.rs` | `lolinet invite`: ask the manager for a pairing code for another machine or a phone |
+| `src/mihomo.rs` | `lolinet mihomo`: this computer's mihomo config from the manager |
 | `src/exit.rs` | `lolinet exit`: the exit node's SOCKS5 server (`CONNECT`, `UDP ASSOCIATE`), its source and destination rules, and its settings |
 | `build.sh` | Local build: clone the pinned EasyTier, apply the patches, copy `src/` in, build, package |
 | `release.py` | Writes the release manifest `lolinet.json`, or with `--lolidesk` the lolidesk manifest `lolidesk.json` (standard library only) |
 | `check_exit.py` | End-to-end test of the exit node without root: destination refusals, `CONNECT` and UDP DNS to the internet, the source allow-list, and two userspace nodes where one uses the other's exit across the overlay |
-| `check_invite.py` | End-to-end test of member invitations on loopback: an issuer node, a member, a stand-in join-site Worker and nginx; `lolinet invite` gets a code, a new node joins with it, and the manager's policy refuses what it should |
+| `check_invite.py` | End-to-end test of member invitations on loopback: an issuer node with a WireGuard portal, a member, a stand-in join-site Worker and nginx; `lolinet invite` gets a code and a new node joins with it, a phone gets a portal client and a mihomo config, exits register and show up in mihomo's provider, `lolinet mihomo` writes desktop configs, and the manager's policy refuses what it should |
 | `check_probe.py` | End-to-end test of the built-in probe: install as root, drop to `nobody`, take over the Python probe, change id, upgrade, turn off, and verify reports the way the join site does |
 
 ## Build

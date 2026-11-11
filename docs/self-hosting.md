@@ -52,6 +52,14 @@ The issuer relay (`network.issuer`) also runs the console, `easytier-web-embed`:
 - Use Gateway mode for the network, and make the console listen only on the overlay.
 - Put HTTPS in front of it on the issuer's overlay address, port 443, with a certificate valid for the console's name (a wildcard `*.edge.example.com` from Let's Encrypt over DNS-01 works). `pair.py`, `revoke.py` and the local console's agent all verify it.
 - Point `console-local.edge.example.com` at the issuer's overlay IP, DNS only (not proxied).
+- For [member invitations](console.md#manager-on-the-issuer-relay), run the manager next to the console and give the issuer `credential_file = "/etc/lolinet/credentials.json"` (any path) in its config, so the credentials it signs survive a restart.
+- For phones, also give it a WireGuard portal and open that UDP port to the internet:
+
+  ```toml
+  [vpn_portal_config]
+  wireguard_listen = "0.0.0.0:51820"
+  wireguard_private_key = "<openssl rand -base64 32>"   # every phone's key derives from this; keep it
+  ```
 
 Then record each relay in `$LOLINET_HOME/state/`:
 

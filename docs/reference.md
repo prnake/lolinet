@@ -29,10 +29,11 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet probe [show\|send] [-c FILE]` *root* | Print what the public probe would report this round; `send` reports it once for real. Reads `/etc/lolinet/probe.json` |
 | `lolinet probe off` *root* | Take the device off the public page, remove the probe service and delete its config. Turning it back on needs a new pairing |
 | `lolinet probe run` | The probe service's entry point |
-| `lolinet invite [--kind desktop\|userspace\|server] [--name N] [--manager URL[@IP]] [--json]` | Ask the network's manager for a pairing code for another machine; the address is assigned centrally. No root and no console account: the manager knows this node by its overlay address. `--manager` is needed only on devices paired before this existed; run as root, it is remembered |
+| `lolinet invite [--kind desktop\|userspace\|phone\|server] [--name N] [--manager URL[@IP]] [--json]` | Ask the network's manager for a pairing code for another machine or a phone; the address is assigned centrally. For a phone it prints a `<join>/m#CODE` link instead of a command. No root and no console account: the manager knows this node by its overlay address. `--manager` is needed only on devices paired before this existed; run as root, it is remembered |
+| `lolinet mihomo [--mode tun\|userspace] [-o FILE] [--manager URL[@IP]]` | This computer's mihomo config from the manager: overlay addresses through lolinet, the central reject / direct / exit rules and the exit nodes as providers that mihomo refreshes over the overlay every 10 minutes. The mode defaults to this node's |
 | `lolinet exit` | Whether this node is an exit node, its address and service state |
-| `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node |
-| `lolinet exit off` *root* | Stop and remove it |
+| `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node. Also registers it with the manager, if it can, so mihomo lists it |
+| `lolinet exit off` *root* | Stop and remove it, and take it off the manager's list |
 | `lolinet exit run [--listen ADDR] [--allow CIDR]… [--lan]` | The exit service's entry point. With `--listen` it ignores the config and allows loopback by default (for tests) |
 | `lolinet run [-c FILE]` | The service's entry point: run the EasyTier kernel in the foreground with `/etc/lolinet/loli.toml` |
 | `lolinet core …` | Stock `easytier-core`, arguments passed through |
@@ -221,6 +222,7 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 | `GET /` | The public probe page for browsers; for anything else, a short text with the install command |
 | `GET /i` | `install.sh`, with the join site's address filled in. See [`install.sh`](#installsh) |
 | `GET /dl/<file>` | Packages, `.sha256` files and `lolinet.json` from R2 |
+| `GET /m` | The phone redemption page. With the code after `#`, it fetches `/v1/pair/<id>` and decrypts the mihomo config in the browser (PBKDF2-SHA256 200,000 rounds, AES-256-CBC, OpenSSL's `Salted__` format, the same as `install.sh`), then offers it to download or copy. The code is never sent |
 | `GET /v1/pair/<id>` | The pairing ciphertext, once. `<id>` is the first 32 hex digits of the code's sha256. 20 attempts per IP per 10 minutes |
 | `GET /v1/probe` | The public snapshot: relays by region, devices by anonymous id, links, availability. Cached 10 seconds, CORS open |
 | `GET /v1/probe/link?a=&b=` | 24 hours of latency between two relays, both directions |
@@ -309,6 +311,6 @@ The example network uses `10.188.0.0/16`:
 | `10.188.1.0/24` | Servers |
 | `10.188.16.0/20` | Computers with TUN |
 | `10.188.32.0/20` | Clients without TUN |
-| `10.188.48.0/20` | Phones, through a relay's WireGuard portal (planned, see [Design](design.md#mihomo-on-phones-and-desktops)) |
+| `10.188.48.0/20` | Phones, through the issuer relay's WireGuard portal (see [Design](design.md#mihomo-on-phones-and-desktops)) |
 
 `lolinet status` and the probe reporter treat `10.188.0.0/24` as the relay range, and the console's Pair page picks the next free address from the computer or client range.

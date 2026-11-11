@@ -28,13 +28,25 @@
   POST /api/mesh/pair | forget
   POST /api/mesh/invite               不用登录，只认 overlay 来源：{"kind", "name"?} -> 配对码（policy.json 管谁能要）
   GET  /api/mesh/policy               登录后看 / POST 改
+  GET  /api/mesh/mihomo               登录后看 / POST 改集中下发的 mihomo 规则（mihomo.json）
+  不用登录、只认 overlay 来源（成员的 mihomo 经内网来取）：
+  GET  /api/mesh/mihomo/config.yaml?mode=tun|userspace   电脑的 mihomo 配置（lolinet mihomo）
+  GET  /api/mesh/mihomo/proxies.yaml[?via=lolinet]       出口节点列表（proxy-provider），最后一个是直连
+  GET  /api/mesh/mihomo/rules/<reject|direct|exit>.yaml  集中下发的规则（rule-provider）
+  POST /api/mesh/exit                 {"port"}：把发请求的这台登记成出口（lolinet exit on / off，port 0 是撤掉）
+
+手机（kind=phone）：不装 EasyTier，用 mihomo 的 WireGuard 出站连签发 relay 的 VPN 入口（EasyTier 的 vpn_portal，
+具名客户端，每个手机一把派生出来的密钥和一个 10.188.48.0/20 的地址）。配对包里是一份完整的 mihomo 配置：
+网内地址走 WireGuard，集中下发的规则决定哪些拒绝、哪些直连、哪些经出口节点（出口 = 网里某台的 lolinet exit，
+mihomo 里是一个 socks5，经 WireGuard 拨过去）。手机在准入站的 /m 页面用配对码在浏览器里解开，再导入 mihomo 客户端。
   *    /api/v1/...                    反代控制台（白名单和 mesh_agent 一样），带会话里的控制台 cookie
 
 文件:
   --config  /etc/mesh-manager/config.json      部署时生成、不含密钥：network、relays（EIP、EasyTier 端口）、base_url、network_id
   --secrets $CREDENTIALS_DIRECTORY/manager.json  {"manager_key", "devid_key"}（systemd LoadCredential，源文件 600）
   --state   /var/lib/mesh-manager              settings.json、devices.json（设备登记，和 pair.py 的同一种格式）、forgotten.json、
-                                               policy.json、invites.json（成员邀请的记录，算每天的次数）
+                                               policy.json、invites.json（成员邀请的记录，算每天的次数）、
+                                               mihomo.json（集中下发的规则）、exits.json（登记的出口节点）
 
 用法（本机试）:
   python3 web/agent/mesh_manager.py --config /tmp/m/config.json --secrets /tmp/m/manager.json --state /tmp/m/state \\
@@ -76,10 +88,10 @@ IP_RE = agent.IP_RE
 LOCATION_RE = re.compile(r"^[^\x00-\x1f<>\"\\]{1,32}$")
 # 地址池：和 nodes.example.yaml 的地址规划一致；节点清单的 network.pools 可以改
 POOLS = {"server": "10.188.1.0/24", "desktop": "10.188.16.0/20", "userspace": "10.188.32.0/20", "phone": "10.188.48.0/20"}
-KINDS = ("server", "desktop", "userspace")  # phone 走 WireGuard 入口，还没做
+KINDS = ("server", "desktop", "userspace", "phone")  # phone：签发 relay 的 WireGuard 入口 + mihomo 配置
 DEFAULT_POLICY = {
     "invite": "members",                        # members：成员都能邀请；admins：只有登录了控制台账号的
-    "member_kinds": ["desktop", "userspace"],   # 成员能邀请的种类；server 默认只给管理员
+    "member_kinds": ["desktop", "userspace", "phone"],  # 成员能邀请的种类；server 默认只给管理员
     "per_day": 20,                              # 每个成员每天最多几个
     "deny": [],                                 # 不让邀请的成员（主机名）
 }
@@ -260,6 +272,119 @@ def encrypt(code: str, plain: bytes) -> str:
     return blob.decode().strip()
 
 
+# ---------- mihomo ----------
+
+RULE_SETS = ("reject", "direct", "exit")
+DEFAULT_MIHOMO = {"reject": [], "direct": [], "exit": [], "exit_order": []}
+RULE_RE = re.compile(r"^[A-Z][A-Z0-9-]*,[^\n\r]{1,256}$")
+EXIT_GROUP = "出口"
+
+
+def check_mihomo(d) -> tuple[dict | None, str | None]:
+    if not isinstance(d, dict):
+        return None, "要是 JSON 对象"
+    out = dict(DEFAULT_MIHOMO)
+    for k in RULE_SETS:
+        v = d.get(k, [])
+        if not isinstance(v, list) or not all(isinstance(r, str) and RULE_RE.match(r.strip()) for r in v):
+            return None, f"{k} 是 mihomo 的 classical 规则列表，如 DOMAIN-SUFFIX,example.com、IP-CIDR,1.2.3.0/24、GEOSITE,openai"
+        bad = [r for r in v if r.split(",", 1)[0] in ("RULE-SET", "SUB-RULE", "MATCH", "AND", "OR", "NOT")]
+        if bad:
+            return None, f"{k} 里不能用 {bad[0].split(',', 1)[0]}"
+        out[k] = [r.strip() for r in v]
+    order = d.get("exit_order", [])
+    if not isinstance(order, list) or not all(isinstance(x, str) and NAME_RE.match(x) for x in order):
+        return None, "exit_order 是出口节点的主机名列表"
+    out["exit_order"] = order
+    return out, None
+
+
+def y(s: str) -> str:
+    """YAML 标量：JSON 字符串就是合法的 YAML 双引号字符串"""
+    return json.dumps(s, ensure_ascii=False)
+
+
+def rule_provider(rules: list) -> str:
+    return "payload:\n" + "".join(f"  - {y(r)}\n" for r in rules) if rules else "payload: []\n"
+
+
+def exit_proxies(exits: list, order: list, via: str | None) -> str:
+    """出口节点 -> socks5 代理，按管理员定的顺序（没列的按名字），最后一个是直连（不走出口）"""
+    rank = {n: i for i, n in enumerate(order)}
+    lines = ["proxies:"]
+    for e in sorted(exits, key=lambda e: (rank.get(e["name"], len(rank)), e["name"])):
+        lines.append(f"  - {{name: {y(e['name'] + ' 出口')}, type: socks5, server: {y(e['ip'])}, port: {int(e['port'])}, udp: true"
+                     + (f", dialer-proxy: {y(via)}" if via else "") + "}")
+    lines.append(f"  - {{name: {y('直连（不走出口）')}, type: direct}}")
+    return "\n".join(lines) + "\n"
+
+
+def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | None = None) -> str:
+    """mode：phone（mihomo 经 WireGuard 进网）、userspace（电脑，lolinet 无 TUN，经本机 SOCKS5 进网）、
+    tun（电脑，lolinet 有 TUN：网内地址直接走系统路由，mihomo 的 TUN 让开 overlay 网段）"""
+    net = cfg["network"]
+    cidr = net.get("cidr", "10.188.0.0/16")
+    overlay = "DIRECT" if mode == "tun" else "lolinet"
+    via = "" if mode == "tun" else "?via=lolinet"
+    fetch_via = "DIRECT" if mode == "tun" else "lolinet"
+    host = urlsplit(manager).hostname or ""
+    out = [f"# {title} · mihomo 配置（{ {'phone': '手机，经 WireGuard 进网', 'userspace': '电脑，lolinet 无 TUN', 'tun': '电脑，lolinet TUN'}[mode] }）",
+           "# 网内地址走 lolinet；规则和出口节点由管理面集中下发（rule-providers / proxy-providers，经内网取）。",
+           "# 想和自己的订阅合用：把下面的 proxies、proxy-providers、rule-providers 和 rules 的前几条并进去，网内那几条放最前。",
+           "mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: warning", "ipv6: true", "unified-delay: true", ""]
+    if mode == "tun":
+        out += ["tun:", "  enable: true", "  stack: mixed", "  auto-route: true", "  auto-detect-interface: true",
+                f"  route-exclude-address: [{y(cidr)}]", ""]
+    out += ["dns:", "  enable: true", "  enhanced-mode: fake-ip", "  fake-ip-range: 198.18.0.1/16",
+            f"  fake-ip-filter: [{y('+.lan')}, {y('+.local')}{', ' + y('+.' + net['edge_zone']) if net.get('edge_zone') else ''}]",
+            "  nameserver: [https://223.5.5.5/dns-query, https://1.1.1.1/dns-query]", ""]
+    out.append("proxies:")
+    if mode == "phone":
+        w = wg or {}
+        out += ["  - name: lolinet", "    type: wireguard", f"    server: {y(w['server'])}", f"    port: {int(w['port'])}",
+                f"    ip: {y(w['ip'])}", f"    private-key: {y(w['private_key'])}", f"    public-key: {y(w['public_key'])}",
+                f"    allowed-ips: [{y(cidr)}]", "    udp: true", "    mtu: 1280", "    persistent-keepalive: 25"]
+    elif mode == "userspace":
+        out += ["  - {name: lolinet, type: socks5, server: 127.0.0.1, port: 18080, udp: true}"]
+    else:
+        out[-1] = "proxies: []"
+    out += ["", "proxy-providers:", "  lolinet-exits:", "    type: http", f"    url: {y(manager + '/api/mesh/mihomo/proxies.yaml' + via)}",
+            "    path: ./lolinet/exits.yaml", "    interval: 600", f"    proxy: {fetch_via}",
+            "    health-check: {enable: true, url: https://cp.cloudflare.com/generate_204, interval: 600, lazy: true}",
+            "", "proxy-groups:", f"  - name: {y(EXIT_GROUP)}", "    type: select", "    use: [lolinet-exits]", "", "rule-providers:"]
+    for k in RULE_SETS:
+        out += [f"  lolinet-{k}:", "    type: http", "    behavior: classical", "    format: yaml",
+                f"    url: {y(manager + '/api/mesh/mihomo/rules/' + k + '.yaml')}", f"    path: ./lolinet/{k}.yaml",
+                "    interval: 600", f"    proxy: {fetch_via}"]
+    out += ["", "rules:", f"  - IP-CIDR,{cidr},{overlay},no-resolve"]
+    if host:
+        out.append(f"  - DOMAIN,{host},{overlay}")
+    if net.get("local_suffix"):
+        out.append(f"  - DOMAIN-REGEX,^[a-z0-9-]+{re.escape(net['local_suffix'])}$,{overlay}")
+    out += ["  - RULE-SET,lolinet-reject,REJECT", "  - RULE-SET,lolinet-direct,DIRECT", f"  - RULE-SET,lolinet-exit,{EXIT_GROUP}",
+            "  - MATCH,DIRECT", ""]
+    return "\n".join(out)
+
+
+def parse_wg(text: str) -> dict:
+    """EasyTier vpn_portal 给的 WireGuard 客户端配置（ini）-> 字段"""
+    kv = {}
+    for line in text.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            kv[k.strip()] = v.split("#", 1)[0].strip()
+    return {"private_key": kv["PrivateKey"], "public_key": kv["PublicKey"], "ip": kv["Address"].split("/")[0],
+            "port": int(kv["Endpoint"].rsplit(":", 1)[1])}
+
+
+def cli_run(args, sub: list, check: bool = True) -> str:
+    """easytier-cli 不带 -o json（vpn-portal add-client 这类只打一行字的）"""
+    p = subprocess.run([args.cli, "-p", args.rpc, *sub], capture_output=True, text=True, timeout=20)
+    if check and p.returncode != 0:
+        raise Refused(502, f"easytier-cli {' '.join(sub[:2])}：{(p.stderr or p.stdout).strip()[-200:]}")
+    return p.stdout
+
+
 class Refused(Exception):
     """发不了配对码：HTTP 状态和给人看的原因"""
 
@@ -377,6 +502,10 @@ class Manager(agent.Handler):
                 return self.login()
             if path == "/api/mesh/invite" and method == "POST":
                 return self.invite()
+            if path.startswith("/api/mesh/mihomo/") and method == "GET":
+                return self.mihomo_get(path[len("/api/mesh/mihomo/"):], urlsplit(self.path).query)
+            if path == "/api/mesh/exit" and method == "POST":
+                return self.exit_post()
             if path.startswith("/api/"):
                 sess = self.session()
                 if not sess:
@@ -482,6 +611,16 @@ class Manager(agent.Handler):
         if method == "POST" and what == "forget":
             req = self.json_body() or {}
             return self.send_json(*self.forget(str(req.get("credential_id", ""))))
+        if method == "GET" and what == "mihomo":
+            return self.send_json(200, {"mihomo": self.mihomo_rules(), "exits": self.store.read("exits.json", [])})
+        if method == "POST" and what == "mihomo":
+            m, err = check_mihomo(self.json_body())
+            if err:
+                return self.send_json(400, {"message": err})
+            with self.store.lock:
+                self.store.write("mihomo.json", m)
+            self.audit("mihomo " + json.dumps(m, ensure_ascii=False, separators=(",", ":")))
+            return self.send_json(200, {"mihomo": m})
         if method == "GET" and what == "policy":
             return self.send_json(200, {"policy": self.policy(), "defaults": DEFAULT_POLICY, "kinds": list(KINDS)})
         if method == "POST" and what == "policy":
@@ -601,6 +740,8 @@ class Manager(agent.Handler):
         if location and not LOCATION_RE.match(location):
             raise Refused(400, "位置是 32 个字符以内的城市名")
 
+        if kind == "phone":
+            return self._issue_phone(name, ip, minutes, by)
         # 先做没有副作用的：探针密钥。再签凭据
         probe_cfg = None
         if probe is not False:
@@ -647,6 +788,101 @@ class Manager(agent.Handler):
             "expires_at": int(put.get("expires_at") or time.time() + minutes * 60),
         }
 
+    def _issue_phone(self, name: str, ip: str, minutes: int, by: str) -> dict:
+        """手机：在签发 relay 的 WireGuard 入口加一个具名客户端（密钥由入口的主密钥按名字派生），
+        配对包是一份 mihomo 配置。手机在准入站的 /m 页面用配对码在浏览器里解开"""
+        info = agent.cli(self.args, ["vpn-portal"]) or {}
+        if not info.get("listener") and not info.get("vpn_type"):
+            raise Refused(503, "签发 relay 没开 WireGuard 入口（它的 loli.toml 要有 [vpn_portal_config]），手机进不来")
+        issuer = next((r for r in self.cfg["relays"] if r["name"] == self.cfg["network"].get("issuer")), None)
+        if not issuer or not issuer.get("eip"):
+            raise Refused(503, "节点清单里找不到签发 relay 的公网地址")
+        cli_run(self.args, ["vpn-portal", "add-client", name, "--virtual-ip", f"{ip}/16"])
+        try:
+            info = agent.cli(self.args, ["vpn-portal"]) or {}
+            client = next((c for c in info.get("clients") or [] if c.get("name") == name), None)
+            if not client or not client.get("client_config"):
+                raise Refused(502, "WireGuard 入口加了客户端但没给配置")
+            wg = parse_wg(client["client_config"])
+            wg["server"] = self.cfg.get("wireguard_endpoint") or issuer["eip"]
+            if self.cfg.get("wireguard_port"):
+                wg["port"] = int(self.cfg["wireguard_port"])
+            title = self.cfg["network"].get("title") or "lolinet"
+            config = render_mihomo(self.cfg, "phone", self.manager_url() or "https://manager.invalid", f"{title} · {name}（{ip}）", wg)
+            code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
+            blob = encrypt(code, config.encode())
+            put = self.worker.call("/v1/manager/pair", {"id": hashlib.sha256(code.encode()).hexdigest()[:32], "blob": blob,
+                                                         "ttl": minutes * 60})
+        except Exception:
+            cli_run(self.args, ["vpn-portal", "remove-client", name], check=False)
+            raise
+        with self.store.lock:
+            devices = self.store.read("devices.json", [])
+            devices.append({"name": name, "overlay_ip": ip, "credential_id": f"wg:{name}", "kind": "phone",
+                            "paired_at": dt.datetime.now().isoformat(timespec="seconds"), "paired_by": by})
+            self.store.write("devices.json", devices)
+        shown = "-".join(code[i:i + 4] for i in range(0, CODE_LEN, 4))
+        self.audit(f"pair {name} {ip} phone wireguard by={by}")
+        return {
+            "name": name,
+            "ip": ip,
+            "kind": "phone",
+            "code": shown,
+            "credential_id": f"wg:{name}",
+            "command": f"{self.cfg['base_url'].rstrip('/')}/m#{shown}",
+            "expires_at": int(put.get("expires_at") or time.time() + minutes * 60),
+        }
+
+    # --- mihomo：集中下发的规则、出口节点 ---
+
+    def mihomo_rules(self) -> dict:
+        m, err = check_mihomo(self.store.read("mihomo.json", {}))
+        return m if not err else dict(DEFAULT_MIHOMO)
+
+    def mihomo_get(self, path: str, query: str):
+        """成员的 mihomo（或 lolinet mihomo）经内网来取；只认 overlay 来源"""
+        if not self.member():
+            return self.send_json(403, {"message": f"{self.client_ip()} 不是网里的节点"})
+        q = dict(p.partition("=")[::2] for p in query.split("&") if p)
+        ctype = "text/yaml; charset=utf-8"
+        if path == "config.yaml":
+            mode = q.get("mode", "tun")
+            if mode not in ("tun", "userspace"):
+                return self.send_json(400, {"message": "mode 是 tun 或 userspace"})
+            who = self.member() or {}
+            title = self.cfg["network"].get("title") or "lolinet"
+            body = render_mihomo(self.cfg, mode, self.manager_url() or "https://manager.invalid", f"{title} · {who.get('name') or who.get('ip')}")
+            return self.send(200, body.encode(), ctype, [("Cache-Control", "no-store")])
+        if path == "proxies.yaml":
+            via = q.get("via") if q.get("via") == "lolinet" else None
+            exits = self.store.read("exits.json", [])
+            return self.send(200, exit_proxies(exits, self.mihomo_rules()["exit_order"], via).encode(), ctype, [("Cache-Control", "no-store")])
+        m = re.fullmatch(r"rules/(reject|direct|exit)\.yaml", path)
+        if m:
+            return self.send(200, rule_provider(self.mihomo_rules()[m.group(1)]).encode(), ctype, [("Cache-Control", "no-store")])
+        return self.send_json(404, {"message": "not found"})
+
+    def exit_post(self):
+        """lolinet exit on / off 来登记：发请求的这台（overlay 来源）在 port 上开着出口；port 0 是撤掉"""
+        who = self.member()
+        if not who:
+            return self.send_json(403, {"message": f"{self.client_ip()} 不是网里的节点"})
+        req = self.json_body() or {}
+        try:
+            port = int(req.get("port", 0))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"message": "port 是整数"})
+        if not 0 <= port <= 65535:
+            return self.send_json(400, {"message": "port 是 0–65535"})
+        name = who["name"] or who["ip"]
+        with self.store.lock:
+            exits = [e for e in self.store.read("exits.json", []) if e.get("ip") != who["ip"]]
+            if port:
+                exits.append({"name": name, "ip": who["ip"], "port": port, "since": int(time.time())})
+            self.store.write("exits.json", exits)
+        self.audit(f"exit {'on' if port else 'off'} {name} {who['ip']}:{port}")
+        return self.send_json(200, {"ok": True, "exits": len(exits)})
+
     # --- 成员邀请 ---
 
     def manager_url(self) -> str | None:
@@ -674,6 +910,10 @@ class Manager(agent.Handler):
             addr = str(p.get("ipv4") or p.get("ipv4_addr") or "").split("/")[0]
             if addr and addr == ip:
                 return {"name": str(p.get("hostname") or ""), "ip": ip}
+        # 手机经 WireGuard 入口进来，路由表里不一定看得到：登记过的手机地址也算
+        for d in self.store.read("devices.json", []):
+            if d.get("kind") == "phone" and d.get("overlay_ip") == ip and not d.get("pending"):
+                return {"name": d.get("name", ""), "ip": ip}
         return None
 
     def local_signer(self):

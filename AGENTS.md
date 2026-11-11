@@ -29,7 +29,8 @@ Devices in the field depend on these. Changing one needs a migration path, not j
 
 | What | Where |
 | :-- | :-- |
-| Pairing crypto (PBKDF2-SHA256, 200,000 rounds, AES-256-CBC, `sha256(code)[:32]` as the KV key) | `scripts/pair.py`, `join/install.sh` |
+| Pairing crypto (PBKDF2-SHA256, 200,000 rounds, AES-256-CBC, `sha256(code)[:32]` as the KV key) | `scripts/pair.py`, `web/agent/mesh_manager.py`, `join/install.sh`, `join/worker.js` (`/m`, in the browser) |
+| The device config and its trailing `# …` lines (`credential_id`, `probe`, `lolinet`) | `scripts/device_config.py`, `scripts/pair.py`, `web/agent/mesh_manager.py` (`render`), `lolinet/src/main.rs`, `lolinet/src/manager.rs`, `lolinet/src/probe.rs` |
 | Probe key derivations (`probe:<name>`, `devid`) and the signature format | `join/worker.js`, `probe/reporter.py`, `probe/device.py`, `lolinet/src/probe.rs`, `join/deploy.py` |
 | The four platforms | `.github/workflows/build.yml`, `.github/workflows/desk.yml`, `lolinet/release.py`, `join/deploy.py`, `lolinet/build.sh`, `join/install.sh` |
 | lolidesk manifest (`lolidesk.json`), where it is found (newest `lolidesk-*` release on GitHub, `dl/` on the join site), the install layout and the `--version` check | `lolinet/release.py`, `.github/workflows/desk.yml`, `join/deploy.py`, `join/install.sh`, `lolinet/src/upgrade.rs`, `desk/proto/src/lib.rs` (`BUILD`) |

@@ -123,6 +123,16 @@ admin                         console (issuer)        join site (Worker + KV)   
 
 The admin flow above needs the console password. Members can also invite: `lolinet invite` asks the manager (`web/agent/mesh_manager.py`, on the issuer relay behind nginx on the overlay) for a code over the overlay. The manager identifies the member by the request's overlay source address, checks `policy.json`, picks an address from the pool for the requested kind, and has the issuer relay's own EasyTier node sign the credential through its local RPC; the relay keeps such credentials in its `credential_file`. From there it is the same flow: render, encrypt, KV, one-time code. [`lolinet/check_invite.py`](../lolinet/check_invite.py) runs the whole path on loopback (an issuer, a member, a stand-in Worker and nginx) and joins a new node with the code it gets.
 
+### Phones and mihomo
+
+A phone runs one VPN, so the overlay becomes one of mihomo's outbounds instead of a second VPN. `lolinet invite --kind phone` makes the manager add a named WireGuard client to the issuer relay's VPN portal (EasyTier attaches it as a peer with an address from `10.188.48.0/20`, and derives its key from the portal key and the name) and render a mihomo config:
+
+- a `wireguard` proxy `lolinet` to the relay, carrying only the overlay's CIDR;
+- rules that send the overlay's addresses, the manager's name and `<name><local_suffix>` names to `lolinet`, then three rule-providers (`reject`, `direct`, `exit`) and `MATCH,DIRECT`;
+- a proxy-provider with the exit nodes, each a `socks5` to `<overlay address>:10180` dialled through `lolinet`, in the order the admin chose and ending with a direct entry; they form the `出口` group the `exit` rules point at.
+
+The providers are fetched from the manager through `lolinet` every 10 minutes, so the admin changes routing for every phone and desktop in one place, and nothing about the network is on a public URL. The pairing ciphertext goes to KV as usual; the phone opens `<join>/m#CODE` and the page decrypts it with WebCrypto (the code stays after `#`, which browsers never send). Desktops get the same config from `lolinet mihomo`, with the overlay going through the TUN (mihomo's TUN excludes the CIDR) or, in userspace mode, through `127.0.0.1:18080`.
+
 ## Auto-upgrade
 
 `lolinet up` installs a job that runs `lolinet upgrade --auto` every 6 hours: the LaunchDaemon `co.lo-li.lolinet-upgrade`, or `lolinet-upgrade.timer` with up to 30 minutes of random delay.

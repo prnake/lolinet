@@ -36,3 +36,7 @@ jobs:
           cp join/worker.js "$RUNNER_TEMP/worker.mjs" && node --check "$RUNNER_TEMP/worker.mjs"
           sh -n join/install.sh
           python3 -m py_compile join/deploy.py probe/*.py scripts/*.py web/agent/*.py
+
+      # 手机兑换页（worker.js 的 /m）：无头 Chrome 里用配对码解开 openssl 加密的配对包，原文要一致
+      - name: Phone redemption page
+        run: node join/check_phone_page.mjs

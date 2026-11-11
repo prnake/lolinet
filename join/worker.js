@@ -1,5 +1,6 @@
 // lolinet 准入站 Worker。绑定自定义域（join/deploy.py 按节点清单挂）：
 //   BASE_URL 的主机        首次准入：安装脚本、配对码兑换（一次性密文）、客户端二进制（R2）；
+//                          /m 是手机的兑换页：在浏览器里用配对码解开 mihomo 配置（配对码不发给 Worker）；
 //   （如 join.edge.example.com）首页是公开的只读拓扑探针（浏览器看页面，curl 看安装命令）
 //   <name>.<EDGE_ZONE>     其他名字：探测内网可达后跳到 <name>-local.<EDGE_ZONE>（内网服务本身不暴露公网）
 // 绑定：PAIRING = KV；DIST = R2（install.sh、dl/、site/ 探针页面）；
@@ -60,6 +61,7 @@ async function join(req, env, url) {
   if (path === "/v1/probe") return publicJson(await hub(env).fetch("https://hub/snapshot"));
   if (path === "/v1/probe/link") return publicJson(await hub(env).fetch("https://hub/link" + url.search));
   if (path === "/i") return installScript(env);
+  if (path === "/m") return phonePage(env);
   if (path.startsWith("/dl/")) {
     const name = path.slice(4);
     if (!/^[A-Za-z0-9._-]+$/.test(name)) return text("not found", 404);
@@ -457,6 +459,79 @@ fetch(ping, { mode: "no-cors", cache: "no-store", targetAddressSpace: "local", s
   .catch(() => { m.className = "off"; s.textContent = ${JSON.stringify(`当前设备不在 ${title(env)} 内网，或浏览器没允许访问本地网络。`).replaceAll("<", "\\u003c")}; });
 </script></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
+// 手机兑换页：配对码在地址的 # 后面（不发给服务器），浏览器按 install.sh 一样的参数解密
+// （PBKDF2-SHA256 20 万轮派生 key + iv，AES-256-CBC，openssl 的 Salted__ 格式），得到 mihomo 配置，下载或复制后导入客户端
+function phonePage(env) {
+  const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>手机入网 · ${esc(title(env))}</title><link rel="icon" href="${baseUrl(env)}/favicon.svg" type="image/svg+xml">
+<style>
+:root{color-scheme:dark;--bg:#000;--fg:#f2f2f3;--fg3:rgb(255 255 255/.42);--line:rgb(255 255 255/.12);--eye:#ceff1c;--eyefg:#ceff1c;--bad:#ff6b5b}
+@media (prefers-color-scheme:light){:root{color-scheme:light;--bg:#f5f5f2;--fg:#111113;--fg3:rgb(0 0 0/.55);--line:rgb(0 0 0/.12);--eye:#c6f432;--eyefg:#4f6b00;--bad:#c4321f}}
+*{box-sizing:border-box;margin:0}body{min-height:100vh;background:var(--bg);color:var(--fg);font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif}
+main{max-width:560px;margin:0 auto;padding:40px 20px;display:flex;flex-direction:column;gap:16px}
+.cap{font:500 11px ui-monospace,"SF Mono",monospace;letter-spacing:.24em;text-transform:uppercase;color:var(--fg3)}
+h1{font-size:26px;font-weight:500;letter-spacing:-.02em}p,li{color:var(--fg3)}ol{padding-left:1.2em}
+input,textarea{width:100%;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:14px ui-monospace,"SF Mono",monospace}
+input{font-size:18px;letter-spacing:.12em;text-transform:uppercase}textarea{height:220px;resize:vertical}
+input:focus,textarea:focus{outline:2px solid var(--eye);outline-offset:1px}
+nav{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{height:38px;padding:0 18px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit;text-decoration:none;display:inline-flex;align-items:center;cursor:pointer}
+.primary{background:var(--fg)!important;color:var(--bg)!important;border-color:var(--fg)!important}
+#s.ok{color:var(--eyefg)}#s.bad{color:var(--bad)}[hidden]{display:none!important}
+</style>
+<main>
+<div class="cap">${esc(title(env))} · 手机入网</div>
+<h1>用配对码取 mihomo 配置</h1>
+<p>手机不装 lolinet：mihomo 用 WireGuard 连进网里，网内地址走它，其余按管理员下发的规则直连、拒绝或经网里的出口节点。配对码只在这台手机的浏览器里用来解密，不会发给服务器；只能用一次。</p>
+<form id="f"><input id="c" placeholder="XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="latin"></form>
+<nav id="go"><button class="primary" form="f">取配置</button></nav>
+<p id="s" role="status"></p>
+<div id="r" hidden>
+<textarea id="y" readonly></textarea>
+<nav><a class="btn primary" id="dl" download="lolinet.yaml">下载 lolinet.yaml</a><button id="cp" type="button">复制</button></nav>
+<ol><li>在 mihomo 客户端（Clash Meta for Android、FlClash、Stash、Clash Verge 等）里「从文件导入」或「从剪贴板导入」。</li>
+<li>选这个配置并打开代理。之后的规则和出口由管理员在内网更新，客户端每 10 分钟自己取。</li>
+<li>想和自己的订阅合用：把其中的 lolinet 代理、proxy-providers、rule-providers 和最前面几条规则并进你的配置。</li></ol>
+</div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const say = (t, cls = "") => { $("s").textContent = t; $("s").className = cls; };
+const clean = (v) => v.replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+const hex = (b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
+async function redeem(code) {
+  if (code.length !== 12) return say("配对码是 12 位（中间的 - 可以不写）", "bad");
+  say("取配置、解密中…");
+  const id = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code))).slice(0, 32);
+  const r = await fetch("/v1/pair/" + id, { cache: "no-store" });
+  if (r.status === 404) return say("配对码无效、已经用过或已过期", "bad");
+  if (!r.ok) return say("取配置失败：HTTP " + r.status, "bad");
+  const raw = Uint8Array.from(atob((await r.text()).trim()), (c) => c.charCodeAt(0));
+  if (new TextDecoder().decode(raw.slice(0, 8)) !== "Salted__") return say("配置格式不对", "bad");
+  const pw = await crypto.subtle.importKey("raw", new TextEncoder().encode(code), "PBKDF2", false, ["deriveBits"]);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: raw.slice(8, 16), iterations: 200000 }, pw, 384));
+  const key = await crypto.subtle.importKey("raw", bits.slice(0, 32), "AES-CBC", false, ["decrypt"]);
+  let text;
+  try { text = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-CBC", iv: bits.slice(32, 48) }, key, raw.slice(16))); }
+  catch { return say("解密失败：配对码不对", "bad"); }
+  $("y").value = text;
+  $("dl").href = URL.createObjectURL(new Blob([text], { type: "text/yaml" }));
+  $("r").hidden = false; $("f").hidden = true; $("go").hidden = true;
+  say("拿到了。这份配置里有这台手机的 WireGuard 私钥，别发给别人。", "ok");
+}
+$("f").onsubmit = (e) => { e.preventDefault(); redeem(clean($("c").value)).catch((x) => say("出错了：" + x.message, "bad")); };
+$("cp").onclick = () => navigator.clipboard.writeText($("y").value).then(() => say("已复制", "ok"));
+const fromHash = clean(decodeURIComponent(location.hash.slice(1)));
+if (fromHash) { history.replaceState(null, "", location.pathname); $("c").value = fromHash; redeem(fromHash).catch((x) => say("出错了：" + x.message, "bad")); }
+</script></html>`;
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; frame-ancestors 'none'",
+    },
+  });
 }
 
 const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);

@@ -136,6 +136,8 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 
 `sudo lolinet exit on` 把这台的网络借给网里其他机器：端口 `10180` 上的 SOCKS5，TCP 和 UDP 都支持，只有 overlay 里连得到。它不让人打回环、云元数据，也不让人打私网地址（加 `--lan` 才放开）。浏览器、`curl --socks5-hostname` 或 mihomo 的规则都可以指向它。
 
+**手机和 mihomo。** 手机不用再开第二个 VPN，经 mihomo 进网：`lolinet invite --kind phone` 给一个链接，手机浏览器里用配对码解开一份 mihomo 配置，里面一条 WireGuard 出站连签发 relay，只走网内地址。哪些拒绝、哪些直连、哪些经哪台出口出去，都在管理面集中定，经内网下发；`lolinet mihomo` 给电脑出同样的配置。
+
 ### 自动升级
 
 | | |

@@ -94,7 +94,19 @@ pub fn on(port: u16, allow: Vec<String>, lan: bool) -> Result<()> {
         if lan { "放开了私网目标" } else { "只出公网" }
     );
     println!("  别的机器试一下：curl --socks5-hostname {} https://example.com -I", shown_addr(&net, port));
+    register(port);
     Ok(())
+}
+
+/// 在内网管理面登记（mihomo 的出口列表从那里来）；连不上只提示，不影响出口本身
+fn register(port: u16) {
+    let res = crate::manager::Manager::locate(None)
+        .and_then(|m| m.json("POST", "/api/mesh/exit", Some(&json!({ "port": port }).to_string())));
+    match (res, port) {
+        (Ok(_), 0) => println!("  已从管理面的出口列表撤下"),
+        (Ok(_), _) => println!("  已登记到管理面：手机和电脑的 mihomo 会在「出口」里看到这台"),
+        (Err(e), _) => println!("  没登记到管理面（mihomo 的出口列表里不会有这台）：{e:#}"),
+    }
 }
 
 pub fn off() -> Result<()> {
@@ -104,6 +116,7 @@ pub fn off() -> Result<()> {
         fs::remove_file(CONFIG)?;
     }
     println!("出口节点已关");
+    register(0);
     Ok(())
 }
 
