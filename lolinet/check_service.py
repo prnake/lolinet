@@ -173,7 +173,9 @@ def main() -> None:
         check(r.returncode == 0 and "没动" in r.stdout, "没变就不动")
         check(wait(lambda: service_running("co.lo-li.lolinet-mihomo", "lolinet-mihomo")), "换完 mihomo 服务还在跑")
         r = run(binary, "status")
-        check("mihomo" in r.stdout and "运行中" in r.stdout.split("mihomo", 1)[-1][:200], "lolinet status 里有 mihomo 一行")
+        # 找以 mihomo 开头的那一行（别的行也会提到 mihomo，比如 TUN 模式那行的「给 mihomo 用」）
+        mline = next((ln for ln in r.stdout.splitlines() if ln.startswith("mihomo ")), "")
+        check("运行中" in mline and "/etc/lolinet/mihomo/mihomo" in mline, f"lolinet status 里有 mihomo 一行：{mline or r.stdout[-600:]}")
         r = run(binary, "mihomo", "off")
         check(r.returncode == 0 and not service_exists("co.lo-li.lolinet-mihomo", "lolinet-mihomo") and not copy.exists(),
               "lolinet mihomo off：服务撤了，拷贝删了")
