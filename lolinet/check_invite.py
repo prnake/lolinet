@@ -17,9 +17,10 @@
 - 手机：lolinet invite --kind phone 在 issuer 的 WireGuard 入口加了客户端（10.188.48.1），配对包是 mihomo 配置
   （wireguard 出站：地址、密钥、服务器和端口都对上入口给的）；
 - mihomo 集中下发：成员登记成出口，手机（经 WireGuard 来的地址）取到出口列表（socks5，dialer-proxy 是 lolinet，
-  最后一个是直连）和规则集；lolinet mihomo 出电脑的配置（tun / userspace 两种），YAML 能解析（有 PyYAML 或 ruby 时）。
+  最后一个是直连）和规则集；lolinet mihomo 出电脑的配置（tun / userspace 两种），YAML 能解析（有 PyYAML 或 ruby 时）；
+- 给了 MIHOMO：真的 mihomo 用手机配置经 WireGuard 握手进网，连到成员 laptop 上的一个 HTTP 服务。
 
-用法: python3 lolinet/check_invite.py <lolinet 二进制>
+用法: [MIHOMO=<mihomo 可执行文件>] python3 lolinet/check_invite.py <lolinet 二进制>
 """
 from __future__ import annotations
 
@@ -177,6 +178,50 @@ def wait_for(fn, timeout: float = 30):
     return None
 
 
+def mihomo_over_wireguard(mihomo: str | None, phone_yaml: str, tmp: Path, procs: list) -> None:
+    """真的 mihomo 用手机那份配置进网：WireGuard 握手到 issuer 的入口，经网里转到成员 laptop（userspace，
+    overlay 地址上的连接转给它本机的 127.0.0.1），拿到那边一个 HTTP 服务的回应。手机上的客户端（Clash Meta、
+    ClashMi 这些）用的就是这个内核，这里只是不开 TUN、从 mixed 端口进。给了 MIHOMO（可执行文件）才跑。"""
+    if not mihomo:
+        print("  （没给 MIHOMO，跳过真 mihomo 经 WireGuard 进网；CI 里下钉住的那版来跑）")
+        return
+    marker = b"lolinet-over-wireguard-" + os.urandom(4).hex().encode()
+
+    class Hello(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(marker)))
+            self.end_headers()
+            self.wfile.write(marker)
+
+    _, hport = serve(Hello)
+    mp = free_port()
+    home = tmp / "mihomo"
+    home.mkdir()
+    # 只换 mixed 端口（7890 可能被占）；配置别的地方原样：手机配置本来就不带 TUN（手机的 app 自己开），DNS 不监听端口
+    conf = phone_yaml.replace("mixed-port: 7890", f"mixed-port: {mp}").replace("log-level: warning", "log-level: info")
+    (home / "config.yaml").write_text(conf)
+    log = open(home / "mihomo.log", "w")
+    procs.append(subprocess.Popen([mihomo, "-d", str(home), "-f", str(home / "config.yaml")], stdout=log, stderr=subprocess.STDOUT))
+    up = wait_for(lambda: socket.create_connection(("127.0.0.1", mp), timeout=1).close() or True, 20)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{mp}"}))
+
+    def fetch():
+        with opener.open(f"http://10.188.16.10:{hport}/", timeout=5) as r:
+            return r.read()
+
+    body = wait_for(fetch, 40) if up else None
+    check(body == marker,
+          f"真 mihomo（{subprocess.run([mihomo, '-v'], capture_output=True, text=True).stdout.split(chr(10))[0][:60]}）"
+          f"用手机配置经 WireGuard 进网，连到成员 laptop 的 10.188.16.10:{hport}")
+    if body != marker:
+        log.flush()
+        print("--- mihomo.log\n" + (home / "mihomo.log").read_text()[-3000:])
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
@@ -327,6 +372,7 @@ private_mode = true
         check(yaml_ok(phone_yaml), "手机的 mihomo 配置是合法 YAML")
         if FAILS:
             print(phone_yaml[:1500])
+        mihomo_over_wireguard(os.environ.get("MIHOMO"), phone_yaml, tmp, procs)
 
         def get(path: str, src: str) -> tuple:
             client[0] = src

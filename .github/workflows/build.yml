@@ -136,8 +136,13 @@ jobs:
             # 出口节点（lolinet exit）：拒绝回环 / 元数据 / 私网目标、CONNECT 公网、UDP 查 DNS、来源 ACL；
             # 再起两个 userspace 节点，经一个的本机 SOCKS5 和另一个的 overlay 地址用它的出口
             python3 lolinet/check_exit.py ./pkg-lolinet/lolinet
-            # 成员邀请：回环上一套小网（签发节点、成员、假准入站、替 nginx 的反代），lolinet invite 要配对码，新机器拿它入网
-            python3 lolinet/check_invite.py ./pkg-lolinet/lolinet
+            # 成员邀请：回环上一套小网（签发节点、成员、假准入站、替 nginx 的反代），lolinet invite 要配对码，新机器拿它入网。
+            # 再用真的 mihomo（desk/mihomo/mihomo.json 钉的版本，核对 sha256）拿手机那份配置经 WireGuard 进网、连到成员
+            case "$(uname -s)-$(uname -m)" in
+              Linux-x86_64) MP=linux-amd64 ;; Linux-aarch64) MP=linux-arm64 ;; Darwin-arm64) MP=darwin-arm64 ;; *) MP=darwin-amd64 ;;
+            esac
+            MIHOMO=$(sh desk/scripts/fetch-mihomo.sh $MP "$RUNNER_TEMP/mihomo")
+            MIHOMO=$MIHOMO python3 lolinet/check_invite.py ./pkg-lolinet/lolinet
           else
             echo "这台 runner 跑不了 ${{ matrix.target }}，跳过 SNI 实测"
           fi
