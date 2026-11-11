@@ -54,7 +54,7 @@ Every computer runs the same program, so each one is both a host and a client. W
 
 | | |
 | :-- | :-- |
-| **Owner** | Whoever has the host's token: the app and command line on the same machine read it from the config directory and connect over `127.0.0.1` as the owner. `--token` still works from elsewhere and also makes you the owner |
+| **Owner** | Whoever has the host's token: the app and command line on the same machine (`lolidesk 127.0.0.1`, `lolidesk mcp`) read it from the config directory and connect over `127.0.0.1` as the owner. `--token` still works from elsewhere and also makes you the owner |
 | **Paired device** | Every other computer gets its own credential (`g1.<id>.<secret>`; the host keeps only its SHA-256) when it pairs, and uses it from then on without asking again. The host records the device's name, system, how it paired, when, and the time and address of its last connection |
 | **Pairing by consent** | `lolidesk pair <host>`, or *连接* in the app on a device in the network: the host asks its owner. The owner's app shows the request; if it isn't open, the host shows a system dialog (macOS `display dialog`, Linux `zenity` or `kdialog`); otherwise `lolidesk host access` lists it and `lolidesk host approve <id>` / `deny <id>` answers. Requests expire after 2 minutes. One pending request per address, at most 5 at a time, and an address is turned away for a minute after a refusal. `LOLIDESK_NO_DIALOG=1` turns the system dialog off |
 | **Pairing codes and share links** | `lolidesk host code [--label] [--expires 7d] [--uses N] [--view-only]` on the host prints a 16-character code and a link `lolidesk://pair?h=<address>&f=<certificate fingerprint>&c=<code>&n=<name>`. `lolidesk pair <link>` (or importing it in the app) pairs without asking, and checks the host against the fingerprint in the link. A paired device can make share links for the same host too: `lolidesk share <host>`. A device can't share more than it may do itself. Expiry and the use limit only stop new pairings |
@@ -110,7 +110,7 @@ lolidesk --list                      # remembered hosts
 lolidesk --forget <host>:10190       # forget a host's fingerprint and token
 ```
 
-`<host>` is an overlay address or host name, with an optional port (default 10190). The host's frames go straight to your terminal, which encodes your keys itself. Ctrl-] detaches; the session stays on the host. `lolidesk <host>` on a host you haven't paired with asks it for consent, as `pair` does; `--token <host token>` connects as its owner instead. `-y` trusts a new host's fingerprint without asking. Remembered hosts are kept in `lolidesk/hosts` under the system config directory (`~/Library/Application Support` on macOS, `~/.config` on Linux), mode 600, shared by the app and the command line.
+`<host>` is an overlay address or host name, with an optional port (default 10190). The host's frames go straight to your terminal, which encodes your keys itself. Ctrl-] detaches; the session stays on the host. `lolidesk <host>` on a host you haven't paired with asks it for consent, as `pair` does; `--token <host token>` connects as its owner instead. `-y` trusts a new host's fingerprint without asking. A loopback address on this computer's own host connects as its owner, as the app's *本机* does, and isn't remembered. Remembered hosts are kept in `lolidesk/hosts` under the system config directory (`~/Library/Application Support` on macOS, `~/.config` on Linux), mode 600, shared by the app and the command line.
 
 ### Computer use for agents
 
@@ -118,12 +118,13 @@ Any agent on any machine in the network can see and drive a host's screen, throu
 
 ```sh
 claude mcp add desk-studio -- lolidesk mcp 10.188.16.10      # an MCP server over stdio, for Claude Code, Codex …
+claude mcp add desk -- lolidesk mcp                          # this computer, as its owner: nothing to pair
 lolidesk cua 10.188.16.10 screenshot                         # one call from a shell; the image goes to ./screenshot.jpg
 lolidesk cua 10.188.16.10 click '{"x": 640, "y": 412}'
 lolidesk cua 10.188.16.10 key '{"keys": "cmd+shift+t"}'
 ```
 
-The host must be remembered first (`lolidesk <host> --token …` once), or pass `--token` and `-y`: the MCP server never prompts.
+Another host must be paired first (`lolidesk pair <host>`, or `lolidesk <host> --token …` once), or pass `--token` and `-y`: the MCP server never prompts. This computer's own host needs nothing: `lolidesk mcp` without a host, or any loopback address on the port in the host's `local` file, connects as the owner with the token from the host's config directory, which only the same user can read. The host's `cua` switch (`lolidesk host allow cua off`) still applies.
 
 | Tool | |
 | :-- | :-- |

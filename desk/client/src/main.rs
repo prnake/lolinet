@@ -9,12 +9,13 @@ mod cua;
 mod pair;
 mod tui;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use lolidesk_core::{
     hosts::Hosts,
+    local::{self, LocalHost},
     net::{self, Client},
 };
 use lolidesk_host::HostCmd;
@@ -91,10 +92,11 @@ enum Top {
         #[command(subcommand)]
         cmd: Option<HostCmd>,
     },
-    /// 给 agent 的 MCP 服务（stdio）：在 <主机> 上截图、点击、打字。claude mcp add desk -- lolidesk mcp <主机>
+    /// 给 agent 的 MCP 服务（stdio）：在 <主机> 上截图、点击、打字。claude mcp add desk -- lolidesk mcp [<主机>]
     Mcp {
-        /// 主机：overlay 地址或主机名，可带端口；要先连过一次（lolidesk <主机> --token …），或者给 --token -y
-        host: String,
+        /// 主机：overlay 地址或主机名，可带端口；要先配对过（lolidesk pair <主机>），或者给 --token -y。
+        /// 不给就是这台电脑自己的主机（以主人身份，不用配对）
+        host: Option<String>,
         #[arg(short, long)]
         token: Option<String>,
         /// 新主机不问，直接信任证书指纹
@@ -146,7 +148,16 @@ enum Top {
     },
 }
 
-/// 连一台主机：记住过的用记住的凭据和指纹。新主机：给了 --token（主机 token）就核对指纹后用它；
+/// 这台电脑自己的主机：回环地址，端口和主机目录里 `local` 写的一样。同一个用户读得到它的 token 和证书，
+/// 就以主人身份连（和 app 里的「本机」一样），不用配对、不用 --token，也不写进记住的主机（token 重置了照样连得上）
+fn local_owner(addr: SocketAddr) -> Option<LocalHost> {
+    if !addr.ip().is_loopback() {
+        return None;
+    }
+    local::local_host().filter(|l| l.addr.port() == addr.port())
+}
+
+/// 连一台主机：本机的主机直接以主人身份连；记住过的用记住的凭据和指纹。新主机：给了 --token（主机 token）就核对指纹后用它；
 /// 没给就请那边的人同意配对（interactive），配对上再连。interactive = false 时（MCP）不问、不配对，没连过就报错
 async fn connect(
     host: String,
@@ -155,6 +166,21 @@ async fn connect(
     interactive: bool,
 ) -> Result<Arc<Client>> {
     let addr = net::resolve(&host)?;
+    if token.is_none() {
+        if let Some(l) = local_owner(addr) {
+            let (client, _) = net::connect(
+                addr,
+                &l.token,
+                Some(l.fingerprint),
+                &format!("lolidesk {}", lolidesk_proto::BUILD),
+            )
+            .await
+            .with_context(|| {
+                format!("连不上本机的主机 {addr}：它没在跑（lolidesk host install 起服务）")
+            })?;
+            return Ok(client);
+        }
+    }
     let mut hosts = Hosts::load()?;
     let known = hosts.get(&addr);
     let pinned = match known.as_ref().and_then(|h| h.fingerprint_bytes()) {
@@ -238,6 +264,12 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
+            // 不给主机：本机主机写在主机目录里的回环地址（没跑过就是默认端口，连的时候再说没在跑）
+            let host = host.unwrap_or_else(|| {
+                local::local_host()
+                    .map(|l| l.addr.to_string())
+                    .unwrap_or_else(|| "127.0.0.1".into())
+            });
             let label = host.clone();
             return rt.block_on(cua::mcp(cua_client(host, token, yes), label));
         }
