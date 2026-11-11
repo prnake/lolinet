@@ -129,6 +129,12 @@ The details are in [Architecture](docs/architecture.md).
 
 `sudo lolinet up` installs it as a LaunchDaemon on macOS or a systemd unit on Linux, with the admin port bound to `127.0.0.1:15888`. It also takes over devices that an earlier join script set up with `easytier-core`: it removes the old service, copies the old config, and links the old binary paths to `lolinet`.
 
+### Userspace mode and exit nodes
+
+`sudo lolinet up --userspace` joins without a TUN interface: programs reach the network through SOCKS5 on `127.0.0.1:18080`, and connections to the node's overlay address arrive on `127.0.0.1`. It works in containers and next to mihomo or another VPN that already owns the TUN.
+
+`sudo lolinet exit on` lends the node's internet connection to the rest of the network: a SOCKS5 server with TCP and UDP on port `10180`, reachable only from the overlay. It refuses loopback, cloud metadata and (unless `--lan`) private destinations. Point a browser, `curl --socks5-hostname` or a mihomo rule at it.
+
 ### Auto-upgrade
 
 | | |
@@ -172,6 +178,7 @@ A remote terminal and remote desktop that run over the network, shipped separate
 | **[Self-hosting](docs/self-hosting.md)** | Relays, the join site, packages, adding and revoking devices, releasing |
 | **[Reference](docs/reference.md)** | CLI, `nodes.yaml`, environment variables, files, ports, join-site endpoints, release format |
 | **[Architecture](docs/architecture.md)** | How the pieces work: the binary, the patches, pairing, upgrades, the probe |
+| **[Design](docs/design.md)** | Where it's going: servers, desktops and phones; exit nodes, invitations, computer use, mihomo |
 | **[Local console](docs/console.md)** | The browser console, its agent, and the public probe page |
 | **[lolidesk](docs/lolidesk.md)** | Remote terminal and desktop over the network |
 | **[Catseye](web/DESIGN.md)** | The design language of the console and probe (in Chinese) |

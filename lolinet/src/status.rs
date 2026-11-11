@@ -65,7 +65,18 @@ pub fn show() -> Result<()> {
     };
     let nat = peers.iter().find(|p| s(p, "cost") == "Local").map(|p| s(p, "nat_type")).unwrap_or_default();
     println!("本机    {}  {}  NAT {nat}", s(&node, "hostname"), s(&node, "ipv4_addr"));
+    println!("模式    {}", mode());
     println!("凭证    {}", credential());
+    if let Some(e) = crate::exit::Settings::load() {
+        let st = match service::exit_state() {
+            Some(st) if st.running => "运行中".to_owned(),
+            Some(_) => "没在运行（sudo lolinet exit on）".to_owned(),
+            None => "服务没装（sudo lolinet exit on）".to_owned(),
+        };
+        let ip = s(&node, "ipv4_addr");
+        let ip = ip.split('/').next().unwrap_or("");
+        println!("出口    socks5://{ip}:{} · {st}", e.port);
+    }
     // 没有地址的是控制台（network.issuer 那台 relay）的 Gateway 实例，不算节点
     let (relays, devices): (Vec<&Value>, Vec<&Value>) = peers
         .iter()
@@ -88,6 +99,18 @@ pub fn show() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// TUN 还是 userspace；配置是 600，不是 root 读不到就问内核
+fn mode() -> String {
+    match fs::read_to_string(CONFIG).ok().and_then(|t| crate::netcfg::Net::parse(&t).ok()) {
+        Some(n) if n.userspace => format!(
+            "userspace（无 TUN）· 本机程序经 socks5://{} 进网",
+            n.socks.as_deref().unwrap_or(crate::netcfg::SOCKS)
+        ),
+        Some(_) => "TUN".into(),
+        None => "（sudo 看得到）".into(),
+    }
 }
 
 /// pair.py 在配置末尾写的 `# credential_id` / `# credential_expiry_unix`；配置是 600，不是 root 读不到

@@ -9,8 +9,11 @@ Source of the `lolinet` CLI: EasyTier and a small command line in one binary tha
 | `src/status.rs` | `lolinet status`, from the built-in `easytier-cli`'s JSON (the same data the console's agent and the probe read) |
 | `src/upgrade.rs` | `lolinet upgrade`: manifest sources, download, sha256, test run, atomic switch; an installed lolidesk too |
 | `src/probe.rs` | `lolinet probe`: the device's public probe (hardware and location, signed like `probe/reporter.py`'s device mode), and taking over the older Python one |
+| `src/netcfg.rs` | Reading the overlay address and mode from `loli.toml`, and switching between TUN and userspace by editing two lines in place |
+| `src/exit.rs` | `lolinet exit`: the exit node's SOCKS5 server (`CONNECT`, `UDP ASSOCIATE`), its source and destination rules, and its settings |
 | `build.sh` | Local build: clone the pinned EasyTier, apply the patches, copy `src/` in, build, package |
 | `release.py` | Writes the release manifest `lolinet.json`, or with `--lolidesk` the lolidesk manifest `lolidesk.json` (standard library only) |
+| `check_exit.py` | End-to-end test of the exit node without root: destination refusals, `CONNECT` and UDP DNS to the internet, the source allow-list, and two userspace nodes where one uses the other's exit across the overlay |
 | `check_probe.py` | End-to-end test of the built-in probe: install as root, drop to `nobody`, take over the Python probe, change id, upgrade, turn off, and verify reports the way the join site does |
 
 ## Build
@@ -27,7 +30,7 @@ TARGET=x86_64-apple-darwin FEATURES=jemalloc sh lolinet/build.sh   # cross-compi
 - `LOLINET_VERSION` comes from `git describe --always --dirty`; `lolinet --version` prints it, and the upgrade check compares it with the manifest.
 - `aarch64` builds use `mimalloc`, `x86_64` builds `jemalloc`, the same as CI.
 
-CI ([build.yml](../.github/workflows/build.yml)) builds four platforms with `easytier-core` and `easytier-cli`, checks that Linux binaries are static and that `lolinet` stays under 32 MiB (14 MiB packaged), then runs `easytier/check_sni.py` against `easytier-core` and against `lolinet` linked as `easytier-core`, and `easytier/check_udp_pref.py` against `lolinet`. On the two platforms it can run natively it also runs `sudo lolinet/check_probe.py`, which installs the probe for real.
+CI ([build.yml](../.github/workflows/build.yml)) builds four platforms with `easytier-core` and `easytier-cli`, checks that Linux binaries are static and that `lolinet` stays under 32 MiB (14 MiB packaged), then runs `easytier/check_sni.py` against `easytier-core` and against `lolinet` linked as `easytier-core`, `easytier/check_udp_pref.py` against `lolinet`, and `lolinet/check_exit.py`. On the two platforms it can run natively it also runs `sudo lolinet/check_probe.py`, which installs the probe for real.
 
 ## Release
 

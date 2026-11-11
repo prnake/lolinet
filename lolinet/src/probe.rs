@@ -268,8 +268,8 @@ fn now() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-/// root 启动的：配置读完就降到 nobody，后面采集和发送都不要特权
-fn drop_privileges() -> Result<()> {
+/// root 启动的：配置读完就降到 nobody，后面采集和发送都不要特权（出口节点也用）
+pub(crate) fn drop_privileges() -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(());
     }

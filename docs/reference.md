@@ -29,6 +29,10 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet probe [show\|send] [-c FILE]` *root* | Print what the public probe would report this round; `send` reports it once for real. Reads `/etc/lolinet/probe.json` |
 | `lolinet probe off` *root* | Take the device off the public page, remove the probe service and delete its config. Turning it back on needs a new pairing |
 | `lolinet probe run` | The probe service's entry point |
+| `lolinet exit` | Whether this node is an exit node, its address and service state |
+| `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node |
+| `lolinet exit off` *root* | Stop and remove it |
+| `lolinet exit run [--listen ADDR] [--allow CIDR]… [--lan]` | The exit service's entry point. With `--listen` it ignores the config and allows loopback by default (for tests) |
 | `lolinet run [-c FILE]` | The service's entry point: run the EasyTier kernel in the foreground with `/etc/lolinet/loli.toml` |
 | `lolinet core …` | Stock `easytier-core`, arguments passed through |
 | `lolinet cli …` | Stock `easytier-cli`, arguments passed through, aimed at the local service's admin port |
@@ -44,6 +48,8 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 | `--base-url URL` | The join site. Also read from `LOLINET_BASE_URL`; `install.sh` passes it this way |
 | `--upgrade-source SRC` | `github:<owner>/<repo>`, a manifest URL, or `base` to use the join site |
 | `--auto-upgrade on\|off` | The 6-hourly upgrade check. On by default |
+| `--userspace` | Join without a TUN interface: programs on this machine reach the overlay through SOCKS5 on `127.0.0.1:18080`, and connections to this node's overlay address are delivered to `127.0.0.1`. Also read from `LOLINET_USERSPACE=1`, so `curl … \| sudo LOLINET_USERSPACE=1 sh -s CODE` pairs in this mode. Writes `socks5_proxy` and `[flags] no_tun = true` into `loli.toml` |
+| `--tun` | Back to TUN mode, the default: removes those two settings |
 
 **`lolinet upgrade` options.**
 
@@ -68,6 +74,14 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 | `/Library/LaunchDaemons/co.lo-li.lolinet-upgrade.plist` | macOS upgrade job |
 | `/etc/systemd/system/lolinet.service` | Linux service, `Restart=always` |
 | `/etc/systemd/system/lolinet-upgrade.{service,timer}` | Linux upgrade job, every 6 hours with up to 30 minutes of random delay |
+
+The exit node, when turned on. It runs `/usr/local/bin/lolinet exit run`, starts as root, binds its port and drops to `nobody`. It listens on the overlay address in TUN mode and on `127.0.0.1` in userspace mode:
+
+| Path | macOS | Linux |
+| :-- | :-- | :-- |
+| Settings (`port`, `allow`, `lan`) | `/etc/lolinet/exit.json`, mode 644 | `/etc/lolinet/exit.json`, mode 644 |
+| Service | `/Library/LaunchDaemons/co.lo-li.lolinet-exit.plist` | `/etc/systemd/system/lolinet-exit.service` |
+| Log | `/var/log/lolinet/exit.log`, errors only | journald |
 
 The public probe, when installed. It runs `/usr/local/bin/lolinet probe run`, starts as root and drops to `nobody` after reading its config:
 
@@ -147,6 +161,7 @@ Optional. `device_config.py` renders configs for devices listed here; `pair.py` 
 | Variable | Used by | |
 | :-- | :-- | :-- |
 | `LOLINET_BASE_URL` | scripts, web build, `install.sh`, `lolinet up` | The join site, for example `https://join.edge.example.com`. Default `https://<network.join>`. The Worker writes it into `install.sh` when serving `/i` |
+| `LOLINET_USERSPACE` | `lolinet up`, so also `install.sh` | `1` joins without TUN, as `lolinet up --userspace` |
 | `LOLINET_GITHUB` | `install.sh` | The GitHub repository to download `lolinet` from. Default `prnake/lolinet` |
 | `LOLINET_NODES` | scripts, web build | Path to the node list |
 | `LOLINET_HOME` | scripts, agent | Admin data directory with `.env` and `state/`. Default `~/.config/lolinet`. `FLEET_REPO` is still read as a fallback |
@@ -274,8 +289,9 @@ On the join site these sit in `dl/` next to `lolinet.json`. See [lolidesk](lolid
 | :-- | :-- |
 | `443` | WSS from devices to relays; HTTPS for the console on the issuer's overlay address |
 | `127.0.0.1:15888` | Admin port of the `lolinet` service |
-| `127.0.0.1:15897` | Admin port by convention for a no-tun instance (one without a TUN interface, reachable through SOCKS5) |
-| `127.0.0.1:18080` | SOCKS5 port by convention for a no-tun instance; pass it to the scripts with `--socks` |
+| `127.0.0.1:15897` | Admin port by convention for a separate no-tun instance (one without a TUN interface, reachable through SOCKS5), such as the old menu-bar app's |
+| `127.0.0.1:18080` | SOCKS5 into the overlay on a node in userspace mode (`lolinet up --userspace`), and by convention for a separate no-tun instance; pass it to the scripts with `--socks` |
+| `10180` | Exit node SOCKS5 (`lolinet exit on`), on the node's overlay address |
 | `127.0.0.1:10188` | The local console's agent |
 | `127.0.0.1:11211` | easytier-web's API on the issuer relay |
 | `10190` | `lolidesk host`, on the host's overlay address |
@@ -291,5 +307,6 @@ The example network uses `10.188.0.0/16`:
 | `10.188.1.0/24` | Servers |
 | `10.188.16.0/20` | Computers with TUN |
 | `10.188.32.0/20` | Clients without TUN |
+| `10.188.48.0/20` | Phones, through a relay's WireGuard portal (planned, see [Design](design.md#mihomo-on-phones-and-desktops)) |
 
 `lolinet status` and the probe reporter treat `10.188.0.0/24` as the relay range, and the console's Pair page picks the next free address from the computer or client range.

@@ -129,6 +129,12 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 
 `sudo lolinet up` 把它装成 macOS 的 LaunchDaemon 或 Linux 的 systemd 服务，管理口只听 `127.0.0.1:15888`。以前的 join 脚本用 `easytier-core` 装的设备，它也会接管：撤掉旧服务，拷过旧配置，把旧路径的二进制换成指向 `lolinet` 的链接。
 
+### 无 TUN 模式和出口节点
+
+`sudo lolinet up --userspace` 不建 TUN 网卡也能入网：本机程序经 `127.0.0.1:18080` 的 SOCKS5 进网，发到本机 overlay 地址的连接会转给 `127.0.0.1`。容器里能用，mihomo 或别的 VPN 已经占着 TUN 时也能用。
+
+`sudo lolinet exit on` 把这台的网络借给网里其他机器：端口 `10180` 上的 SOCKS5，TCP 和 UDP 都支持，只有 overlay 里连得到。它不让人打回环、云元数据，也不让人打私网地址（加 `--lan` 才放开）。浏览器、`curl --socks5-hostname` 或 mihomo 的规则都可以指向它。
+
 ### 自动升级
 
 | | |
@@ -172,6 +178,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 | **[自己搭一套](docs/self-hosting.md)** | relay、准入站、安装包、加设备和吊销、发版（英文） |
 | **[完整参考](docs/reference.md)** | 命令行、`nodes.yaml`、环境变量、文件、端口、准入站接口、发布格式（英文） |
 | **[架构](docs/architecture.md)** | 各部分怎么做的：二进制、补丁、配对、升级、探针（英文） |
+| **[设计](docs/design.md)** | 往哪儿走：服务器、电脑和手机；出口节点、邀请、computer use、mihomo（英文） |
 | **[本地控制台](docs/console.md)** | 浏览器控制台、agent 和公开探针页面（英文） |
 | **[lolidesk](docs/lolidesk.md)** | 网里的远程终端和远程桌面（英文） |
 | **[猫眼](web/DESIGN.md)** | 控制台和探针的设计语言 |

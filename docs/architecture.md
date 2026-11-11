@@ -68,6 +68,32 @@ Peer URLs use the relay's public IP, not its DNS name: on some networks the loca
 
 **Credential expiry.** `pair.py` appends `# credential_id` and `# credential_expiry_unix` to the config as TOML comments. EasyTier ignores them; `lolinet status` reads them to show the days left. The config is mode 600, so this line needs `sudo`.
 
+## TUN and userspace
+
+A node joins in one of two modes. Both use the same credential, probe and auto-upgrade; only how traffic enters and leaves the overlay differs.
+
+| | TUN (default) | Userspace (`lolinet up --userspace`) |
+| :-- | :-- | :-- |
+| **Outbound** | A TUN interface takes the overlay's CIDR; any program reaches overlay addresses directly | Programs use the SOCKS5 proxy on `127.0.0.1:18080`, which EasyTier serves from its own user-space TCP/IP stack (smoltcp). The routing table isn't touched |
+| **Inbound** | Packets for the node's overlay address arrive on the TUN interface | EasyTier delivers TCP and UDP for the node's overlay address to `127.0.0.1`, same port, through its proxy |
+| **Needs** | Root and `/dev/net/tun` | Nothing from the kernel. Works in containers and next to another VPN or mihomo that owns the TUN |
+
+The mode is two lines of `loli.toml`: `socks5_proxy = "socks5://127.0.0.1:18080"` at the top and `no_tun = true` under `[flags]`. `lolinet up --userspace` and `--tun` edit those lines in place rather than rewriting the file, because `# credential_id` and other comments at the end are read by `lolinet status`, and check the result with `easytier-core --check-config` before it replaces the old config.
+
+Inbound delivery to loopback has a consequence worth knowing: on a userspace node, every service that listens on `127.0.0.1` is reachable from the overlay at the node's address. Keep private services on another address, or keep the node in TUN mode.
+
+## Exit nodes
+
+`lolinet exit on` makes a node lend its internet connection to the rest of the network through a SOCKS5 server built into `lolinet` ([`lolinet/src/exit.rs`](../lolinet/src/exit.rs)). A rule engine on the client side (mihomo on a phone, a browser's proxy settings, `curl --socks5-hostname`) decides what goes out where; nothing else changes on the exit node: no IP forwarding, no NAT rules.
+
+- **Listening.** On the overlay address in TUN mode. On `127.0.0.1` in userspace mode, where EasyTier's inbound delivery brings overlay connections to it. In TUN mode the service waits for the address to appear, since it may start before EasyTier has brought up the interface.
+- **Who may connect.** The source must be in `allow` (default: the overlay's CIDR, plus loopback). Any other source is closed before the SOCKS5 handshake. There is no SOCKS5 authentication: the overlay already authenticated the peer.
+- **Where it goes.** Loopback, link-local (including cloud metadata at `169.254.169.254`), multicast and unspecified destinations are always refused, so the exit can't be used against the exit node itself. Private and CGNAT ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`) are refused unless the node runs with `--lan`, which makes it a subnet router for its local network. Domain names are resolved on the exit node and the resulting address is checked the same way.
+- **TCP** is two sockets with `TCP_NODELAY`, copied in both directions with 64 KiB buffers; on loopback it moves about 30 Gbit/s, as fast as the test client. **UDP** (`UDP ASSOCIATE`) gives each association its own relay socket on the listening address and a pair of outbound sockets (IPv4 and IPv6). The association ends when its TCP control connection does, as RFC 1928 requires. In userspace mode the relay socket is on loopback, so the reply names `0.0.0.0` and clients use the address they connected to, which is the convention.
+- **The service** starts as root to read `loli.toml` (mode 600) and bind, then drops to `nobody`. It runs on one thread, caps itself at 4096 connections, and logs only errors.
+
+[`lolinet/check_exit.py`](../lolinet/check_exit.py) tests all of this without root: the refusals, `CONNECT` to the internet, DNS over `UDP ASSOCIATE`, and two userspace nodes on loopback where one reaches the other's exit through its own SOCKS5 and the other's overlay address. CI runs it on every platform that can execute the build.
+
 ## Pairing
 
 ```

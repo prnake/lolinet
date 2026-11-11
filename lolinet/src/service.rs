@@ -1,5 +1,6 @@
 //! 系统服务：macOS 是 launchd LaunchDaemon，Linux 是 systemd，都以 root 跑（TUN 要）。
-//! 三个：内核（lolinet run）、自动升级的定时任务（lolinet upgrade --auto）、公开探针（lolinet probe run，读完配置降到 nobody）。
+//! 四个：内核（lolinet run）、自动升级的定时任务（lolinet upgrade --auto）、公开探针（lolinet probe run，读完配置降到 nobody）、
+//! 出口节点（lolinet exit run，绑好端口降到 nobody；只有 lolinet exit on 才装）。
 //! 两套都在所有平台上编译，运行时按系统选，这样在 Mac 上编译也能查 Linux 那份。
 
 use std::{
@@ -29,6 +30,7 @@ pub fn install() -> Result<()> {
 pub fn remove() -> Result<()> {
     remove_upgrade()?;
     remove_probe()?;
+    remove_exit()?;
     if MACOS { launchd::remove() } else { systemd::remove() }
 }
 
@@ -64,6 +66,19 @@ pub fn probe_current() -> bool {
 
 pub fn probe_state() -> Option<State> {
     if MACOS { launchd::probe_state() } else { systemd::probe_state() }
+}
+
+/// 出口节点的服务（`lolinet exit run`）：写服务文件并（重新）启动
+pub fn install_exit() -> Result<()> {
+    if MACOS { launchd::install_exit() } else { systemd::install_exit() }
+}
+
+pub fn remove_exit() -> Result<()> {
+    if MACOS { launchd::remove_exit() } else { systemd::remove_exit() }
+}
+
+pub fn exit_state() -> Option<State> {
+    if MACOS { launchd::exit_state() } else { systemd::exit_state() }
 }
 
 /// python 版探针的服务还在（`lolinet status` 提示换成内置的）
@@ -124,6 +139,8 @@ mod launchd {
     const PROBE_LABEL: &str = "co.lo-li.lolinet-probe";
     const PROBE_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.lolinet-probe.plist";
     const LEGACY_PROBE_LABEL: &str = "co.lo-li.mesh-probe";
+    const EXIT_LABEL: &str = "co.lo-li.lolinet-exit";
+    const EXIT_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.lolinet-exit.plist";
     pub(super) const LEGACY_PROBE_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.mesh-probe.plist";
 
     fn load(label: &str, plist: &str) -> Result<()> {
@@ -243,6 +260,39 @@ mod launchd {
         state_of(PROBE_LABEL, "launchd co.lo-li.lolinet-probe")
     }
 
+    pub fn install_exit() -> Result<()> {
+        fs::create_dir_all(LOG_DIR)?;
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- lolinet exit on 写的：出口节点（SOCKS5，只对 overlay 开）。root 启动、绑好端口降到 nobody；日志只记出错 -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>{EXIT_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{BIN}</string><string>exit</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>16384</integer></dict>
+  <key>StandardOutPath</key><string>{LOG_DIR}/exit.log</string>
+  <key>StandardErrorPath</key><string>{LOG_DIR}/exit.log</string>
+</dict></plist>
+"#
+        );
+        write_file(EXIT_PLIST, plist.as_bytes(), 0o644)?;
+        load(EXIT_LABEL, EXIT_PLIST)
+    }
+
+    pub fn remove_exit() -> Result<()> {
+        run("launchctl", &["bootout", &format!("system/{EXIT_LABEL}")]);
+        if Path::new(EXIT_PLIST).exists() {
+            fs::remove_file(EXIT_PLIST)?;
+        }
+        Ok(())
+    }
+
+    pub fn exit_state() -> Option<State> {
+        state_of(EXIT_LABEL, "launchd co.lo-li.lolinet-exit")
+    }
+
     pub fn remove_legacy_probe() -> Result<bool> {
         let had = Path::new(LEGACY_PROBE_PLIST).exists();
         if had {
@@ -305,6 +355,8 @@ mod systemd {
     const PROBE_NAME: &str = "lolinet-probe";
     const PROBE_UNIT: &str = "/etc/systemd/system/lolinet-probe.service";
     const LEGACY_PROBE_NAME: &str = "mesh-probe";
+    const EXIT_NAME: &str = "lolinet-exit";
+    const EXIT_UNIT: &str = "/etc/systemd/system/lolinet-exit.service";
     pub(super) const LEGACY_PROBE_UNIT: &str = "/etc/systemd/system/mesh-probe.service";
 
     fn need_systemd() -> Result<()> {
@@ -466,6 +518,56 @@ WantedBy=multi-user.target
 
     pub fn probe_state() -> Option<State> {
         state_of(PROBE_NAME, "systemd lolinet-probe.service")
+    }
+
+    pub fn install_exit() -> Result<()> {
+        need_systemd()?;
+        let unit = format!(
+            "# lolinet exit on 写的：出口节点（SOCKS5，只对 overlay 开）。root 启动、绑好端口降到 nobody；只记出错
+[Unit]
+Description=lolinet exit node (SOCKS5 for the overlay)
+After=network-online.target {NAME}.service
+Wants=network-online.target
+
+[Service]
+ExecStart={BIN} exit run
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+# 能力只留降权要的两个；loli.toml 属于 root，不用别的能力也读得到
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+"
+        );
+        write_file(EXIT_UNIT, unit.as_bytes(), 0o644)?;
+        for args in [&["daemon-reload"][..], &["enable", EXIT_NAME], &["restart", EXIT_NAME]] {
+            if !run("systemctl", args) {
+                bail!("systemctl {} 失败", args.join(" "));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn remove_exit() -> Result<()> {
+        run("systemctl", &["disable", "--now", EXIT_NAME]);
+        if Path::new(EXIT_UNIT).exists() {
+            fs::remove_file(EXIT_UNIT)?;
+            run("systemctl", &["daemon-reload"]);
+        }
+        Ok(())
+    }
+
+    pub fn exit_state() -> Option<State> {
+        state_of(EXIT_NAME, "systemd lolinet-exit.service")
     }
 
     pub fn remove_legacy_probe() -> Result<bool> {

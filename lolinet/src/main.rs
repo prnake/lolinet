@@ -23,6 +23,8 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 #[path = "../easytier-cli.rs"]
 mod et_cli;
+mod exit;
+mod netcfg;
 mod probe;
 mod service;
 mod status;
@@ -86,6 +88,13 @@ enum Cmd {
         /// 自动升级 on / off（默认 on）；不给就沿用上次的
         #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
         auto_upgrade: Option<bool>,
+        /// 无 TUN 入网：本机程序经 127.0.0.1:18080 的 SOCKS5 进网，发到本机 overlay 地址的连接转给 127.0.0.1。
+        /// 容器、没有 /dev/net/tun、或者 mihomo 之类已经占着 TUN 时用；不给就沿用配置里的
+        #[arg(long, env = "LOLINET_USERSPACE", value_parser = clap::builder::FalseyValueParser::new(), conflicts_with = "tun")]
+        userspace: bool,
+        /// 换回 TUN 模式（默认）
+        #[arg(long)]
+        tun: bool,
     },
     /// 按发布清单升级 lolinet 和装了的 lolidesk（要 root）；定时任务每 6 小时跑一次 --auto
     Upgrade {
@@ -104,6 +113,11 @@ enum Cmd {
     },
     /// 停掉并卸载系统服务（要 root），配置和二进制保留
     Down,
+    /// 出口节点：网里别的机器经这台的 SOCKS5（端口 10180）上网，只对 overlay 开（不带子命令就是 status）
+    Exit {
+        #[command(subcommand)]
+        cmd: Option<ExitCmd>,
+    },
     /// 公开探针：准入站首页的设备卡片，只报硬件和位置（不带子命令就是 show）
     Probe {
         #[command(subcommand)]
@@ -135,6 +149,35 @@ enum Cmd {
     Cli {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExitCmd {
+    /// 看开没开、地址和服务状态
+    Status,
+    /// 开（要 root）：装成系统服务，开机自启
+    On {
+        #[arg(long, default_value_t = exit::PORT)]
+        port: u16,
+        /// 只让这些网段用（可以给多次），默认整个 overlay 网段
+        #[arg(long)]
+        allow: Vec<String>,
+        /// 也让人经这台去私网地址（10/8、172.16/12、192.168/16 等，相当于子网路由）；回环和链路本地始终不行
+        #[arg(long)]
+        lan: bool,
+    },
+    /// 关（要 root）
+    Off,
+    /// 服务入口；--listen 给了就不读配置（测试用）
+    #[command(hide = true)]
+    Run {
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
+        #[arg(long)]
+        allow: Vec<String>,
+        #[arg(long)]
+        lan: bool,
     },
 }
 
@@ -192,7 +235,10 @@ fn lolinet(args: Args) -> Result<()> {
         Cmd::Status => status::show(),
         Cmd::Peers => Err(exec_as("easytier-cli", ["peer"])),
         Cmd::Routes => Err(exec_as("easytier-cli", ["route"])),
-        Cmd::Up { config, base_url, upgrade_source, auto_upgrade } => up(config, base_url, upgrade_source, auto_upgrade),
+        Cmd::Up { config, base_url, upgrade_source, auto_upgrade, userspace, tun } => {
+            let mode = if userspace { Some(true) } else if tun { Some(false) } else { None };
+            up(config, base_url, upgrade_source, auto_upgrade, mode)
+        }
         Cmd::Upgrade { check, dry_run, auto, source } => upgrade::run(check, dry_run, auto, source),
         Cmd::Down => {
             need_root()?;
@@ -204,6 +250,12 @@ fn lolinet(args: Args) -> Result<()> {
             need_root()?;
             service::restart()
         }
+        Cmd::Exit { cmd } => match cmd.unwrap_or(ExitCmd::Status) {
+            ExitCmd::Status => exit::status(),
+            ExitCmd::On { port, allow, lan } => exit::on(port, allow, lan),
+            ExitCmd::Off => exit::off(),
+            ExitCmd::Run { listen, allow, lan } => exit::run(listen, allow, lan),
+        },
         Cmd::Probe { cmd } => match cmd.unwrap_or(ProbeCmd::Show { config: None }) {
             ProbeCmd::Show { config } => probe::show(config, false),
             ProbeCmd::Send { config } => probe::show(config, true),
@@ -245,7 +297,13 @@ fn core_args(config: &Path) -> Vec<OsString> {
     v
 }
 
-fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<String>, auto_upgrade: Option<bool>) -> Result<()> {
+fn up(
+    config: Option<PathBuf>,
+    base_url: Option<String>,
+    upgrade_source: Option<String>,
+    auto_upgrade: Option<bool>,
+    userspace: Option<bool>,
+) -> Result<()> {
     need_root()?;
     if let Some(b) = &base_url {
         if !(b.starts_with("https://") || b.starts_with("http://")) {
@@ -273,11 +331,27 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
             Ok(p) => probe_cfg = p,
             Err(e) => eprintln!("配置里的探针那一行用不了，这次不装公开探针：{e:#}"),
         }
-        let text: String = text.lines().filter(|l| !l.starts_with(probe::PAIR_LINE)).map(|l| format!("{l}\n")).collect();
-        write_file(CONFIG, text.as_bytes(), 0o600)?;
+        let mut text: String = text.lines().filter(|l| !l.starts_with(probe::PAIR_LINE)).map(|l| format!("{l}\n")).collect();
+        if let Some(u) = userspace {
+            text = netcfg::set_mode(&text, u);
+        }
+        write_config(&text)?;
         println!("配置 {} -> {CONFIG}", src.display());
     } else if !Path::new(CONFIG).exists() {
         bail!("没有配置：sudo lolinet up -c <配对得到的 loli.toml>");
+    } else if let Some(u) = userspace {
+        let text = fs::read_to_string(CONFIG)?;
+        let new = netcfg::set_mode(&text, u);
+        if new != text {
+            write_config(&new)?;
+        }
+    }
+    let net = netcfg::Net::parse(&fs::read_to_string(CONFIG)?)?;
+    if net.userspace {
+        println!(
+            "模式    userspace（无 TUN）：本机程序经 socks5://{} 进网；发到本机 overlay 地址的连接会转给 127.0.0.1",
+            net.socks.as_deref().unwrap_or(netcfg::SOCKS)
+        );
     }
     install_self()?;
     service::remove_legacy()?;
@@ -306,6 +380,8 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     if let Err(e) = probe_res {
         eprintln!("公开探针没装上：{e:#}");
     }
+    // 出口节点开着的话，模式或地址可能变了：重新拉起
+    exit::refresh();
     // 等内核起来、管理口连得上，再给 peer 几秒握手
     for _ in 0..30 {
         if status::node().is_some() {
@@ -315,6 +391,19 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     }
     std::thread::sleep(Duration::from_secs(5));
     status::show()
+}
+
+/// 换配置前先让 easytier-core 检查一遍：检查过的才换上（先写同目录临时文件，600）
+fn write_config(text: &str) -> Result<()> {
+    let check = format!("{CONFIG}.check");
+    write_file(&check, text.as_bytes(), 0o600)?;
+    let ok = tool("easytier-core").arg("--check-config").arg("-c").arg(&check).status()?.success();
+    if !ok {
+        let _ = fs::remove_file(&check);
+        bail!("新配置检查没过（{CONFIG} 没动）");
+    }
+    fs::rename(&check, CONFIG).with_context(|| format!("改名到 {CONFIG}"))?;
+    Ok(())
 }
 
 /// 把自己装到 /usr/local/bin/lolinet（先写临时文件再改名，正在跑的旧版本不受影响）

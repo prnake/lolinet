@@ -133,6 +133,9 @@ jobs:
             ln -sf lolinet pkg-lolinet/easytier-core && python3 easytier/check_sni.py ./pkg-lolinet/easytier-core
             # UDP 隧道偏好补丁：本机三节点（设备—relay—设备），内层 UDP 两跳都要走 udp 连接，TCP 不受影响
             python3 easytier/check_udp_pref.py ./pkg-lolinet/lolinet
+            # 出口节点（lolinet exit）：拒绝回环 / 元数据 / 私网目标、CONNECT 公网、UDP 查 DNS、来源 ACL；
+            # 再起两个 userspace 节点，经一个的本机 SOCKS5 和另一个的 overlay 地址用它的出口
+            python3 lolinet/check_exit.py ./pkg-lolinet/lolinet
           else
             echo "这台 runner 跑不了 ${{ matrix.target }}，跳过 SNI 实测"
           fi
