@@ -1,4 +1,6 @@
-//! 对话框：添加主机（地址 + token → 核对证书指纹 → 信任并连接）、自定义命令。
+//! 对话框：添加主机、自定义命令。
+//! 添加主机：只填地址就是请对方同意（[`crate::ui::pair::PairForm`]）；展开「我有配对码 / token」填了配对码或主机 token 的，
+//! 先核对证书指纹，再用配对码配对、或者用 token 以主人身份连（老办法）。
 //! 用 gpui-kit 的 Dialog 画外壳（遮罩、Esc、焦点圈），里面是自己的视图。
 
 use std::net::SocketAddr;
@@ -11,16 +13,21 @@ use gpui_kit::component::{
 use gpui_kit::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, px,
+    Subscription, Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::{
+    assets::ic,
     labels::group_fingerprint,
     model::Model,
+    pairing::{Secret, classify_secret},
     runtime::error_text,
     term::TermStart,
     theme::*,
-    ui::widgets::{caption, pill, pill_busy},
+    ui::{
+        pair,
+        widgets::{caption, icon, pill, pill_busy},
+    },
 };
 
 /// 对话框的外壳：默认 440 宽、圆角 16、深一层的底。
@@ -74,16 +81,19 @@ pub(crate) fn error_line(e: &Option<String>) -> Option<impl IntoElement> {
 // ---------------------------------------------------------------- 添加主机
 
 enum Step {
-    /// 填地址和 token
+    /// 填地址（和配对码 / token）
     Enter,
-    /// 新主机的证书指纹，等用户核对
+    /// 新主机的证书指纹，等用户核对（配对码、token 发出去之前）
     Verify { addr: SocketAddr, fp: [u8; 32] },
 }
 
 pub struct AddHostForm {
     model: Entity<Model>,
     pub addr: Entity<InputState>,
+    /// 配对码或主机 token（展开「我有配对码 / token」才有）
     pub token: Entity<InputState>,
+    /// 展开了「我有配对码 / token」
+    pub has_secret: bool,
     step: Step,
     busy: bool,
     error: Option<String>,
@@ -101,9 +111,7 @@ impl AddHostForm {
     pub fn new(model: Entity<Model>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let addr = cx.new(|cx| InputState::new(window, cx).placeholder("10.188.1.2 或主机名"));
         let token = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("32 位十六进制")
-                .masked(true)
+            InputState::new(window, cx).placeholder("XXXX-XXXX-XXXX-XXXX，或者 32 位的主机 token")
         });
         let subs = [&addr, &token]
             .into_iter()
@@ -119,6 +127,7 @@ impl AddHostForm {
             model,
             addr,
             token,
+            has_secret: false,
             step: Step::Enter,
             busy: false,
             error: None,
@@ -131,6 +140,19 @@ impl AddHostForm {
     pub fn show_fingerprint(&mut self, addr: SocketAddr, fp: [u8; 32], cx: &mut Context<Self>) {
         self.step = Step::Verify { addr, fp };
         cx.notify();
+    }
+
+    /// 快照用：展开「我有配对码 / token」。
+    pub fn set_has_secret(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.has_secret = on;
+        cx.notify();
+    }
+
+    fn secret(&self, cx: &App) -> Secret {
+        if !self.has_secret {
+            return Secret::None;
+        }
+        classify_secret(&self.token.read(cx).value())
     }
 
     /// 下一步 / 信任并连接。
@@ -146,14 +168,26 @@ impl AddHostForm {
                     cx.notify();
                     return;
                 }
+                if self.has_secret && self.secret(cx) == Secret::None {
+                    self.error = Some("填配对码或主机 token；没有就收起来，请对方同意".into());
+                    cx.notify();
+                    return;
+                }
                 self.busy = true;
                 self.error = None;
-                let task = Model::probe_fingerprint(host, cx);
+                let consent = self.secret(cx) == Secret::None;
+                let task = Model::probe_fingerprint(host.clone(), cx);
+                let model = self.model.clone();
                 cx.spawn_in(window, async move |this, cx| {
                     let r = task.await;
-                    let _ = this.update(cx, |f, cx| {
+                    let _ = this.update_in(cx, |f, window, cx| {
                         f.busy = false;
                         match r {
+                            // 只有地址：请对方同意（那边的人看得到这台的名字和地址）
+                            Ok((addr, fp)) if consent => {
+                                window.close_dialog(cx);
+                                pair::open_pairing(model, addr, fp, host, None, window, cx);
+                            }
                             Ok((addr, fp)) => f.step = Step::Verify { addr, fp },
                             Err(e) => f.error = Some(error_text(&e)),
                         }
@@ -163,7 +197,17 @@ impl AddHostForm {
                 .detach();
             }
             Step::Verify { addr, fp } => {
-                let token = self.token.read(cx).value().trim().to_string();
+                let token = match self.secret(cx) {
+                    Secret::Code(code) => {
+                        let name = self.addr.read(cx).value().trim().to_string();
+                        let model = self.model.clone();
+                        window.close_dialog(cx);
+                        pair::open_pairing(model, addr, fp, name, Some(code), window, cx);
+                        return;
+                    }
+                    Secret::Token(t) => t,
+                    Secret::None => String::new(),
+                };
                 self.busy = true;
                 self.error = None;
                 let task = Model::trust_and_connect(addr, token.clone(), fp, cx);
@@ -225,16 +269,68 @@ impl Render for AddHostForm {
             .flex()
             .flex_col()
             .gap(px(18.));
+        let has_secret = self.has_secret;
+        let disclosure = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div().flex().child(
+                    div()
+                        .id("add-secret")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .cursor_pointer()
+                        .text_size(T_XS)
+                        .text_color(fg2())
+                        .hover(|s| s.text_color(fg()))
+                        .child(icon(
+                            if has_secret {
+                                ic::CHEVRON_DOWN
+                            } else {
+                                ic::CHEVRON_RIGHT
+                            },
+                            12.,
+                            fg3(),
+                        ))
+                        .child("我有配对码 / token")
+                        .on_click(cx.listener(|f, _, window, cx| {
+                            f.has_secret = !f.has_secret;
+                            f.error = None;
+                            if f.has_secret {
+                                f.token.update(cx, |i, cx| i.focus(window, cx));
+                            }
+                            cx.notify();
+                        })),
+                ),
+            )
+            .when(has_secret, |d| {
+                d.child(field("配对码或 token", &self.token)).child(
+                    div()
+                        .text_size(T_CAP)
+                        .text_color(fg3())
+                        .child("配对码：对方 lolidesk host code 打出来的，或者在对方的 Lolidesk 里发的。token：对方 lolidesk host token 打出来的，用它连就是那台电脑的主人。"),
+                )
+            });
+        let primary = match self.secret(cx) {
+            Secret::None => "请对方同意",
+            _ => "下一步",
+        };
+        let verify_label = match self.secret(cx) {
+            Secret::Code(_) => "信任并配对",
+            _ => "信任并连接",
+        };
         match self.step {
             Step::Enter => body
                 .child(header(
                     "添加主机",
-                    "在要连的电脑上先跑 lolidesk host install；token 和指纹用 lolidesk host token 看。",
+                    "填网里那台电脑的地址：那边会弹框问要不要同意，同意一次以后不用再问。网里在跑 lolidesk 的设备也会列在侧栏「网里的设备」里。",
                 ))
                 .child(field("地址", &self.addr))
-                .child(field("token", &self.token))
+                .child(disclosure)
                 .children(error_line(&self.error))
-                .child(footer("下一步")),
+                .child(footer(primary)),
             Step::Verify { fp, .. } => body
                 .child(header(
                     "核对证书指纹",
@@ -256,7 +352,7 @@ impl Render for AddHostForm {
                         .child(group_fingerprint(&hex::encode(fp))),
                 )
                 .children(error_line(&self.error))
-                .child(footer("信任并连接")),
+                .child(footer(verify_label)),
         }
     }
 }

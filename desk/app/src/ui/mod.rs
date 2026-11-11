@@ -1,5 +1,6 @@
-//! 视图。窗口 = 侧栏（缓存的视图）+ 右边（首页 / 网络 / 终端 / 远程桌面）。
+//! 视图。窗口 = 侧栏（缓存的视图）+ 右边（首页 / 网络 / 访问 / 终端 / 远程桌面），本机有配对请求时整个窗口上弹框。
 
+pub mod access;
 pub mod app;
 pub mod boxdraw;
 pub mod desktop;
@@ -7,6 +8,7 @@ pub mod dialogs;
 pub mod grid;
 pub mod home;
 pub mod network;
+pub mod pair;
 pub mod permissions;
 pub mod sidebar;
 pub mod terminal;

@@ -1,4 +1,5 @@
-//! 侧栏：字标和添加按钮、最上面固定的「网络」、主机树（权限引导、会话、新建、显示器）、底部的在线数和版本。
+//! 侧栏：字标和「＋」（添加主机、导入分享链接）、最上面固定的「网络」、主机树（最上面是本机：访问、会话、新建、显示器；
+//! 别的主机：权限引导、会话、新建、显示器）、网里的设备（点「连接」请对方同意）、底部的在线数和版本。
 //! 缓存的视图：只在模型变了（`observe`）时重画，画面一帧一帧来时不动。
 
 use std::net::SocketAddr;
@@ -18,12 +19,15 @@ use lolidesk_proto::{DisplayInfo, Launcher, SessionInfo};
 use crate::{
     assets::ic,
     labels::{display_name, is_agent, rtt_label, session_name, session_subtitle},
-    model::{HostState, Link, Model, Selection},
+    model::{HostState, Link, LocalState, Model, Selection},
+    service::Found,
     term::TermStart,
     theme::*,
     ui::{
-        dialogs,
-        widgets::{Trigger, caption, dot, drag_region, icon, icon_button, mono, side_row},
+        access, dialogs, pair,
+        widgets::{
+            Trigger, badge, caption, dot, drag_region, hover_icon, icon, mono, pill_sm, side_row,
+        },
     },
 };
 
@@ -48,9 +52,31 @@ struct OpenTerm {
     ended: bool,
 }
 
-/// 连接状态的文字和颜色。
+/// 本机主机没连着时的说法（平常的连接中、重连照旧）。
+pub fn local_status(state: &LocalState) -> Option<(String, gpui_kit::Hsla)> {
+    match state {
+        LocalState::Normal => None,
+        LocalState::Starting => Some(("开启中".into(), warn())),
+        LocalState::Off => Some(("关着".into(), fg4())),
+        LocalState::NotRunning(_) => Some(("没在跑".into(), fg4())),
+        LocalState::Failed(_) => Some(("开不了".into(), bad())),
+    }
+}
+
+/// 本机没在跑时给人看的一句话。
+pub fn local_text(state: &LocalState) -> String {
+    match state {
+        LocalState::Normal => String::new(),
+        LocalState::Starting => "正在开启本机主机…".into(),
+        LocalState::Off => "关着：网里的设备连不了这台，本机也开不了终端".into(),
+        LocalState::NotRunning(t) | LocalState::Failed(t) => t.clone(),
+    }
+}
+
+/// 连接状态的文字和颜色（本机走回环，不显示延迟）。
 pub fn link_status(h: &HostState) -> (String, gpui_kit::Hsla) {
     match h.link {
+        Link::Online if h.local => ("在线".into(), eye()),
         Link::Online => (rtt_label(h.rtt_ms), eye()),
         Link::Connecting | Link::Reconnecting => ("连接中".into(), warn()),
         Link::Failed => ("连不上".into(), bad()),
@@ -106,12 +132,20 @@ impl Render for Sidebar {
             selection: m.selection,
             open: &open,
             desk,
+            local: m.local.as_ref().map(|l| l.state.clone()),
+            local_pref: m.prefs.local_host,
         };
         let trees: Vec<AnyElement> = m
             .hosts
             .iter()
             .enumerate()
             .map(|(i, h)| host_tree(i, h, &ctx))
+            .collect();
+        let found: Vec<AnyElement> = m
+            .found
+            .iter()
+            .enumerate()
+            .map(|(i, f)| found_row(i, f, &model))
             .collect();
         let (online, total) = (m.online_count(), m.hosts.len());
         let net_row = {
@@ -140,8 +174,31 @@ impl Render for Sidebar {
 
         let add = {
             let model = model.clone();
-            icon_button("side-add", ic::PLUS, "添加主机")
-                .on_click(move |_, window, cx| dialogs::open_add_host(model.clone(), window, cx))
+            Trigger::new("side-add")
+                .tip("添加主机、导入分享链接")
+                .open_bg(ink4())
+                .group("side-add")
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(28.))
+                .rounded(R_SM)
+                .hover(|s| s.bg(ink3()))
+                .child(hover_icon("side-add", ic::PLUS, 16., fg2(), fg()))
+                .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
+                    let (m1, m2) = (model.clone(), model.clone());
+                    menu.item(
+                        PopupMenuItem::new("添加主机…").on_click(move |_, window, cx| {
+                            dialogs::open_add_host(m1.clone(), window, cx)
+                        }),
+                    )
+                    .item(
+                        PopupMenuItem::new("导入分享链接…").on_click(move |_, window, cx| {
+                            pair::open_import(m2.clone(), None, window, cx);
+                        }),
+                    )
+                })
         };
 
         div()
@@ -211,7 +268,20 @@ impl Render for Sidebar {
                                         .child("还没有主机。点右上角 ＋ 添加。"),
                                 )
                             })
-                            .children(trees),
+                            .children(trees)
+                            .when(!found.is_empty(), |s| {
+                                s.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .px(px(8.))
+                                        .pt(px(14.))
+                                        .pb(px(6.))
+                                        .child(caption("网里的设备").flex_1())
+                                        .child(mono(format!("{} 台", found.len()), T_CAP, fg4())),
+                                )
+                                .children(found)
+                            }),
                     ),
             )
             .child(
@@ -236,12 +306,20 @@ struct TreeCtx<'a> {
     selection: Selection,
     open: &'a [OpenTerm],
     desk: Option<(SocketAddr, u32, bool)>,
+    /// 本机主机怎么样了；偏好「让网里的设备能连这台」
+    local: Option<LocalState>,
+    local_pref: bool,
 }
 
 /// 一台主机和它下面的会话、新建、显示器。
 fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
     let addr = h.addr;
-    let (status, color) = link_status(h);
+    let local_state = ctx.local.clone().filter(|_| h.local);
+    let (status, color) = local_state
+        .as_ref()
+        .filter(|_| !h.online())
+        .and_then(local_status)
+        .unwrap_or_else(|| link_status(h));
     let chevron = if h.expanded {
         ic::CHEVRON_DOWN
     } else {
@@ -250,23 +328,49 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
     let online = h.online();
     let link = h.link;
 
+    let local = h.local;
+    let menu_info = MenuInfo {
+        addr,
+        link,
+        local,
+        can_share: h.can_share(),
+        paired: h.me().is_some(),
+        devices: h.paired_count(),
+        local_pref: ctx.local_pref,
+    };
     let row = {
         let model = ctx.model.clone();
         let m2 = ctx.model.clone();
+        let title = if local {
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_baseline()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(T_SM)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("本机"),
+                )
+                .child(mono(h.name.clone(), T_CAP, fg3()).truncate())
+        } else {
+            div()
+                .flex_1()
+                .min_w_0()
+                .font_family(MONO)
+                .text_size(T_SM)
+                .font_weight(FontWeight::MEDIUM)
+                .truncate()
+                .child(h.title())
+        };
         side_row(("host", ix), false)
             .h(px(34.))
             .child(icon(chevron, 12., fg3()))
-            .child(icon(ic::COMPUTER, 15., fg2()))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .font_family(MONO)
-                    .text_size(T_SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .truncate()
-                    .child(h.title()),
-            )
+            .child(icon(ic::COMPUTER, 15., if local { fg() } else { fg2() }))
+            .child(title)
             .child(mono(status, T_CAP, fg3()).flex_none())
             .child(dot(color, 6.))
             .on_click(move |_, _, cx| {
@@ -277,11 +381,15 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
                         if let Some(h) = m.host_mut(addr) {
                             h.expanded = true;
                         }
-                        m.connect_now(addr, cx);
+                        if local {
+                            m.retry_local(cx);
+                        } else {
+                            m.connect_now(addr, cx);
+                        }
                     }
                 })
             })
-            .context_menu(move |menu, _, _| host_menu(menu, &m2, addr, link))
+            .context_menu(move |menu, _, _| host_menu(menu, &m2, &menu_info))
     };
 
     let mut tree = div().flex().flex_col().child(row);
@@ -290,7 +398,12 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
     }
     let mut body = div().flex().flex_col().pl(px(14.)).pb(px(6.)).gap(px(1.));
     let note = retry_note(h);
-    if !online && (!h.error.is_empty() || note.is_some()) {
+    let local_note = local_state
+        .as_ref()
+        .filter(|s| !online && **s != LocalState::Normal);
+    if let Some(st) = local_note {
+        body = body.child(local_card(st, ctx));
+    } else if !online && (!h.error.is_empty() || note.is_some()) {
         // 不再重试的是红字；还在重连的是安静的灰字，带次数和倒计时
         let failed = h.link == Link::Failed;
         body = body.child(
@@ -313,6 +426,10 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
         .flatten();
     let guiding = guide.is_some();
     body = body.children(guide);
+    // 本机：谁能连这台（配对了几台、几个请求在等）
+    if local && online {
+        body = body.child(access_row(h, ctx));
+    }
     // 重连时会话还列着（开着的终端在等），新建和显示器要连上才有
     if online || h.reconnecting() {
         let name = h.title();
@@ -363,8 +480,71 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
     tree.into_any_element()
 }
 
-fn host_menu(menu: PopupMenu, model: &Entity<Model>, addr: SocketAddr, link: Link) -> PopupMenu {
+/// 右键菜单要知道的。
+#[derive(Clone, Copy)]
+struct MenuInfo {
+    addr: SocketAddr,
+    link: Link,
+    local: bool,
+    can_share: bool,
+    /// 我是这台上配对过的设备（能解除配对）
+    paired: bool,
+    devices: Option<usize>,
+    local_pref: bool,
+}
+
+/// 本机的右键菜单：访问、新配对码、刷新 / 重试、「让网里的设备能连这台」。
+fn local_menu(menu: PopupMenu, model: &Entity<Model>, i: &MenuInfo) -> PopupMenu {
+    let addr = i.addr;
+    let (m1, m2, m3, m4) = (model.clone(), model.clone(), model.clone(), model.clone());
+    let online = i.link == Link::Online;
+    let access = match i.devices {
+        Some(n) => format!("访问 · {n} 台设备"),
+        None => "访问".into(),
+    };
+    let menu = menu
+        .item(
+            PopupMenuItem::new(access)
+                .disabled(!online)
+                .on_click(move |_, _, cx| {
+                    m1.update(cx, |m, cx| m.select(Selection::Access(addr), cx))
+                }),
+        )
+        .item(
+            PopupMenuItem::new("新配对码…")
+                .disabled(!i.can_share)
+                .on_click(move |_, window, cx| {
+                    access::open_new_code(m2.clone(), addr, window, cx);
+                }),
+        )
+        .separator();
+    let menu = if online {
+        menu.item(
+            PopupMenuItem::new("刷新")
+                .on_click(move |_, _, cx| m3.update(cx, |m, cx| m.refresh(addr, true, cx))),
+        )
+    } else {
+        menu.item(
+            PopupMenuItem::new("重试")
+                .disabled(i.link == Link::Connecting)
+                .on_click(move |_, _, cx| m3.update(cx, |m, cx| m.retry_local(cx))),
+        )
+    };
+    let on = i.local_pref;
+    menu.separator().item(
+        PopupMenuItem::new("让网里的设备能连这台")
+            .checked(on)
+            .on_click(move |_, _, cx| m4.update(cx, |m, cx| m.set_local_host(!on, cx))),
+    )
+}
+
+fn host_menu(menu: PopupMenu, model: &Entity<Model>, i: &MenuInfo) -> PopupMenu {
+    if i.local {
+        return local_menu(menu, model, i);
+    }
+    let (addr, link) = (i.addr, i.link);
     let (m1, m2, m3) = (model.clone(), model.clone(), model.clone());
+    let (m4, m5, m6) = (model.clone(), model.clone(), model.clone());
     let menu = if link == Link::Online {
         menu.item(
             PopupMenuItem::new("刷新")
@@ -390,10 +570,175 @@ fn host_menu(menu: PopupMenu, model: &Entity<Model>, addr: SocketAddr, link: Lin
                 .on_click(move |_, _, cx| m1.update(cx, |m, cx| m.connect_now(addr, cx))),
         )
     };
-    menu.separator().item(
+    let online = link == Link::Online;
+    let menu = menu
+        .separator()
+        .item(
+            PopupMenuItem::new("分享这台…")
+                .disabled(!i.can_share)
+                .on_click(move |_, window, cx| {
+                    access::open_new_code(m4.clone(), addr, window, cx);
+                }),
+        )
+        .item(
+            PopupMenuItem::new("我在这台上的配对")
+                .disabled(!online)
+                .on_click(move |_, _, cx| {
+                    m5.update(cx, |m, cx| m.select(Selection::Access(addr), cx))
+                }),
+        )
+        .separator();
+    let menu = if i.paired {
+        menu.item(
+            danger_item("解除配对…")
+                .disabled(!online)
+                .on_click(move |_, window, cx| {
+                    let m6 = m6.clone();
+                    access::open_confirm(
+                        "解除配对？",
+                        "在对方那里吊销这台电脑的配对、它发过的分享链接，再忘掉对方。以后要连得重新配对。".into(),
+                        "解除配对",
+                        window,
+                        cx,
+                        move |cx| m6.update(cx, |m, cx| m.unpair(addr, cx)),
+                    )
+                }),
+        )
+    } else {
+        menu
+    };
+    menu.item(
         danger_item("忘掉这台主机")
             .on_click(move |_, _, cx| m3.update(cx, |m, cx| m.forget(addr, cx))),
     )
+}
+
+/// 本机没在跑时的说明：正在开、开不了（重试）、关着（开启）。
+fn local_card(st: &LocalState, ctx: &TreeCtx) -> AnyElement {
+    let text = local_text(st);
+    let (color, button) = match st {
+        LocalState::Normal => return div().into_any_element(),
+        LocalState::Starting => (fg2(), None),
+        LocalState::Off => (fg3(), Some("开启")),
+        LocalState::NotRunning(_) => (fg3(), Some("重试")),
+        LocalState::Failed(_) => (bad(), Some("重试")),
+    };
+    let model = ctx.model.clone();
+    let enable = *st == LocalState::Off;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .mx(px(2.))
+        .mt(px(2.))
+        .mb(px(4.))
+        .px(px(10.))
+        .py(px(8.))
+        .rounded(R_SM)
+        .bg(ink2())
+        .border_1()
+        .border_color(if matches!(st, LocalState::Failed(_)) {
+            bad_line()
+        } else {
+            line1()
+        })
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .when(matches!(st, LocalState::Starting), |d| {
+                    d.child(Spinner::new().color(fg3()))
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(T_CAP)
+                        .text_color(color)
+                        .child(text),
+                ),
+        )
+        .children(button.map(|label| {
+            div().flex().child(
+                pill_sm("local-retry", label, false).on_click(move |_, _, cx| {
+                    model.update(cx, |m, cx| {
+                        if enable {
+                            m.set_local_host(true, cx)
+                        } else {
+                            m.retry_local(cx)
+                        }
+                    })
+                }),
+            )
+        }))
+        .into_any_element()
+}
+
+/// 本机下面的「访问」：配对了几台设备，几个请求在等。
+fn access_row(h: &HostState, ctx: &TreeCtx) -> AnyElement {
+    let addr = h.addr;
+    let selected = ctx.selection == Selection::Access(addr);
+    let model = ctx.model.clone();
+    let pending = h.access.as_ref().map_or(0, |a| a.pending.len());
+    let count = h
+        .paired_count()
+        .map(|n| format!("{n} 台设备"))
+        .unwrap_or_default();
+    side_row("local-access", selected)
+        .child(icon(ic::SHIELD, 14., if selected { fg() } else { fg2() }))
+        .child(div().flex_1().min_w_0().text_size(T_SM).child("访问"))
+        .when(pending > 0, |r| {
+            r.child(badge(format!("{pending} 个请求"), warn(), warn_wash()))
+        })
+        .child(mono(count, T_CAP, fg3()).flex_none())
+        .on_click(move |_, _, cx| model.update(cx, |m, cx| m.select(Selection::Access(addr), cx)))
+        .into_any_element()
+}
+
+/// 网里一台有 lolidesk 主机、还没配对的设备：「连接」请它同意。
+fn found_row(ix: usize, f: &Found, model: &Entity<Model>) -> AnyElement {
+    let (addr, fp, name) = (f.addr, f.fingerprint, f.name.clone());
+    let model = model.clone();
+    let connect = pill_sm(("found-go", ix), "连接", false).on_click(move |_, window, cx| {
+        cx.stop_propagation();
+        pair::open_pairing(model.clone(), addr, fp, name.clone(), None, window, cx);
+    });
+    div()
+        .id(("found", ix))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .h(px(44.))
+        .pl(px(10.))
+        .pr(px(6.))
+        .rounded(R_SM)
+        .hover(|s| s.bg(ink2()))
+        .child(icon(ic::COMPUTER, 15., fg3()))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(T_SM)
+                        .text_color(fg2())
+                        .truncate()
+                        .child(if f.name.is_empty() {
+                            f.addr.ip().to_string()
+                        } else {
+                            f.name.clone()
+                        }),
+                )
+                .child(mono(f.addr.ip().to_string(), T_CAP, fg4())),
+        )
+        .child(connect)
+        .into_any_element()
 }
 
 /// 红字的菜单项（删、结束）。
@@ -636,10 +981,17 @@ fn display_row(addr: SocketAddr, d: &DisplayInfo, ctx: &TreeCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// 给首页用：主机卡片上的状态徽章。
-pub fn status_badge(h: &HostState) -> impl IntoElement {
-    use crate::ui::widgets::badge;
+/// 给首页用：主机卡片上的状态徽章（本机没在跑时按本机的说法）。
+pub fn status_badge(h: &HostState, local: Option<&LocalState>) -> impl IntoElement {
+    match local.filter(|_| !h.online()) {
+        Some(LocalState::Starting) => return badge("开启中", warn(), warn_wash()),
+        Some(LocalState::Off) => return badge("关着", fg3(), ink3()),
+        Some(LocalState::NotRunning(_)) => return badge("没在跑", fg3(), ink3()),
+        Some(LocalState::Failed(_)) => return badge("开不了", bad(), bad_wash()),
+        _ => {}
+    }
     match h.link {
+        Link::Online if h.local => badge("在线", eye(), eye_wash()),
         Link::Online => badge(rtt_label(h.rtt_ms), eye(), eye_wash()),
         Link::Connecting | Link::Reconnecting => badge("连接中", warn(), warn_wash()),
         Link::Failed => badge("连不上", bad(), bad_wash()),

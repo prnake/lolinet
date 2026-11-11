@@ -83,6 +83,9 @@ fn icon_svg(name: &str) -> Option<&'static str> {
             r#"<path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>"#
         ),
         "pointer" => icon!(r#"<path d="M6 4l12.5 7-5.5 1.5L10.5 18z"/><path d="m13 12.5 4 5"/>"#),
+        "key" => icon!(
+            r#"<circle cx="8" cy="15.5" r="4"/><path d="m10.9 12.6 8.6-8.6"/><path d="m16.5 7 2.5 2.5"/><path d="m14.2 9.3 2 2"/>"#
+        ),
         // Linux 上自己画的窗口按钮
         "win-min" => icon!(r#"<path d="M6.5 12h11"/>"#),
         "win-max" => icon!(r#"<rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/>"#),
@@ -122,6 +125,7 @@ pub mod ic {
     pub const PHONE: &str = "ld/phone.svg";
     pub const SHIELD: &str = "ld/shield.svg";
     pub const POINTER: &str = "ld/pointer.svg";
+    pub const KEY: &str = "ld/key.svg";
     pub const WIN_MIN: &str = "ld/win-min.svg";
     pub const WIN_MAX: &str = "ld/win-max.svg";
     pub const WIN_RESTORE: &str = "ld/win-restore.svg";
@@ -166,6 +170,7 @@ mod tests {
             "phone",
             "shield",
             "pointer",
+            "key",
             "win-min",
             "win-max",
             "win-restore",

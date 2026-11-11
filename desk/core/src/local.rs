@@ -49,9 +49,87 @@ fn read(dir: &std::path::Path) -> Option<LocalHost> {
     })
 }
 
+/// 装着的主机服务跑的是哪个程序：macOS 读 LaunchAgent `co.lo-li.lolidesk` 的 plist，Linux 读 systemd --user 的
+/// `lolidesk.service`（路径、写法和 lolidesk-host 的 config::install_service 一样）。没装服务、读不出来是 None；
+/// 程序文件还在不在由调用的人看
+pub fn service_program() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        let plist = dirs::home_dir()?.join("Library/LaunchAgents/co.lo-li.lolidesk.plist");
+        plist_program(&fs::read_to_string(plist).ok()?)
+    } else if cfg!(target_os = "linux") {
+        let unit = dirs::config_dir()?.join("systemd/user/lolidesk.service");
+        unit_program(&fs::read_to_string(unit).ok()?)
+    } else {
+        None
+    }
+}
+
+/// plist 里 ProgramArguments 的第一项
+fn plist_program(text: &str) -> Option<PathBuf> {
+    let rest = text.split_once("<key>ProgramArguments</key>")?.1;
+    let rest = rest.trim_start().strip_prefix("<array>")?;
+    let s = rest.trim_start().strip_prefix("<string>")?;
+    let s = s.split_once("</string>")?.0;
+    let s = s
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    (!s.is_empty()).then(|| PathBuf::from(s))
+}
+
+/// 单元里 ExecStart 的程序：带引号的按 systemd 的转义读回（`\\`、`\"`、`%%`、`$$`），不带的取第一段
+fn unit_program(text: &str) -> Option<PathBuf> {
+    let line = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ExecStart="))?
+        .trim();
+    let mut out = String::new();
+    if let Some(q) = line.strip_prefix('"') {
+        let mut chars = q.chars();
+        loop {
+            match chars.next()? {
+                '"' => break,
+                '\\' => out.push(chars.next()?),
+                c @ ('%' | '$') => {
+                    if chars.clone().next() == Some(c) {
+                        chars.next();
+                    }
+                    out.push(c);
+                }
+                c => out.push(c),
+            }
+        }
+    } else {
+        out = line.split_whitespace().next()?.to_string();
+    }
+    (!out.is_empty()).then(|| PathBuf::from(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_service_program() {
+        let plist = "<plist version=\"1.0\"><dict>\n  <key>Label</key><string>co.lo-li.lolidesk</string>\n  <key>ProgramArguments</key><array><string>/Users/u/Apps &amp; Tools/Lolidesk.app/Contents/Helpers/lolidesk</string><string>host</string><string>run</string></array>\n</dict></plist>";
+        assert_eq!(
+            plist_program(plist),
+            Some("/Users/u/Apps & Tools/Lolidesk.app/Contents/Helpers/lolidesk".into())
+        );
+        assert_eq!(plist_program("<plist></plist>"), None);
+        let unit = "[Service]\nExecStart=\"/home/u/My Apps/a\\\"b\\\\c/100%%/$$HOME/lolidesk\" host run\nRestart=always\n";
+        assert_eq!(
+            unit_program(unit),
+            Some("/home/u/My Apps/a\"b\\c/100%/$HOME/lolidesk".into())
+        );
+        assert_eq!(
+            unit_program("ExecStart=/usr/local/bin/lolidesk host run"),
+            Some("/usr/local/bin/lolidesk".into())
+        );
+        assert_eq!(unit_program("[Unit]\n"), None);
+    }
 
     #[test]
     fn reads_the_host_dir() {

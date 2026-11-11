@@ -484,7 +484,8 @@ fn desktop_path(p: &Path) -> Result<String> {
     Ok(s)
 }
 
-/// 包里的 lolidesk.desktop 改成这台机器上的：Exec、TryExec、Icon 换成包里的绝对路径，别的照抄
+/// 包里的 lolidesk.desktop 改成这台机器上的：Exec、TryExec、Icon 换成包里的绝对路径，别的照抄。
+/// Exec 后面留着 `%u`：点了 lolidesk:// 链接（MimeType 登记了），链接当第一个参数交给 app
 pub fn desktop_entry(template: &str, app: &Path, icon: &Path) -> Result<String> {
     let app = desktop_path(app)?;
     let icon = desktop_path(icon)?;
@@ -495,7 +496,7 @@ pub fn desktop_entry(template: &str, app: &Path, icon: &Path) -> Result<String> 
         match key {
             "Exec" => {
                 seen.0 = true;
-                out.push_str(&format!("Exec=\"{app}\"\n"));
+                out.push_str(&format!("Exec=\"{app}\" %u\n"));
             }
             "TryExec" => out.push_str(&format!("TryExec={app}\n")),
             "Icon" => {
@@ -595,7 +596,7 @@ impl System {
 }
 
 /// 跑一个命令，最多等 `limit`；超时就杀掉。返回（退出状态，stdout，stderr）。
-fn run(cmd: &mut Command, limit: Duration) -> Result<(ExitStatus, Vec<u8>, String)> {
+pub(crate) fn run(cmd: &mut Command, limit: Duration) -> Result<(ExitStatus, Vec<u8>, String)> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -964,7 +965,9 @@ mod tests {
         let icon = Path::new("/home/u/lolidesk/lolidesk.svg");
         let e = desktop_entry(template, app, icon).unwrap();
         assert!(e.starts_with("[Desktop Entry]\n"));
-        assert!(e.contains("\nExec=\"/home/u/lolidesk/lolidesk-app\"\n"));
+        assert!(e.contains("\nExec=\"/home/u/lolidesk/lolidesk-app\" %u\n"));
+        // 分享链接 lolidesk:// 交给 app
+        assert!(e.contains("\nMimeType=x-scheme-handler/lolidesk;\n"));
         assert!(e.contains("\nTryExec=/home/u/lolidesk/lolidesk-app\n"));
         assert!(e.contains("\nIcon=/home/u/lolidesk/lolidesk.svg\n"));
         // 窗口的 app_id 要和桌面文件的名字、StartupWMClass 一样
@@ -976,7 +979,7 @@ mod tests {
         assert!(
             spaced
                 .unwrap()
-                .contains("\nExec=\"/home/u/My Apps/lolidesk-app\"\n")
+                .contains("\nExec=\"/home/u/My Apps/lolidesk-app\" %u\n")
         );
         for bad in [
             "lolidesk-app",

@@ -7,7 +7,7 @@ use gpui_kit::{
 
 use crate::{
     assets::ic,
-    model::{HostState, Link, Model},
+    model::{HostState, Link, LocalState, Model},
     term::TermStart,
     theme::*,
     ui::{
@@ -56,11 +56,15 @@ pub fn render(model: &Entity<Model>, cx: &App) -> AnyElement {
             .into_any_element()
     } else {
         // 两列：一行两张卡
+        let local = m
+            .local
+            .as_ref()
+            .map(|l| (l.state.clone(), m.prefs.local_host));
         let cards: Vec<AnyElement> = m
             .hosts
             .iter()
             .enumerate()
-            .map(|(i, h)| host_card(i, h, model))
+            .map(|(i, h)| host_card(i, h, model, local.clone().filter(|_| h.local)))
             .collect();
         let mut grid = div().flex().flex_col().gap(px(12.));
         let mut it = cards.into_iter();
@@ -107,10 +111,44 @@ pub fn render(model: &Entity<Model>, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// 首页的一台主机：状态、地址、一键开终端 / 桌面。
-fn host_card(ix: usize, h: &HostState, model: &Entity<Model>) -> AnyElement {
+/// 首页的一台主机：状态、地址、一键开终端 / 桌面。本机没在跑时是它的说明和「重试」/「开启」。
+fn host_card(
+    ix: usize,
+    h: &HostState,
+    model: &Entity<Model>,
+    local: Option<(LocalState, bool)>,
+) -> AnyElement {
     let addr = h.addr;
-    let actions = if h.online() {
+    let local_down = local
+        .clone()
+        .filter(|(st, _)| !h.online() && *st != LocalState::Normal);
+    let actions = if let Some((st, _)) = &local_down {
+        let m1 = model.clone();
+        let enable = *st == LocalState::Off;
+        div()
+            .flex()
+            .gap(px(8.))
+            .child(if *st == LocalState::Starting {
+                crate::ui::widgets::pill_busy(("card-conn", ix), "正在开启…", false)
+                    .into_any_element()
+            } else {
+                pill(
+                    ("card-conn", ix),
+                    if enable { "开启" } else { "重试" },
+                    false,
+                )
+                .on_click(move |_, _, cx| {
+                    m1.update(cx, |m, cx| {
+                        if enable {
+                            m.set_local_host(true, cx)
+                        } else {
+                            m.retry_local(cx)
+                        }
+                    })
+                })
+                .into_any_element()
+            })
+    } else if h.online() {
         let m1 = model.clone();
         let term = pill(("card-term", ix), "新终端", true).on_click(move |_, _, cx| {
             m1.update(cx, |m, cx| {
@@ -151,7 +189,17 @@ fn host_card(ix: usize, h: &HostState, model: &Entity<Model>) -> AnyElement {
             .into_any_element()
         })
     };
+    let local_text = local_down
+        .as_ref()
+        .map(|(st, _)| crate::ui::sidebar::local_text(st));
     let meta = match (&h.welcome, h.online()) {
+        _ if local_text.is_some() => Some(
+            div()
+                .text_size(T_CAP)
+                .text_color(fg3())
+                .children(local_text)
+                .into_any_element(),
+        ),
         (Some(w), true) => Some(
             mono(
                 format!(
@@ -224,9 +272,17 @@ fn host_card(ix: usize, h: &HostState, model: &Entity<Model>) -> AnyElement {
                                 .truncate()
                                 .child(h.title()),
                         )
-                        .child(mono(addr.to_string(), T_CAP, fg3())),
+                        .child(mono(
+                            if h.local {
+                                format!("{} · 这台电脑", h.name)
+                            } else {
+                                addr.to_string()
+                            },
+                            T_CAP,
+                            fg3(),
+                        )),
                 )
-                .child(status_badge(h)),
+                .child(status_badge(h, local.as_ref().map(|(st, _)| st))),
         )
         .child(actions)
         .children(meta)

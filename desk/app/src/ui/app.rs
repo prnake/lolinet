@@ -12,7 +12,9 @@ use crate::{
     assets::AppAssets,
     model::{Model, ModelEvent, Selection, ToastKind},
     theme::{self, *},
-    ui::{desktop::STAGE_CONTEXT, dialogs, home, network::NetworkPage, sidebar::Sidebar},
+    ui::{
+        access, desktop::STAGE_CONTEXT, dialogs, home, network::NetworkPage, pair, sidebar::Sidebar,
+    },
 };
 
 actions!(
@@ -85,7 +87,12 @@ pub fn window_options(cx: &App) -> WindowOptions {
     }
 }
 
-/// 开应用：一个窗口，连上记住的主机。
+/// 系统交给 app 的 `lolidesk://` 链接（分享链接）。
+fn is_link(s: &str) -> bool {
+    s.starts_with("lolidesk://")
+}
+
+/// 开应用：一个窗口，本机主机和记住的主机。
 pub fn run() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -93,47 +100,70 @@ pub fn run() {
                 .unwrap_or_else(|_| "lolidesk_app=info,lolidesk_core=info".into()),
         )
         .try_init();
-    gpui_kit::application()
-        .with_assets(AppAssets)
-        .run(|cx: &mut App| {
-            init(cx);
-            // 终端库早点载入：缺了的话终端面板里说清楚
-            if let Err(e) = lolidesk_ghostty::load() {
-                tracing::warn!("libghostty-vt：{e:#}");
+    // 分享链接：macOS 由系统交来（Info.plist 里登记了 lolidesk://），Linux 由桌面文件的 %u 当参数给
+    let (links, mut link_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    for a in std::env::args().skip(1).filter(|a| is_link(a)) {
+        let _ = links.send(a);
+    }
+    let app = gpui_kit::application().with_assets(AppAssets);
+    app.on_open_urls(move |urls| {
+        for u in urls.into_iter().filter(|u| is_link(u)) {
+            let _ = links.send(u);
+        }
+    });
+    app.run(move |cx: &mut App| {
+        init(cx);
+        // 终端库早点载入：缺了的话终端面板里说清楚
+        if let Err(e) = lolidesk_ghostty::load() {
+            tracing::warn!("libghostty-vt：{e:#}");
+        }
+        cx.set_menus([
+            Menu::new("lolidesk").items([
+                MenuItem::action("添加主机…", AddHost),
+                MenuItem::separator(),
+                MenuItem::action("隐藏 lolidesk", Hide),
+                MenuItem::action("隐藏其他", HideOthers),
+                MenuItem::separator(),
+                MenuItem::action("退出 lolidesk", Quit),
+            ]),
+            Menu::new("窗口").items([
+                MenuItem::action("最小化", Minimize),
+                MenuItem::action("全屏", ToggleFullScreen),
+            ]),
+        ]);
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
             }
-            cx.set_menus([
-                Menu::new("lolidesk").items([
-                    MenuItem::action("添加主机…", AddHost),
-                    MenuItem::separator(),
-                    MenuItem::action("隐藏 lolidesk", Hide),
-                    MenuItem::action("隐藏其他", HideOthers),
-                    MenuItem::separator(),
-                    MenuItem::action("退出 lolidesk", Quit),
-                ]),
-                Menu::new("窗口").items([
-                    MenuItem::action("最小化", Minimize),
-                    MenuItem::action("全屏", ToggleFullScreen),
-                ]),
-            ]);
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            let model = cx.new(|_| Model::load());
-            let opened = gpui_kit::open_window(window_options(cx), cx, |window, cx| {
-                let model = model.clone();
-                cx.new(|cx| Workspace::new(model, window, cx))
-            });
-            if let Err(e) = opened {
+        })
+        .detach();
+        let model = cx.new(|_| Model::load());
+        let opened = gpui_kit::open_window(window_options(cx), cx, |window, cx| {
+            let model = model.clone();
+            cx.new(|cx| Workspace::new(model, window, cx))
+        });
+        let handle = match opened {
+            Ok((handle, _)) => handle,
+            Err(e) => {
                 tracing::error!("开窗口：{e:#}");
                 cx.quit();
                 return;
             }
-            model.update(cx, |m, cx| m.start(cx));
-            cx.activate(true);
-        });
+        };
+        model.update(cx, |m, cx| m.start(cx));
+        cx.activate(true);
+        // 分享链接：打开「导入分享链接」，先填好，等人点「配对」
+        cx.spawn(async move |cx| {
+            while let Some(url) = link_rx.recv().await {
+                let model = model.clone();
+                let _ = cx.update_window(handle, |_, window, cx| {
+                    window.activate_window();
+                    pair::open_import(model, Some(url), window, cx);
+                });
+            }
+        })
+        .detach();
+    });
 }
 
 /// 窗口的根：侧栏 + 右边。
@@ -184,11 +214,11 @@ impl Workspace {
                     }
                 },
             ),
-            // 窗口回到前台：等着重连的主机马上试
+            // 窗口回到前台：等着重连的主机马上试；不在前台时配对请求另发系统通知
             cx.observe_window_activation(window, |this: &mut Self, window, cx| {
-                if window.is_window_active() {
-                    this.model.update(cx, |m, cx| m.retry_now(cx));
-                }
+                let active = window.is_window_active();
+                this.model
+                    .update(cx, |m, cx| m.set_window_active(active, cx));
             }),
         ];
         let focus = cx.focus_handle();
@@ -221,6 +251,11 @@ impl Workspace {
                 }
             }
             Selection::Network => return self.network.clone().into_any_element(),
+            Selection::Access(addr) => {
+                if m.host(addr).is_some() {
+                    return access::render(&self.model, addr, cx);
+                }
+            }
             Selection::Home => {}
         }
         home::render(&self.model, cx)
@@ -228,8 +263,9 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let right = self.right(cx);
+        let consent = pair::consent_overlay(&self.model, window, cx);
         div()
             .key_context(WORKSPACE_CONTEXT)
             .track_focus(&self.focus)
@@ -250,5 +286,6 @@ impl Render for Workspace {
                     .cached(StyleRefinement::default().w(SIDEBAR_W).h_full().flex_none()),
             )
             .child(div().flex_1().min_w_0().h_full().child(right))
+            .children(consent)
     }
 }

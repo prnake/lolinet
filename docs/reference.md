@@ -115,6 +115,15 @@ lolidesk, once a lolidesk release is published:
 | `/usr/local/bin/lolidesk-host` | Older installs only: now a link to `lolidesk`, which acts as `lolidesk host` under that name |
 | `/usr/local/bin/lolidesk` | The lolidesk client, updated the same way |
 
+Per user, not installed by `install.sh`:
+
+| Path | |
+| :-- | :-- |
+| `~/Library/LaunchAgents/co.lo-li.lolidesk.plist` | macOS: the host service, written by `lolidesk host install` (or by the app for *本机*). Runs `<that lolidesk> host run`; logs in `~/Library/Logs/lolidesk/host.log` |
+| `~/.config/systemd/user/lolidesk.service` | Linux: the same as a `systemd --user` unit (`$XDG_CONFIG_HOME`); logs with `journalctl --user -u lolidesk` |
+| `<config dir>/lolidesk/app.json` | The app's preferences (`~/Library/Application Support` on macOS, `~/.config` on Linux): video settings, font size, `option_as_alt`, `local_host` (start this computer's host; on by default) and `local_host_program` (the program the host service ran before `local_host` was turned off, installed again when it is turned on) |
+| `~/.local/share/applications/lolidesk.desktop` | Linux: the app's menu entry, written by *加到应用菜单*; handles `lolidesk://` links (`MimeType=x-scheme-handler/lolidesk;`). `Lolidesk.app` registers the scheme in its `Info.plist` |
+
 Paths from before `lolinet`, which `lolinet up` takes over: the config `/etc/easytier/loli.toml` (copied if `/etc/lolinet/loli.toml` doesn't exist yet), and the binary directory `/usr/local/libexec/easytier/` on macOS or `/opt/easytier/` on Linux, where `easytier-core` and `easytier-cli` become symlinks to `lolinet`.
 
 ## `nodes.yaml`

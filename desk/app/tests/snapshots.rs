@@ -18,6 +18,8 @@ mod gui {
     // 远程画面上的输入只在 macOS 上测：Linux 上那些帮手和引入用不到
     #![cfg_attr(not(target_os = "macos"), allow(unused_imports, dead_code))]
 
+    /// 配对的快照和测试（tests/gui/pair_cases.rs）：本机、请求同意、访问页、配对码、网里的设备、分享链接。
+    mod pair_cases;
     /// 终端的快照和测试（tests/gui/term_cases.rs）。
     mod term_cases;
 
@@ -125,6 +127,17 @@ mod gui {
             ("network_down", network_down),
             ("invite_phone", invite_phone),
             ("invite_desktop", invite_desktop),
+            ("local_top", pair_cases::local_top),
+            ("local_states", pair_cases::local_states),
+            ("consent", pair_cases::consent),
+            ("access_page", pair_cases::access_page),
+            ("new_code", pair_cases::new_code),
+            ("discovery", pair_cases::discovery),
+            ("import", pair_cases::import),
+            ("add_host_code", pair_cases::add_host_code),
+            ("local_lifecycle", pair_cases::local_lifecycle),
+            ("local_keeps_service", pair_cases::local_keeps_service),
+            ("consent_notify", pair_cases::consent_notify),
             // 远程画面上的输入：只有 macOS 有画面
             #[cfg(target_os = "macos")]
             ("keyboard_back", keyboard_back),

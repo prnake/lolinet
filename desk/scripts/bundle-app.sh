@@ -8,7 +8,7 @@
 #   Contents/Frameworks/libghostty-vt.dylib    终端核心（两个程序都从这里载入）
 #   Contents/Helpers/mihomo                    设了 MIHOMO=<mihomo 可执行文件> 才有（desk/scripts/fetch-mihomo.sh 取）：
 #                                              独立的程序，lolinet mihomo on 用；旁边 Resources/mihomo-NOTICE.txt 写版本、许可和源码
-#   Contents/Info.plist
+#   Contents/Info.plist                        登记 lolidesk:// （分享链接）：点了链接，系统把它交给 app
 set -eu
 
 bin=${1:?要 lolidesk-app 可执行文件}
@@ -65,6 +65,13 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>co.lo-li.lolidesk.pair</string>
+      <key>CFBundleURLSchemes</key><array><string>lolidesk</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 EOF

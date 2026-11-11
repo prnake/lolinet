@@ -19,6 +19,10 @@ pub struct Prefs {
     pub font_size: f32,
     /// 终端里 Option 当 Alt（Option+x 发 ESC x），不用它打特殊字符
     pub option_as_alt: bool,
+    /// 让网里的设备能连这台：本机主机没在跑时，app 替你开（`lolidesk host install`）
+    pub local_host: bool,
+    /// 关掉 local_host 前服务跑的程序：再开时还装它（授权跟着程序走，别换成 app 带的）
+    pub local_host_program: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -30,6 +34,8 @@ impl Default for Prefs {
             quality: quality_index(v.quality),
             font_size: FONT_DEFAULT,
             option_as_alt: true,
+            local_host: true,
+            local_host_program: None,
         }
     }
 }
@@ -122,9 +128,12 @@ mod tests {
             (2560, 120, 3, 14.0)
         );
         assert_eq!(p.video().quality, Quality::Ultra);
+        // 旧文件没有 local_host：按开算
+        assert!(p.local_host);
 
         let q = Prefs {
             long_edge: 0,
+            local_host: false,
             ..p.clone()
         };
         q.save_to(&path).unwrap();
