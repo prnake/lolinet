@@ -137,6 +137,7 @@ mod gui {
             ("add_host_code", pair_cases::add_host_code),
             ("local_lifecycle", pair_cases::local_lifecycle),
             ("local_keeps_service", pair_cases::local_keeps_service),
+            ("pair_live", pair_cases::pair_live),
             ("consent_notify", pair_cases::consent_notify),
             // 远程画面上的输入：只有 macOS 有画面
             #[cfg(target_os = "macos")]

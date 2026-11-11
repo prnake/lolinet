@@ -1,8 +1,9 @@
 //! 配对的快照和测试：本机在侧栏最上面（有会话）、本机开不起来、有设备请求连这台（一个、两个排队）、「访问」页
 //! （主人看全部、设备看自己、限制的开关）、新配对码（码、链接、二维码）、网里的设备和「正在请 X 同意…」、
 //! 导入分享链接、添加主机时填配对码。
-//! 再用假的服务测：本机主机没跑过时替用户装一次服务、开发版只说明不装、
-//! 配对请求在窗口不在前台时每个只发一次系统通知、答过的不再弹。都不起进程、不连网。
+//! 再用假的服务测：本机主机没跑过时替用户装一次服务、开发版只说明不装、不换装着的服务、
+//! 配对请求在窗口不在前台时每个只发一次系统通知、答过的不再弹。这些都不起进程、不连网。
+//! pair_live 用真的主机和网络（给了 LOLIDESK_BIN 才跑）：app 连上本机，设备请求配对，按同意，访问页里有它。
 
 use std::{
     net::SocketAddr,
@@ -742,6 +743,137 @@ pub fn local_keeps_service(_: &Option<PathBuf>) {
     assert_eq!(c.programs, [system.clone(), system.clone(), system.clone()]);
     drop(c);
     let _ = std::fs::remove_file(&system);
+}
+
+/// 真的主机、真的网络、真的服务（不是假的）：回环上起 `lolidesk host run`，app 的模型以主人身份连上「本机」；
+/// 另一台「设备」（命令行，自己的 HOME）`lolidesk pair` 请求配对，app 里出同意框；按「同意」（和按钮调的同一个函数），
+/// 设备配对上；访问页里有它。快照存 live-consent、live-access。要 LOLIDESK_BIN（lolidesk 程序），没有就跳过。
+/// HOME 已经是 run() 设的临时目录：主机目录、app 读的都在那里，不碰真的。
+pub fn pair_live(out: &Option<PathBuf>) {
+    let Some(bin) = std::env::var_os("LOLIDESK_BIN").map(PathBuf::from) else {
+        println!("snapshots: pair_live 跳过（没给 LOLIDESK_BIN）");
+        return;
+    };
+    let port = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let host_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let run = |args: &[&str], home: Option<&Path>| {
+        let mut c = std::process::Command::new(&bin);
+        c.args(args)
+            .env("LOLIDESK_NO_DIALOG", "1")
+            .env("SHELL", "/bin/sh")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(h) = home {
+            c.env("HOME", h).env("XDG_CONFIG_HOME", h.join(".config"));
+        }
+        c
+    };
+    let mut host = run(&["host", "run", "--listen", &host_addr.to_string()], None)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("起主机");
+    struct Kill(std::process::Child);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let started = std::time::Instant::now();
+    while lolidesk_core::local::local_host().is_none_or(|l| l.addr != host_addr) {
+        assert!(host.try_wait().unwrap().is_none(), "主机退出了");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "主机 20 秒没起来"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _host = Kill(host);
+
+    let mut cx = context();
+    let model = cx.new(|_| Model::empty(Default::default()));
+    let (handle, _) = open(&mut cx, model.clone());
+    with_window(&mut cx, handle, |_, cx| {
+        model.update(cx, |m, cx| {
+            m.set_service(Arc::new(lolidesk_app::service::Real));
+            m.start(cx);
+        })
+    });
+    // 网络在别的线程上：真的时间等它；app 的定时检查（每秒）走虚拟时钟，一起往前拨
+    let wait = |cx: &mut HeadlessAppContext, what: &str, ok: &dyn Fn(&Model) -> bool| {
+        let t = std::time::Instant::now();
+        loop {
+            cx.run_until_parked();
+            if model.read_with(cx, |m, _| ok(m)) {
+                return;
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "30 秒还没{what}");
+            cx.advance_clock(Duration::from_millis(500));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    wait(&mut cx, "以主人身份连上本机", &|m| {
+        m.local_host()
+            .is_some_and(|h| h.online() && h.addr == host_addr)
+    });
+
+    // 设备：自己的 HOME，请求配对（-y：直接信任证书指纹），等这边同意
+    let dev_home = std::env::temp_dir().join(format!("lolidesk-live-dev-{}", std::process::id()));
+    std::fs::create_dir_all(&dev_home).unwrap();
+    let device = run(&["pair", &host_addr.to_string(), "-y"], Some(&dev_home))
+        .spawn()
+        .expect("起设备");
+    wait(&mut cx, "出同意框", &|m| !m.consent.is_empty());
+    let (id, kind) = model.read_with(&cx, |m, _| {
+        (m.consent[0].id, m.consent[0].device.kind.clone())
+    });
+    assert_eq!(kind, "cli", "同意框里的不是那台设备");
+    shot(&mut cx, handle, out, "live-consent");
+
+    with_window(&mut cx, handle, |_, cx| {
+        model.update(cx, |m, cx| m.decide(id, true, cx))
+    });
+    // 「同意」经 app 的连接发给主机（要接着跑 app），主机回给等着的设备
+    let mut device = device;
+    let t = std::time::Instant::now();
+    let status = loop {
+        cx.run_until_parked();
+        if let Some(st) = device.try_wait().expect("看设备") {
+            break st;
+        }
+        assert!(t.elapsed() < Duration::from_secs(30), "设备 30 秒没配对上");
+        cx.advance_clock(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut text = String::new();
+    use std::io::Read as _;
+    let _ = device.stdout.take().unwrap().read_to_string(&mut text);
+    let _ = device.stderr.take().unwrap().read_to_string(&mut text);
+    assert!(
+        status.success() && text.contains("已和"),
+        "设备没配对上：{text}"
+    );
+
+    with_window(&mut cx, handle, |_, cx| {
+        model.update(cx, |m, cx| m.select(Selection::Access(host_addr), cx))
+    });
+    wait(&mut cx, "在访问页里看到这台设备", &|m| {
+        m.local_host()
+            .and_then(|h| h.access.as_ref())
+            .is_some_and(|a| {
+                a.grants
+                    .iter()
+                    .any(|g| g.device.kind == "cli" && g.code.is_none())
+            })
+            && m.consent.is_empty()
+    });
+    shot(&mut cx, handle, out, "live-access");
+    let _ = std::fs::remove_dir_all(&dev_home);
 }
 
 /// 配对请求：窗口不在前台时每个请求只发一次系统通知；在前台时不发；答过的不再弹。

@@ -92,6 +92,9 @@ jobs:
         working-directory: desk
         run: |
           [ "${{ runner.os }}" = Linux ] && export LOLIDESK_SNAPSHOTS=$PWD/snapshots
+          # pair_live：真的主机（这个 lolidesk）、真的网络，app 的模型连上本机、设备请求配对、按同意、访问页里有它
+          cargo build --locked -p lolidesk --target ${{ matrix.target }}
+          export LOLIDESK_BIN=$PWD/target/${{ matrix.target }}/debug/lolidesk
           cargo test --locked --workspace --target ${{ matrix.target }}
 
       - uses: actions/upload-artifact@v5
