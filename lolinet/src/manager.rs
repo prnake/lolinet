@@ -50,7 +50,7 @@ impl Manager {
         let mut st = Settings::load();
         if let Some(m) = flag {
             let (url, ip) = parse(m)?;
-            if unsafe { nix::libc::geteuid() } == 0 {
+            if crate::sys::is_root() {
                 st.manager = Some(url.clone());
                 st.manager_ip = ip.clone();
                 st.save()?;

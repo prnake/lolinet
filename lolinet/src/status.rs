@@ -32,6 +32,17 @@ fn pad(text: &str, width: usize) -> String {
 
 pub fn show() -> Result<()> {
     println!("lolinet {VERSION} · EasyTier {}", easytier::common::constants::EASYTIER_VERSION);
+    if cfg!(not(unix)) {
+        // Windows 第一步：还没有服务、自动升级、探针（docs/design.md 的 Windows 一节），只看内核
+        println!("服务    Windows 上还没有：前台跑 lolinet core -c <配置>（无 TUN 入网）");
+    } else {
+        services();
+    }
+    kernel()
+}
+
+/// 服务、升级、探针、mihomo（Unix）
+fn services() {
     match service::state() {
         Some(st) if st.running => println!(
             "服务    运行中 · {}{}",
@@ -68,6 +79,10 @@ pub fn show() -> Result<()> {
         };
         println!("mihomo  {m} · {st}");
     }
+}
+
+/// 内核：本机、模式、凭证、出口、接入点和设备（经管理口问）
+fn kernel() -> Result<()> {
     let (Some(node), Some(Value::Array(peers))) = (node(), cli_json("peer")) else {
         println!("内核    管理口 {RPC} 连不上");
         return Ok(());
