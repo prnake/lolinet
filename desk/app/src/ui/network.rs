@@ -209,7 +209,7 @@ impl Render for NetworkPage {
                             .child(section(
                                 "本机",
                                 None,
-                                node_card(node, st.exit, &job, &output, &model),
+                                node_card(node, st, &job, &output, &model),
                             ))
                             .child(peers_section(peers));
                     }
@@ -437,11 +437,12 @@ fn two_lines(top: impl IntoElement, sub: impl IntoElement) -> Div {
 
 fn node_card(
     node: &Node,
-    exit: Option<u16>,
+    st: &Status,
     job: &Option<NetJob>,
     output: &Option<(NetJob, bool, String)>,
     model: &Entity<Model>,
 ) -> Div {
+    let exit = st.exit;
     let mode = if node.userspace {
         format!("{} · 本机程序经 socks5://127.0.0.1:18080 进网", node.ip)
     } else {
@@ -469,8 +470,26 @@ fn node_card(
     };
     let failed = output
         .as_ref()
-        .filter(|(j, ok, _)| matches!(j, NetJob::Exit(_)) && !ok)
+        .filter(|(j, ok, _)| matches!(j, NetJob::Exit(_) | NetJob::Mihomo(_)) && !ok)
         .map(|(_, _, text)| card_row(false).child(output_box(false, text).flex_1()));
+    // 分流：mihomo 当系统服务跑，规则（直连、拒绝、从哪台出去）由管理面的「分流」页下发
+    let mihomo_busy = matches!(job, Some(NetJob::Mihomo(_)));
+    let mihomo_on = st.mihomo.is_some();
+    let mihomo_note = match &st.mihomo {
+        Some(mode) => format!(
+            "这台的流量按管理面「分流」页的规则走（mihomo，{}），规则每 10 分钟经内网取",
+            if mode == "userspace" { "无 TUN 模式" } else { "TUN 模式" }
+        ),
+        None => "开了以后这台的流量按管理面「分流」页走：网内走 lolinet，有的直连、有的拒绝、有的从指定的机器出去".into(),
+    };
+    let mihomo_toggle = {
+        let model = model.clone();
+        switch("net-mihomo", mihomo_on, mihomo_busy).when(!mihomo_busy && !busy, |s| {
+            s.on_click(move |_, _, cx| {
+                model.update(cx, |m, cx| m.run_net_job(NetJob::Mihomo(!mihomo_on), cx))
+            })
+        })
+    };
     card()
         .child(
             card_row(true)
@@ -503,6 +522,19 @@ fn node_card(
                 ))
                 .when(busy, |r| r.child(Spinner::new().color(fg3())))
                 .child(toggle),
+        )
+        .child(
+            card_row(false)
+                .child(tile(ic::GLOBE))
+                .child(two_lines(
+                    div()
+                        .text_size(T_SM)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("分流"),
+                    div().text_size(T_XS).text_color(fg3()).child(mihomo_note),
+                ))
+                .when(mihomo_busy, |r| r.child(Spinner::new().color(fg3())))
+                .child(mihomo_toggle),
         )
         .children(failed)
 }

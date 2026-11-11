@@ -29,6 +29,8 @@ const CONFIGS: [&str; 2] = ["/etc/lolinet/loli.toml", "/etc/easytier/loli.toml"]
 const EXIT_JSON: &str = "/etc/lolinet/exit.json";
 /// 出口节点的默认端口（`lolinet exit on`）
 pub const EXIT_PORT: u16 = 10180;
+/// mihomo 服务的设置（`lolinet mihomo on` 写的，644）：开着才有
+const MIHOMO_JSON: &str = "/etc/lolinet/mihomo.json";
 /// Linux：以 root 跑命令（polkit）
 pub const PKEXEC: &str = "/usr/bin/pkexec";
 /// Linux 的包里，lolidesk-app 旁边的东西（包根目录：lolidesk、libghostty-vt.so、BUILD-INFO，再加这几个）
@@ -99,6 +101,8 @@ pub struct Status {
     pub kernel: Kernel,
     /// 出口节点开着：端口
     pub exit: Option<u16>,
+    /// 分流（mihomo 服务）开着：模式（tun / userspace）
+    pub mihomo: Option<String>,
     pub shell: Shell,
 }
 
@@ -189,6 +193,14 @@ pub fn parse_exit(text: &str) -> u16 {
         .and_then(|v| v.get("port").and_then(Value::as_u64))
         .and_then(|p| u16::try_from(p).ok())
         .unwrap_or(EXIT_PORT)
+}
+
+/// mihomo.json 的模式（文件在就是开着）
+pub fn parse_mihomo(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.get("mode").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| "tun".into())
 }
 
 // ---------------------------------------------------------------- 邀请
@@ -435,6 +447,17 @@ pub fn pkexec_exit(on: bool) -> Vec<String> {
     vec![PKEXEC.into(), BIN.into(), "exit".into(), what.into()]
 }
 
+/// Linux：pkexec 跑 `/usr/local/bin/lolinet mihomo on [--bin <app 带的 mihomo>]|off`（先查过 lolinet 是 root 的）。
+/// lolinet 把给的 mihomo 拷成 root 的再跑，不直接以 root 跑这个路径
+pub fn pkexec_mihomo(on: bool, bin: Option<&str>) -> Vec<String> {
+    let mut v: Vec<String> = vec![PKEXEC.into(), BIN.into(), "mihomo".into()];
+    v.push(if on { "on" } else { "off" }.into());
+    if let (true, Some(b)) = (on, bin) {
+        v.extend(["--bin".into(), b.into()]);
+    }
+    v
+}
+
 /// Linux：pkexec 把包里的 lolidesk 链到 /usr/local/bin/lolidesk（-n：那里是指向目录的链接也直接换掉）
 pub fn pkexec_link(helper: &str) -> Vec<String> {
     vec![
@@ -529,6 +552,8 @@ pub trait Lolinet: Send + Sync {
     fn join(&self, target: &JoinTarget) -> Result<String>;
     /// `lolinet exit on|off`（管理员）
     fn set_exit(&self, on: bool) -> Result<String>;
+    /// `lolinet mihomo on|off`（管理员）：分流按管理面下发的规则走；开的时候用 app 带的 mihomo
+    fn set_mihomo(&self, on: bool) -> Result<String>;
     /// 把 app 里的 lolidesk 链到 /usr/local/bin/lolidesk（管理员）
     fn install_cli(&self) -> Result<String>;
     /// Linux：把这个包里的 app 加到应用菜单（不要管理员）
@@ -697,6 +722,9 @@ impl Lolinet for System {
         let exit = std::fs::read_to_string(EXIT_JSON)
             .ok()
             .map(|t| parse_exit(&t));
+        let mihomo = std::fs::read_to_string(MIHOMO_JSON)
+            .ok()
+            .map(|t| parse_mihomo(&t));
         let kernel = match Self::find() {
             None => Kernel::Missing,
             Some(bin) => match cli_json(&bin, "node") {
@@ -715,6 +743,7 @@ impl Lolinet for System {
         Status {
             kernel,
             exit,
+            mihomo,
             shell: Self::shell(),
         }
     }
@@ -753,6 +782,27 @@ impl Lolinet for System {
         }
         let what = if on { "on" } else { "off" };
         run_admin(&format!("{} exit {what} 2>&1", sh_quote(BIN)))
+    }
+
+    fn set_mihomo(&self, on: bool) -> Result<String> {
+        // 同 set_exit：只以 root 跑 root 的 /usr/local/bin/lolinet
+        let bin = Path::new(BIN);
+        root_owned(bin).with_context(|| format!("{BIN} 不能以管理员身份跑"))?;
+        // app 带的 mihomo（macOS：Contents/Helpers/mihomo，和 lolidesk 放一起）；没带就让 lolinet 自己找系统里装的
+        let mihomo = Self::helper()
+            .and_then(|h| h.parent().map(|d| d.join("mihomo")))
+            .filter(|p| p.is_file())
+            .map(|p| safe_path(&p))
+            .transpose()?;
+        if !cfg!(target_os = "macos") {
+            return run_pkexec(&pkexec_mihomo(on, mihomo.as_deref()));
+        }
+        let what = match (on, &mihomo) {
+            (true, Some(m)) => format!("on --bin {}", sh_quote(m)),
+            (true, None) => "on".into(),
+            (false, _) => "off".into(),
+        };
+        run_admin(&format!("{} mihomo {what} 2>&1", sh_quote(BIN)))
     }
 
     fn install_cli(&self) -> Result<String> {
@@ -944,6 +994,31 @@ mod tests {
             pkexec_exit(false),
             ["/usr/bin/pkexec", "/usr/local/bin/lolinet", "exit", "off"]
         );
+        // 分流：开的时候把 app 带的 mihomo 当一个参数给（lolinet 拷成 root 的再跑），关不带
+        assert_eq!(
+            pkexec_mihomo(true, Some("/opt/my apps/mihomo")),
+            [
+                "/usr/bin/pkexec",
+                "/usr/local/bin/lolinet",
+                "mihomo",
+                "on",
+                "--bin",
+                "/opt/my apps/mihomo"
+            ]
+        );
+        assert_eq!(
+            pkexec_mihomo(true, None),
+            ["/usr/bin/pkexec", "/usr/local/bin/lolinet", "mihomo", "on"]
+        );
+        assert_eq!(
+            pkexec_mihomo(false, Some("/x/mihomo")),
+            ["/usr/bin/pkexec", "/usr/local/bin/lolinet", "mihomo", "off"]
+        );
+        assert_eq!(
+            parse_mihomo(r#"{"bin": "/etc/lolinet/mihomo/mihomo", "mode": "userspace"}"#),
+            "userspace"
+        );
+        assert_eq!(parse_mihomo("{}"), "tun");
         // 路径原样是一个参数：空格、引号、分号都不经 shell
         let odd = "/home/u/my apps/it's;x/lolidesk";
         assert_eq!(

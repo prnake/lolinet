@@ -767,6 +767,9 @@ mod gui {
         fn set_exit(&self, _: bool) -> anyhow::Result<String> {
             anyhow::bail!("测试里不开出口节点")
         }
+        fn set_mihomo(&self, _: bool) -> anyhow::Result<String> {
+            anyhow::bail!("测试里不开分流")
+        }
         fn install_cli(&self) -> anyhow::Result<String> {
             anyhow::bail!("测试里不装命令行")
         }
@@ -810,6 +813,7 @@ mod gui {
                 ],
             },
             exit: Some(10180),
+            mihomo: Some("tun".into()),
             shell: shell(true, false),
         }
     }
@@ -838,6 +842,7 @@ mod gui {
         let status = NetStatus {
             kernel: Kernel::NotJoined,
             exit: None,
+            mihomo: None,
             shell: shell(true, false),
         };
         let (handle, ws, _) = open_network(&mut cx, status);
@@ -883,6 +888,7 @@ mod gui {
         let status = NetStatus {
             kernel: Kernel::Down("dial tcp 127.0.0.1:15888: connection refused".into()),
             exit: None,
+            mihomo: None,
             shell: shell(true, true),
         };
         let (handle, _, _) = open_network(&mut cx, status);

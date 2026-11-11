@@ -373,6 +373,8 @@ pub struct NetState {
 pub enum NetJob {
     Join(JoinTarget),
     Exit(bool),
+    /// 分流（mihomo 服务）开 / 关
+    Mihomo(bool),
     InstallCli,
     /// Linux：加到应用菜单
     InstallMenu,
@@ -1884,7 +1886,7 @@ impl Model {
         .detach();
     }
 
-    /// 要管理员密码的事（入网、出口节点、装命令行）：在后台跑，跑完记下输出、再读一次状态。
+    /// 要管理员密码的事（入网、出口节点、分流、装命令行）：在后台跑，跑完记下输出、再读一次状态。
     pub fn run_net_job(&mut self, job: NetJob, cx: &mut Context<Self>) {
         let Some(backend) = self.net.backend.clone() else {
             return;
@@ -1899,6 +1901,7 @@ impl Model {
             match &j {
                 NetJob::Join(t) => backend.join(t),
                 NetJob::Exit(on) => backend.set_exit(*on),
+                NetJob::Mihomo(on) => backend.set_mihomo(*on),
                 NetJob::InstallCli => backend.install_cli(),
                 NetJob::InstallMenu => backend.install_menu(),
             }
@@ -1915,6 +1918,10 @@ impl Model {
                     (NetJob::Join(_), true) => Some((ToastKind::Success, "已加入网络".to_string())),
                     (NetJob::Exit(true), true) => Some((ToastKind::Success, "出口节点开了".into())),
                     (NetJob::Exit(false), true) => Some((ToastKind::Info, "出口节点关了".into())),
+                    (NetJob::Mihomo(true), true) => {
+                        Some((ToastKind::Success, "分流开了：按管理面的规则走".into()))
+                    }
+                    (NetJob::Mihomo(false), true) => Some((ToastKind::Info, "分流关了".into())),
                     (NetJob::InstallCli, true) => {
                         Some((ToastKind::Success, "lolidesk 装到命令行了".into()))
                     }
