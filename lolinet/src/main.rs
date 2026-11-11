@@ -412,13 +412,20 @@ fn up(
         if let Some(u) = userspace {
             text = netcfg::set_mode(&text, u);
         }
+        // 装着 mihomo 服务：它经回环 SOCKS5 进网，切回 TUN 也别把这个口关了
+        if mihomo::installed().is_some() {
+            text = netcfg::set_socks(&text, true);
+        }
         write_config(&text)?;
         println!("配置 {} -> {CONFIG}", src.display());
     } else if !Path::new(CONFIG).exists() {
         bail!("没有配置：sudo lolinet up -c <配对得到的 loli.toml>");
     } else if let Some(u) = userspace {
         let text = fs::read_to_string(CONFIG)?;
-        let new = netcfg::set_mode(&text, u);
+        let mut new = netcfg::set_mode(&text, u);
+        if mihomo::installed().is_some() {
+            new = netcfg::set_socks(&new, true);
+        }
         if new != text {
             write_config(&new)?;
         }
@@ -475,7 +482,7 @@ fn up(
 }
 
 /// 换配置前先让 easytier-core 检查一遍：检查过的才换上（先写同目录临时文件，600）
-fn write_config(text: &str) -> Result<()> {
+pub(crate) fn write_config(text: &str) -> Result<()> {
     let check = format!("{CONFIG}.check");
     write_file(&check, text.as_bytes(), 0o600)?;
     let ok = tool("easytier-core").arg("--check-config").arg("-c").arg(&check).status()?.success();

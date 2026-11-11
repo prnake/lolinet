@@ -128,6 +128,16 @@ pub fn local_socks() -> Option<String> {
     if !userspace(&conf) {
         return None;
     }
+    socks_of(&conf)
+}
+
+/// 本机内核开着的回环 SOCKS5，不管哪种模式（TUN 模式下 lolinet mihomo on 会开）
+pub fn local_socks_any() -> Option<String> {
+    socks_of(&node_config()?)
+}
+
+/// 配置文本里 socks5_proxy 的地址部分（127.0.0.1:18080）
+fn socks_of(conf: &str) -> Option<String> {
     conf.lines().find_map(|l| {
         let v = l.trim().strip_prefix("socks5_proxy")?.trim_start().strip_prefix('=')?.trim().trim_matches('"');
         Some(v.trim_start_matches("socks5://").trim_end_matches('/').to_owned())

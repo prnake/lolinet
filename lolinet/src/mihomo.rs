@@ -1,7 +1,10 @@
 //! `lolinet mihomo`：问内网管理面要这台电脑的 mihomo 配置（docs/design.md「mihomo on phones and desktops」）。
 //! 网内地址走 lolinet，规则（拒绝 / 直连 / 经出口）和出口节点由管理面集中下发，mihomo 每 10 分钟经内网自己取。
-//! - TUN 模式：网内地址走系统路由（lolinet 的网卡），mihomo 的 TUN 让开 overlay 网段；
+//! - TUN 模式：两个 TUN，mihomo 的让开 overlay 网段，普通程序访问网内直接走 lolinet 的网卡；
 //! - userspace 模式：mihomo 当唯一的 TUN，网内地址交给本机 127.0.0.1:18080 的 SOCKS5。
+//! 两种模式下 mihomo 自己拨出去的连接（出口节点、拉规则、走 7890 端口的程序访问网内）都经 127.0.0.1:18080：
+//! mihomo 开了 auto-detect-interface 后，往外拨的连接都绑在物理网卡上（只有回环例外），直接拨 10.188.x.x 到不了
+//! lolinet 的 TUN。所以 TUN 模式下 `lolinet mihomo on` 也给 lolinet 打开这个回环 SOCKS5。
 //!
 //! `sudo lolinet mihomo on`：把 mihomo 跑成系统服务（TUN 要 root）：co.lo-li.lolinet-mihomo / lolinet-mihomo.service，
 //! 工作目录 /etc/lolinet/mihomo（config.yaml + mihomo 自己下载的规则、地理库）。lolinet 不带 mihomo（体积）：
@@ -16,7 +19,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
-use crate::{manager, service, write_file};
+use crate::{CONFIG, manager, netcfg, service, write_file};
 
 pub const DIR: &str = "/etc/lolinet/mihomo";
 pub const SETTINGS: &str = "/etc/lolinet/mihomo.json";
@@ -44,7 +47,24 @@ pub fn run(mode: Option<String>, out: Option<PathBuf>, manager_flag: Option<Stri
         }
         None => print!("{body}"),
     }
+    if mode == "tun" && manager::local_socks_any().is_none() {
+        eprintln!(
+            "注意：这份配置经 lolinet 的 127.0.0.1:18080 进网，这台的 lolinet 还没开它。sudo lolinet mihomo on 会开，\
+             自己跑 mihomo 的话先 sudo lolinet up --userspace，或者等 mihomo on 帮你开"
+        );
+    }
     Ok(())
+}
+
+/// TUN 模式下给 lolinet 打开回环 SOCKS5（改了配置就重启 lolinet）。返回改没改
+pub fn ensure_socks() -> Result<bool> {
+    let text = fs::read_to_string(CONFIG).with_context(|| format!("读 {CONFIG}"))?;
+    let net = netcfg::Net::parse(&text)?;
+    if net.socks.is_some() {
+        return Ok(false);
+    }
+    crate::write_config(&netcfg::set_socks(&text, true))?;
+    Ok(true)
 }
 
 /// 找 mihomo：--bin、Lolidesk.app 里带的、系统里装的
@@ -83,6 +103,10 @@ pub fn on(bin: Option<PathBuf>, mode: Option<String>, manager_flag: Option<Strin
     let ver = version(&bin)?;
     let mode = mode.unwrap_or_else(|| manager::mode().to_owned());
     let body = fetch(&mode, manager_flag.as_deref())?;
+    if ensure_socks()? {
+        service::restart()?;
+        println!("lolinet 打开了 127.0.0.1:18080（mihomo 经它进网），已重启 lolinet");
+    }
     fs::create_dir_all(DIR)?;
     // 先写到旁边检查（mihomo -t），过了才换上
     let staging = format!("{DIR}/config.yaml.new");

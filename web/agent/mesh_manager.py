@@ -320,21 +320,36 @@ def exit_proxies(exits: list, order: list, via: str | None) -> str:
 
 
 def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | None = None) -> str:
-    """mode：phone（mihomo 经 WireGuard 进网）、userspace（电脑，lolinet 无 TUN，经本机 SOCKS5 进网）、
-    tun（电脑，lolinet 有 TUN：网内地址直接走系统路由，mihomo 的 TUN 让开 overlay 网段）"""
+    """mode：phone（mihomo 经 WireGuard 进网）、userspace（电脑，lolinet 无 TUN，mihomo 是唯一的 TUN）、
+    tun（电脑，两个 TUN：mihomo 的让开 overlay 网段，普通程序访问网内直接走 lolinet 的 TUN）。
+
+    电脑上 mihomo 自己拨出去的连接（出口节点、从管理面拉规则、走 7890 端口的程序访问网内）一律经 lolinet 在回环上的
+    SOCKS5（127.0.0.1:18080）：mihomo 开了 auto-detect-interface 后，每条往外拨的连接都绑在物理网卡上
+    （macOS IP_BOUND_IF / Linux SO_BINDTODEVICE），只有回环这类地址例外，10.x 也会被绑，就到不了 lolinet 的 TUN。
+    TUN 模式下 lolinet mihomo on 会给 lolinet 打开这个口。
+    dns-hijack + sniffer：进 TUN 的流量也认得出域名，集中下发的 DOMAIN 规则才对它生效。
+    lolinet 自己连 relay 的底层流量（relay 公网地址、lolinet / easytier-core 进程）放在最前面直连，
+    不会被规则送进出口或拒绝（EasyTier 本来也把 socket 绑在物理网卡上，这是第二道保险）。"""
     net = cfg["network"]
     cidr = net.get("cidr", "10.188.0.0/16")
-    overlay = "DIRECT" if mode == "tun" else "lolinet"
-    via = "" if mode == "tun" else "?via=lolinet"
-    fetch_via = "DIRECT" if mode == "tun" else "lolinet"
     host = urlsplit(manager).hostname or ""
-    out = [f"# {title} · mihomo 配置（{ {'phone': '手机，经 WireGuard 进网', 'userspace': '电脑，lolinet 无 TUN', 'tun': '电脑，lolinet TUN'}[mode] }）",
+    desktop = mode in ("tun", "userspace")
+    label = {"phone": "手机，经 WireGuard 进网", "userspace": "电脑，lolinet 无 TUN，mihomo 是唯一的 TUN",
+             "tun": "电脑，lolinet 和 mihomo 各一个 TUN"}[mode]
+    out = [f"# {title} · mihomo 配置（{label}）",
            "# 网内地址走 lolinet；规则和出口节点由管理面集中下发（rule-providers / proxy-providers，经内网取）。",
            "# 想和自己的订阅合用：把下面的 proxies、proxy-providers、rule-providers 和 rules 的前几条并进去，网内那几条放最前。",
-           "mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: warning", "ipv6: true", "unified-delay: true", ""]
-    if mode == "tun":
+           "mixed-port: 7890", "allow-lan: false", "mode: rule", "log-level: warning", "ipv6: true", "unified-delay: true",
+           "find-process-mode: strict", ""]
+    if desktop:
         out += ["tun:", "  enable: true", "  stack: mixed", "  auto-route: true", "  auto-detect-interface: true",
-                f"  route-exclude-address: [{y(cidr)}]", ""]
+                "  dns-hijack: [any:53, tcp://any:53]"]
+        if mode == "tun":
+            # 网内网段交给 lolinet 的 TUN（系统路由），mihomo 的 TUN 不抢
+            out.append(f"  route-exclude-address: [{y(cidr)}]")
+        out.append("")
+    out += ["sniffer:", "  enable: true", "  parse-pure-ip: true", "  sniff:", "    TLS: {ports: [443, 8443]}",
+            "    HTTP: {ports: [80, 8080-8880], override-destination: true}", "    QUIC: {ports: [443, 8443]}", ""]
     out += ["dns:", "  enable: true", "  enhanced-mode: fake-ip", "  fake-ip-range: 198.18.0.1/16",
             f"  fake-ip-filter: [{y('+.lan')}, {y('+.local')}{', ' + y('+.' + net['edge_zone']) if net.get('edge_zone') else ''}]",
             "  nameserver: [https://223.5.5.5/dns-query, https://1.1.1.1/dns-query]", ""]
@@ -344,23 +359,30 @@ def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | Non
         out += ["  - name: lolinet", "    type: wireguard", f"    server: {y(w['server'])}", f"    port: {int(w['port'])}",
                 f"    ip: {y(w['ip'])}", f"    private-key: {y(w['private_key'])}", f"    public-key: {y(w['public_key'])}",
                 f"    allowed-ips: [{y(cidr)}]", "    udp: true", "    mtu: 1280", "    persistent-keepalive: 25"]
-    elif mode == "userspace":
-        out += ["  - {name: lolinet, type: socks5, server: 127.0.0.1, port: 18080, udp: true}"]
     else:
-        out[-1] = "proxies: []"
-    out += ["", "proxy-providers:", "  lolinet-exits:", "    type: http", f"    url: {y(manager + '/api/mesh/mihomo/proxies.yaml' + via)}",
-            "    path: ./lolinet/exits.yaml", "    interval: 600", f"    proxy: {fetch_via}",
+        out += ["  - {name: lolinet, type: socks5, server: 127.0.0.1, port: 18080, udp: true}"]
+    out += ["", "proxy-providers:", "  lolinet-exits:", "    type: http", f"    url: {y(manager + '/api/mesh/mihomo/proxies.yaml?via=lolinet')}",
+            "    path: ./lolinet/exits.yaml", "    interval: 600", "    proxy: lolinet",
             "    health-check: {enable: true, url: https://cp.cloudflare.com/generate_204, interval: 600, lazy: true}",
             "", "proxy-groups:", f"  - name: {y(EXIT_GROUP)}", "    type: select", "    use: [lolinet-exits]", "", "rule-providers:"]
     for k in RULE_SETS:
         out += [f"  lolinet-{k}:", "    type: http", "    behavior: classical", "    format: yaml",
                 f"    url: {y(manager + '/api/mesh/mihomo/rules/' + k + '.yaml')}", f"    path: ./lolinet/{k}.yaml",
-                "    interval: 600", f"    proxy: {fetch_via}"]
-    out += ["", "rules:", f"  - IP-CIDR,{cidr},{overlay},no-resolve"]
+                "    interval: 600", "    proxy: lolinet"]
+    out += ["", "rules:"]
+    if desktop:
+        out += ["  - PROCESS-NAME,lolinet,DIRECT", "  - PROCESS-NAME,easytier-core,DIRECT"]
+        for r in cfg["relays"]:
+            try:
+                ip = ipaddress.ip_address(str(r.get("eip") or ""))
+            except ValueError:
+                continue
+            out.append(f"  - IP-CIDR,{ip}/32,DIRECT,no-resolve" if ip.version == 4 else f"  - IP-CIDR6,{ip}/128,DIRECT,no-resolve")
+    out.append(f"  - IP-CIDR,{cidr},lolinet,no-resolve")
     if host:
-        out.append(f"  - DOMAIN,{host},{overlay}")
+        out.append(f"  - DOMAIN,{host},lolinet")
     if net.get("local_suffix"):
-        out.append(f"  - DOMAIN-REGEX,^[a-z0-9-]+{re.escape(net['local_suffix'])}$,{overlay}")
+        out.append(f"  - DOMAIN-REGEX,^[a-z0-9-]+{re.escape(net['local_suffix'])}$,lolinet")
     out += ["  - RULE-SET,lolinet-reject,REJECT", "  - RULE-SET,lolinet-direct,DIRECT", f"  - RULE-SET,lolinet-exit,{EXIT_GROUP}",
             "  - MATCH,DIRECT", ""]
     return "\n".join(out)

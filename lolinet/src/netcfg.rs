@@ -57,8 +57,14 @@ impl Net {
 
 /// 切模式：userspace 加 socks5_proxy 和 [flags] no_tun = true，TUN 把两项去掉
 pub fn set_mode(text: &str, userspace: bool) -> String {
-    let t = set_top(text, "socks5_proxy", userspace.then(|| format!("\"socks5://{SOCKS}\"")));
+    let t = set_socks(text, userspace);
     set_in(&t, "flags", "no_tun", userspace.then(|| "true".to_owned()))
+}
+
+/// 本机回环上的 SOCKS5 入口（127.0.0.1:18080）开 / 关，不动模式。TUN 模式下 mihomo 要它：
+/// mihomo 自己拨出去的连接都绑在物理网卡上，到不了 lolinet 的 TUN，只能经回环进网（见 mihomo.rs）
+pub fn set_socks(text: &str, on: bool) -> String {
+    set_top(text, "socks5_proxy", on.then(|| format!("\"socks5://{SOCKS}\"")))
 }
 
 fn key_of(line: &str) -> Option<&str> {

@@ -137,6 +137,13 @@ def cli_json(cli: str, rpc: int, *args: str):
     return json.loads(out.stdout)
 
 
+def t_order(text: str) -> bool:
+    keys = ["PROCESS-NAME,lolinet,DIRECT", "IP-CIDR,10.188.0.0/16,lolinet", "RULE-SET,lolinet-reject,REJECT",
+            "RULE-SET,lolinet-direct,DIRECT", "RULE-SET,lolinet-exit,", "MATCH,DIRECT"]
+    pos = [text.find(k) for k in keys]
+    return all(p >= 0 for p in pos) and pos == sorted(pos)
+
+
 def yaml_ok(text: str) -> bool:
     """有 PyYAML 用它，没有就用 ruby 的；都没有算过（只少一项语法检查）"""
     try:
@@ -353,8 +360,15 @@ private_mode = true
               and "IP-CIDR,10.188.0.0/16,lolinet,no-resolve" in outs["userspace"]
               and "DOMAIN-REGEX,^[a-z0-9-]+\\-local\\.edge\\.example\\.com$,lolinet" in outs["userspace"],
               "lolinet mihomo --mode userspace：网内地址交给本机 SOCKS5")
-        check("route-exclude-address" in outs["tun"] and "IP-CIDR,10.188.0.0/16,DIRECT,no-resolve" in outs["tun"] and "proxies: []" in outs["tun"],
-              "lolinet mihomo --mode tun：mihomo 的 TUN 让开 overlay 网段，网内地址直连")
+        tun, us = outs["tun"], outs["userspace"]
+        check("route-exclude-address" in tun and "type: socks5, server: 127.0.0.1, port: 18080" in tun
+              and "IP-CIDR,10.188.0.0/16,lolinet,no-resolve" in tun and "proxy: lolinet" in tun and "via=lolinet" in tun,
+              "lolinet mihomo --mode tun：mihomo 的 TUN 让开 overlay 网段；它自己拨的（出口、拉规则）经 lolinet 的回环 SOCKS5")
+        check(all("dns-hijack: [any:53, tcp://any:53]" in t and "sniffer:" in t and "PROCESS-NAME,lolinet,DIRECT" in t
+                  and "IP-CIDR,127.0.0.1/32,DIRECT,no-resolve" in t for t in (tun, us))
+              and "tun:" in us and "route-exclude-address" not in us,
+              "电脑两种配置都劫持 DNS、开 sniffer，lolinet 的底层流量（进程、relay 公网地址）最先直连；userspace 下 mihomo 是唯一的 TUN")
+        check(t_order(tun), "规则顺序：底层直连 → 网内 → 拒绝 → 直连 → 出口 → 其余直连")
         check(all(yaml_ok(v) for v in outs.values()), "两份电脑配置都是合法 YAML")
         if FAILS:
             print(outs["userspace"][:2500])
