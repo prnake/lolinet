@@ -109,15 +109,16 @@ pub fn show() -> Result<()> {
     Ok(())
 }
 
-/// TUN 还是 userspace；配置是 600，不是 root 读不到就问内核
+/// TUN 还是 userspace。配置是 600，不是 root 读不到，就问本机内核运行中的配置（管理口不要 root）
 fn mode() -> String {
+    let userspace = |socks: Option<String>| {
+        format!("userspace（无 TUN）· 本机程序经 socks5://{} 进网", socks.as_deref().unwrap_or(crate::netcfg::SOCKS))
+    };
     match fs::read_to_string(CONFIG).ok().and_then(|t| crate::netcfg::Net::parse(&t).ok()) {
-        Some(n) if n.userspace => format!(
-            "userspace（无 TUN）· 本机程序经 socks5://{} 进网",
-            n.socks.as_deref().unwrap_or(crate::netcfg::SOCKS)
-        ),
+        Some(n) if n.userspace => userspace(n.socks),
         Some(_) => "TUN".into(),
-        None => "（sudo 看得到）".into(),
+        None if crate::manager::mode() == "userspace" => userspace(crate::manager::local_socks()),
+        None => "TUN".into(),
     }
 }
 
