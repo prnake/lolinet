@@ -38,9 +38,9 @@ Any node can lend its internet connection to the rest of the network: `sudo loli
 
 Today pairing codes come from an admin with the console password (`scripts/pair.py`, or the manager's *Pair* page), and the admin picks the overlay address.
 
-The goal: **any member can invite**, and **the central server picks the address** (**planned**).
+The goal: **any member can invite**, and **the central server picks the address** (**built**).
 
-- **`lolinet invite [--name N] [--kind desktop|server|userspace|phone]`** asks the manager on the issuer relay, over the overlay, for a pairing code, and prints the `curl … | sudo sh -s CODE` line. The app's *Invite* button does the same.
+- **`lolinet invite [--name N] [--kind desktop|userspace|server]`** asks the manager on the issuer relay, over the overlay, for a pairing code, and prints the `curl … | sudo sh -s CODE` line. The app's *Invite* button (**planned**) does the same. Phones (`--kind phone`) come with the WireGuard portal.
 - **Addresses** come from the pool for the kind, from the same address plan as the node list (`10.188.1.0/24` servers, `10.188.16.0/20` desktops, `10.188.32.0/20` userspace, `10.188.48.0/20` phones). The manager skips every address in its device registry and in the live route table.
 - **Credentials** for member invitations are signed by the issuer relay itself, through its local EasyTier RPC, so no console session is needed. They are single-use and expire like admin-issued ones.
 - **Who is asking.** The request arrives over the overlay; its source address is the member's overlay address, and the manager checks that the route table has a peer with that address. Overlay addresses aren't cryptographically bound to credentials yet, so this is a convenience check, not a security boundary. Signing requests with the node's credential key is planned.

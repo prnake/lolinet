@@ -44,6 +44,9 @@ pub struct Settings {
     pub base_url: Option<String>,
     pub source: Option<String>,
     pub auto: bool,
+    /// 内网管理面（lolinet invite 问它要配对码）：https://manager.<edge_zone> 和签发 relay 的 overlay 地址
+    pub manager: Option<String>,
+    pub manager_ip: Option<String>,
 }
 
 impl Settings {
@@ -51,11 +54,23 @@ impl Settings {
     pub fn load() -> Self {
         let v: Value = fs::read(SETTINGS).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
         let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
-        Settings { base_url: s("base_url"), source: s("source"), auto: v.get("auto_upgrade").and_then(Value::as_bool).unwrap_or(true) }
+        Settings {
+            base_url: s("base_url"),
+            source: s("source"),
+            auto: v.get("auto_upgrade").and_then(Value::as_bool).unwrap_or(true),
+            manager: s("manager"),
+            manager_ip: s("manager_ip"),
+        }
     }
 
     pub fn save(&self) -> Result<()> {
-        let v = json!({ "base_url": self.base_url, "source": self.source, "auto_upgrade": self.auto });
+        let v = json!({
+            "base_url": self.base_url,
+            "source": self.source,
+            "auto_upgrade": self.auto,
+            "manager": self.manager,
+            "manager_ip": self.manager_ip,
+        });
         write_file(SETTINGS, format!("{}\n", serde_json::to_string_pretty(&v)?).as_bytes(), 0o644)
     }
 

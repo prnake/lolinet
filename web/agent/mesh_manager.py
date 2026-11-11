@@ -12,6 +12,11 @@
   再经准入站 Worker 的 /v1/manager/pair 放进 KV。设备的探针上报密钥找 Worker 要（/v1/manager/probe-key）。
   请求用 manager_key = HMAC(PROBE_MASTER, "manager") 签名，所以这台机器既没有 Cloudflare token，也没有主密钥。
 - 设置。配对默认值（凭据有效期、配对码有效期、默认接入点、传输、公开探针）和设备配置开关，存在 state 目录。
+- 成员邀请。网里任何一台成员都能要配对码（lolinet invite、Lolidesk.app 的「邀请」），不用控制台账号：
+  请求经 nginx 从 overlay 上来，来源地址就是成员的 overlay 地址，这里在路由表里找到它是哪台。地址按种类从地址池里分
+  （server 10.188.1.0/24、desktop 10.188.16.0/20、userspace 10.188.32.0/20），凭据由这台 relay 自己经本机 EasyTier RPC 签
+  （它的配置要有 credential_file，不然重启就丢）。谁能邀请什么、一天几次看 state 里的 policy.json。
+  overlay 地址目前没有和凭据密码学绑定，所以这是方便用的检查，不是安全边界；改成用节点凭据签请求在计划里（docs/design.md）。
 
   GET  /api/mesh/info                 不用登录：能力、是否已登录
   POST /api/v1/auth/login             控制台账号登录，成功后发会话 cookie
@@ -21,12 +26,15 @@
   POST /api/mesh/settings             保存设置
   POST /api/mesh/settings/preview     按草稿设置渲染一份示例配置（凭据和探针密钥是占位）
   POST /api/mesh/pair | forget
+  POST /api/mesh/invite               不用登录，只认 overlay 来源：{"kind", "name"?} -> 配对码（policy.json 管谁能要）
+  GET  /api/mesh/policy               登录后看 / POST 改
   *    /api/v1/...                    反代控制台（白名单和 mesh_agent 一样），带会话里的控制台 cookie
 
 文件:
   --config  /etc/mesh-manager/config.json      部署时生成、不含密钥：network、relays（EIP、EasyTier 端口）、base_url、network_id
   --secrets $CREDENTIALS_DIRECTORY/manager.json  {"manager_key", "devid_key"}（systemd LoadCredential，源文件 600）
-  --state   /var/lib/mesh-manager              settings.json、devices.json（设备登记，和 pair.py 的同一种格式）、forgotten.json
+  --state   /var/lib/mesh-manager              settings.json、devices.json（设备登记，和 pair.py 的同一种格式）、forgotten.json、
+                                               policy.json、invites.json（成员邀请的记录，算每天的次数）
 
 用法（本机试）:
   python3 web/agent/mesh_manager.py --config /tmp/m/config.json --secrets /tmp/m/manager.json --state /tmp/m/state \\
@@ -39,6 +47,7 @@ import datetime as dt
 import hashlib
 import hmac
 import http.server
+import ipaddress
 import json
 import os
 import re
@@ -65,6 +74,15 @@ PBKDF2_ITER = 200000  # 和 join/install.sh 的 openssl -iter 一致
 NAME_RE = agent.NAME_RE
 IP_RE = agent.IP_RE
 LOCATION_RE = re.compile(r"^[^\x00-\x1f<>\"\\]{1,32}$")
+# 地址池：和 nodes.example.yaml 的地址规划一致；节点清单的 network.pools 可以改
+POOLS = {"server": "10.188.1.0/24", "desktop": "10.188.16.0/20", "userspace": "10.188.32.0/20", "phone": "10.188.48.0/20"}
+KINDS = ("server", "desktop", "userspace")  # phone 走 WireGuard 入口，还没做
+DEFAULT_POLICY = {
+    "invite": "members",                        # members：成员都能邀请；admins：只有登录了控制台账号的
+    "member_kinds": ["desktop", "userspace"],   # 成员能邀请的种类；server 默认只给管理员
+    "per_day": 20,                              # 每个成员每天最多几个
+    "deny": [],                                 # 不让邀请的成员（主机名）
+}
 
 
 # ---------- 状态文件 ----------
@@ -139,14 +157,55 @@ def check_settings(cfg: dict, d) -> tuple[dict | None, str | None]:
                      "transport": p["transport"], "probe": p["probe"]}, "device": flags}, None
 
 
+def check_policy(d) -> tuple[dict | None, str | None]:
+    if not isinstance(d, dict):
+        return None, "策略要是 JSON 对象"
+    p = {**DEFAULT_POLICY, **{k: v for k, v in d.items() if k in DEFAULT_POLICY}}
+    if p["invite"] not in ("members", "admins"):
+        return None, "invite 只能是 members 或 admins"
+    if not isinstance(p["member_kinds"], list) or not all(k in KINDS for k in p["member_kinds"]):
+        return None, f"member_kinds 只能从 {', '.join(KINDS)} 里选"
+    if not isinstance(p["per_day"], int) or not 0 <= p["per_day"] <= 1000:
+        return None, "per_day 是 0–1000 的整数"
+    if not isinstance(p["deny"], list) or not all(isinstance(x, str) and NAME_RE.match(x) for x in p["deny"]):
+        return None, "deny 是主机名列表"
+    return p, None
+
+
+def pools(cfg: dict) -> dict:
+    return {k: ipaddress.ip_network(v) for k, v in {**POOLS, **(cfg["network"].get("pools") or {})}.items()}
+
+
+def allocate(pool, used: set) -> str | None:
+    """池里第一个没人用的地址；末位 0 和 255 不用（看着像网段和广播，容易填错）"""
+    for ip in pool.hosts():
+        if ip.packed[3] in (0, 255):
+            continue
+        if str(ip) not in used:
+            return str(ip)
+    return None
+
+
+def used_addresses(store: "Store", snap: dict) -> set:
+    used = {d.get("overlay_ip") for d in store.read("devices.json", [])}
+    for p in (snap.get("peers") or []) + (snap.get("routes") or []):
+        for k in ("ipv4", "ipv4_addr"):
+            v = p.get(k) if isinstance(p, dict) else None
+            if isinstance(v, str) and v:
+                used.add(v.split("/")[0])
+    return {u for u in used if u}
+
+
 # ---------- 设备配置 ----------
 
 def q(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)  # ASCII 名字和 device_config.py 输出一样
 
 
-def render(cfg: dict, device: dict, name: str, ip: str, secret: str, peers: list[str], transport: str) -> str:
-    """和 scripts/device_config.py 的 render() 出同样的配置；开关来自设置。改一边要改另一边。"""
+def render(cfg: dict, device: dict, name: str, ip: str, secret: str, peers: list[str], transport: str,
+           userspace: bool = False) -> str:
+    """和 scripts/device_config.py 的 render() 出同样的配置；开关来自设置。改一边要改另一边。
+    userspace：无 TUN，和 lolinet up --userspace 写的两行一样（lolinet/src/netcfg.rs）"""
     net = cfg["network"]
     rs = {r["name"]: r for r in cfg["relays"]}
     lines = [
@@ -155,6 +214,7 @@ def render(cfg: dict, device: dict, name: str, ip: str, secret: str, peers: list
         f"ipv4 = {q(ip + '/16')}",
         "dhcp = false",
         "listeners = []",
+        *(['socks5_proxy = "socks5://127.0.0.1:18080"'] if userspace else []),
         "",
         "[network_identity]",
         f"network_name = {q(net['name'])}",
@@ -174,7 +234,7 @@ def render(cfg: dict, device: dict, name: str, ip: str, secret: str, peers: list
             udp_uri = f"udp://{host}:{r['et_port']}"
             lines += ["", "[[peer]]", f"# {p}.{net['edge_zone']} udp", f"uri = {q(udp_uri)}"]
     flags = ["private_mode = true"] + [f"{k} = true" for k in ("latency_first", "enable_kcp_proxy") if device.get(k)]
-    lines += ["", "[flags]", *flags, ""]
+    lines += ["", "[flags]", *(["no_tun = true"] if userspace else []), *flags, ""]
     return "\n".join(lines)
 
 
@@ -198,6 +258,14 @@ def encrypt(code: str, plain: bytes) -> str:
     if run(["-d"], blob) != plain:  # 设备上就是这样解的；对不上宁可不发
         raise RuntimeError("openssl 加解密自检没通过")
     return blob.decode().strip()
+
+
+class Refused(Exception):
+    """发不了配对码：HTTP 状态和给人看的原因"""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status, self.message = status, message
 
 
 # ---------- Worker ----------
@@ -307,6 +375,8 @@ class Manager(agent.Handler):
                 return self.info()
             if path == "/api/v1/auth/login" and method == "POST":
                 return self.login()
+            if path == "/api/mesh/invite" and method == "POST":
+                return self.invite()
             if path.startswith("/api/"):
                 sess = self.session()
                 if not sess:
@@ -412,6 +482,16 @@ class Manager(agent.Handler):
         if method == "POST" and what == "forget":
             req = self.json_body() or {}
             return self.send_json(*self.forget(str(req.get("credential_id", ""))))
+        if method == "GET" and what == "policy":
+            return self.send_json(200, {"policy": self.policy(), "defaults": DEFAULT_POLICY, "kinds": list(KINDS)})
+        if method == "POST" and what == "policy":
+            p, err = check_policy(self.json_body())
+            if err:
+                return self.send_json(400, {"message": err})
+            with self.store.lock:
+                self.store.write("policy.json", p)
+            self.audit("policy " + json.dumps(p, separators=(",", ":")))
+            return self.send_json(200, {"policy": p})
         return self.send_json(404, {"message": "not found"})
 
     # --- 设置 ---
@@ -442,37 +522,86 @@ class Manager(agent.Handler):
     # --- 配对 ---
 
     def pair(self, req: dict, sess: dict) -> tuple[int, dict]:
+        """管理员配对：登录者的控制台会话签凭据；地址不给就按种类从地址池里分"""
         if not self.worker:
             return 501, {"message": "没有 manager_key：部署时没下发 secrets，不能写配对包"}
         s = self.settings()["pair"]
-        name, ip = str(req.get("name", "")), str(req.get("ip", ""))
+        nid = self.cfg["network_id"]
+
+        def sign(cid: str, ttl_days: int) -> dict:
+            body = json.dumps({"ttl_seconds": ttl_days * 86400, "credential_id": cid, "reusable": False}).encode()
+            status, _, data = self.console.request("POST", f"/api/v1/networks/{nid}/credentials", body, "application/json", sess["console"])
+            if status == 401:
+                self.sessions.drop(self.token())
+                raise Refused(401, "控制台会话过期了，重新登录")
+            if status != 200:
+                raise Refused(502, f"控制台签凭据失败 {status}: {data[:200].decode(errors='replace')}")
+            return json.loads(data)
+
+        def revoke(cid: str) -> None:
+            self.console.request("DELETE", f"/api/v1/networks/{nid}/credentials/{cid}", None, None, sess["console"])
+
+        try:
+            return 200, self.issue(req, s, sign, revoke, by=sess["user"])
+        except Refused as e:
+            return e.status, {"message": e.message}
+
+    def issue(self, req: dict, s: dict, sign, revoke, by: str, kinds=KINDS) -> dict:
+        """校验参数、分地址、签凭据、渲染配置、加密进 KV、登记。sign(cid, ttl_days) -> {credential_id, credential_secret,
+        expiry_unix}；之后哪步失败就用 revoke(cid) 把刚签的凭据吊销，不留没人用的凭据。出错抛 Refused"""
+        kind = str(req.get("kind") or "desktop")
+        if kind not in kinds:
+            raise Refused(400, f"种类只能是 {'、'.join(kinds)}")
+        name, ip = str(req.get("name") or ""), str(req.get("ip") or "")
         try:
             ttl = int(req.get("ttl_days", s["ttl_days"]))
             minutes = int(req.get("code_minutes", s["code_minutes"]))
         except (TypeError, ValueError):
-            return 400, {"message": "有效期要是整数"}
+            raise Refused(400, "有效期要是整数") from None
         peers = req.get("peers") or s["peers"]
         transport = req.get("transport") or s["transport"]
         probe = req.get("probe", s["probe"])
         location = str(req.get("location") or "").strip()
-        m = IP_RE.match(ip)
         names = [r["name"] for r in self.cfg["relays"]]
-        if not NAME_RE.match(name):
-            return 400, {"message": "设备名只能用小写字母、数字和 -，32 个字符以内"}
-        if not m or not all(0 <= int(x) <= 255 for x in m.groups()) or m.group(2) in ("0", "255"):
-            return 400, {"message": "地址必须在 10.188.0.0/16 里"}
-        if not 1 <= ttl <= 365:
-            return 400, {"message": "凭据有效期 1–365 天"}
-        if not 1 <= minutes <= 1440:
-            return 400, {"message": "配对码有效期 1–1440 分钟"}
-        if not isinstance(peers, list) or not peers or not all(isinstance(p, str) and p in names for p in peers):
-            return 400, {"message": "接入点只能是节点清单里的 relay"}
-        if transport not in ("wss", "tcp"):
-            return 400, {"message": "传输只能是 wss 或 tcp"}
-        if location and not LOCATION_RE.match(location):
-            return 400, {"message": "位置是 32 个字符以内的城市名"}
+        with self.store.lock:
+            devices = self.store.read("devices.json", [])
+            taken = {d.get("name") for d in devices}
+            while not name or (name in taken and not req.get("name")):  # 没给名字：<种类>-<4 位十六进制>
+                name = f"{kind}-{secrets.token_hex(2)}"
+            if not ip:
+                ip = allocate(pools(self.cfg)[kind], used_addresses(self.store, self.snap.get())) or ""
+                if not ip:
+                    raise Refused(409, f"{kind} 的地址池 {pools(self.cfg)[kind]} 用完了")
+            # 先占上地址，签凭据和写 KV 要几秒，别让并发的邀请分到同一个
+            reserved = {"name": name, "overlay_ip": ip, "pending": True}
+            devices.append(reserved)
+            self.store.write("devices.json", devices)
+        try:
+            return self._issue(name, ip, kind, ttl, minutes, peers, transport, probe, location, names, sign, revoke, by)
+        finally:
+            with self.store.lock:
+                self.store.write("devices.json", [d for d in self.store.read("devices.json", []) if d != reserved])
 
-        # 先做没有副作用的：探针密钥。再签凭据；之后哪步失败就把刚签的凭据吊销掉，不留没人用的凭据
+    def _issue(self, name, ip, kind, ttl, minutes, peers, transport, probe, location, names, sign, revoke, by) -> dict:
+        m = IP_RE.match(ip)
+        if not NAME_RE.match(name):
+            raise Refused(400, "设备名只能用小写字母、数字和 -，32 个字符以内")
+        if any(d.get("name") == name and not d.get("pending") for d in self.store.read("devices.json", [])):
+            raise Refused(409, f"已经有叫 {name} 的设备了")
+        if not m or not all(0 <= int(x) <= 255 for x in m.groups()) or m.group(2) in ("0", "255"):
+            raise Refused(400, "地址必须在 10.188.0.0/16 里")
+        if not 1 <= ttl <= 365:
+            raise Refused(400, "凭据有效期 1–365 天")
+        if not 1 <= minutes <= 1440:
+            raise Refused(400, "配对码有效期 1–1440 分钟")
+        if not isinstance(peers, list) or not peers or not all(isinstance(p, str) and p in names for p in peers):
+            raise Refused(400, "接入点只能是节点清单里的 relay")
+        if transport not in ("wss", "tcp"):
+            raise Refused(400, "传输只能是 wss 或 tcp")
+        if location and not LOCATION_RE.match(location):
+            raise Refused(400, "位置是 32 个字符以内的城市名")
+
+        # 先做没有副作用的：探针密钥。再签凭据
         probe_cfg = None
         if probe is not False:
             dev_id = "d-" + hmac.new(bytes.fromhex(self.keys["devid_key"]), name.encode(), hashlib.sha256).hexdigest()[:10]
@@ -481,44 +610,127 @@ class Manager(agent.Handler):
                          "key": key, "near": peers[0]}
             if location:
                 probe_cfg["location"] = location
-        nid = self.cfg["network_id"]
         cid = f"{name}-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
-        body = json.dumps({"ttl_seconds": ttl * 86400, "credential_id": cid, "reusable": False}).encode()
-        status, _, data = self.console.request("POST", f"/api/v1/networks/{nid}/credentials", body, "application/json", sess["console"])
-        if status == 401:
-            self.sessions.drop(self.token())
-            return 401, {"message": "控制台会话过期了，重新登录"}
-        if status != 200:
-            return 502, {"message": f"控制台签凭据失败 {status}: {data[:200].decode(errors='replace')}"}
-        cred = json.loads(data)
+        cred = sign(cid, ttl)
         try:
-            config = render(self.cfg, self.settings()["device"], name, ip, cred["credential_secret"], peers, transport)
-            # 菜单栏 App 读这两行注释显示「账号」和「凭证剩余」；install.sh 把 probe 那行取出来装探针
+            config = render(self.cfg, self.settings()["device"], name, ip, cred["credential_secret"], peers, transport,
+                            userspace=kind == "userspace")
+            # 菜单栏 App 读这两行注释显示「账号」和「凭证剩余」；lolinet up 把 probe 那行存成探针配置、lolinet 那行存进
+            # /etc/lolinet/lolinet.json（lolinet invite 找这个管理面用）
             config += f"\n# credential_id = {cred['credential_id']}\n# credential_expiry_unix = {cred['expiry_unix']}\n"
             if probe_cfg:
                 config += f"# probe = {json.dumps(probe_cfg, separators=(',', ':'))}\n"
+            if self.manager_url():
+                config += f"# lolinet = {json.dumps({'manager': self.manager_url(), 'manager_ip': self.manager_ip()}, separators=(',', ':'))}\n"
             code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
             blob = encrypt(code, config.encode())
             put = self.worker.call("/v1/manager/pair", {"id": hashlib.sha256(code.encode()).hexdigest()[:32], "blob": blob,
                                                          "ttl": minutes * 60})
         except Exception:
-            self.console.request("DELETE", f"/api/v1/networks/{nid}/credentials/{cred['credential_id']}", None, None, sess["console"])
+            revoke(cred["credential_id"])
             raise
         with self.store.lock:
             devices = self.store.read("devices.json", [])
             devices.append({"name": name, "overlay_ip": ip, "credential_id": cred["credential_id"], "expiry_unix": cred["expiry_unix"],
-                            "paired_at": dt.datetime.now().isoformat(timespec="seconds"), "paired_by": sess["user"]})
+                            "kind": kind, "paired_at": dt.datetime.now().isoformat(timespec="seconds"), "paired_by": by})
             self.store.write("devices.json", devices)
         shown = "-".join(code[i:i + 4] for i in range(0, CODE_LEN, 4))
-        self.audit(f"pair {name} {ip} {cred['credential_id']} peers={','.join(peers)} {transport} probe={bool(probe_cfg)}")
-        return 200, {
+        self.audit(f"pair {name} {ip} {kind} {cred['credential_id']} peers={','.join(peers)} {transport} probe={bool(probe_cfg)} by={by}")
+        sudo = "sudo LOLINET_USERSPACE=1 sh" if kind == "userspace" else "sudo sh"
+        return {
             "name": name,
             "ip": ip,
+            "kind": kind,
             "code": shown,
             "credential_id": cred["credential_id"],
-            "command": f"curl -fsSL {self.cfg['base_url'].rstrip('/')}/i | sudo sh -s {shown}",
+            "command": f"curl -fsSL {self.cfg['base_url'].rstrip('/')}/i | {sudo} -s {shown}",
             "expires_at": int(put.get("expires_at") or time.time() + minutes * 60),
         }
+
+    # --- 成员邀请 ---
+
+    def manager_url(self) -> str | None:
+        if self.cfg.get("manager_url"):
+            return self.cfg["manager_url"].rstrip("/")
+        return f"https://{self.args.allow_host[0]}" if self.args.allow_host else None
+
+    def manager_ip(self) -> str | None:
+        if self.cfg.get("manager_ip"):
+            return self.cfg["manager_ip"]
+        issuer = self.cfg["network"].get("issuer")
+        return next((r.get("overlay_ip") for r in self.cfg["relays"] if r["name"] == issuer), None)
+
+    def policy(self) -> dict:
+        p, err = check_policy(self.store.read("policy.json", {}))
+        return p if not err else dict(DEFAULT_POLICY)
+
+    def member(self) -> dict | None:
+        """请求是哪台成员发的：来源地址（nginx 给的，就是成员的 overlay 地址）在路由表里对得上的那台"""
+        ip = self.client_ip()
+        snap = self.snap.get()
+        for p in (snap.get("peers") or []) + (snap.get("routes") or []):
+            if not isinstance(p, dict):
+                continue
+            addr = str(p.get("ipv4") or p.get("ipv4_addr") or "").split("/")[0]
+            if addr and addr == ip:
+                return {"name": str(p.get("hostname") or ""), "ip": ip}
+        return None
+
+    def local_signer(self):
+        """这台 relay 自己经本机 EasyTier RPC 签凭据。没配 credential_file 的话 EasyTier 只把凭据放内存，重启就丢，不签"""
+        node = agent.cli(self.args, ["node"]) or {}
+        if not re.search(r"^\s*credential_file\s*=", node.get("config") or "", re.M):
+            raise Refused(503, "签发 relay 的配置没有 credential_file：它签的凭据重启就丢，先在它的 loli.toml 里配上")
+
+        def sign(cid: str, ttl_days: int) -> dict:
+            out = agent.cli(self.args, ["credential", "generate", "--ttl", str(ttl_days * 86400), "--credential-id", cid,
+                                        "--reusable", "false"])
+            out = out[0] if isinstance(out, list) else out
+            return {"credential_id": out.get("credential_id") or cid, "credential_secret": out["credential_secret"],
+                    "expiry_unix": int(out.get("expiry_unix") or time.time() + ttl_days * 86400)}
+
+        def revoke(cid: str) -> None:
+            try:
+                agent.cli(self.args, ["credential", "revoke", cid])
+            except Exception:  # noqa: BLE001
+                pass
+
+        return sign, revoke
+
+    def invite(self):
+        """成员要配对码：不用登录，只认 overlay 来源（见文件头）"""
+        if not self.worker:
+            return self.send_json(501, {"message": "没有 manager_key：部署时没下发 secrets，不能写配对包"})
+        who = self.member()
+        if not who:
+            return self.send_json(403, {"message": f"{self.client_ip()} 不是网里的节点：邀请只能从内网要"})
+        req = self.json_body() or {}
+        kind = str(req.get("kind") or "desktop")
+        pol = self.policy()
+        if pol["invite"] != "members":
+            return self.send_json(403, {"message": "这个网只有管理员能发邀请（manager 的策略）"})
+        if who["name"] in pol["deny"]:
+            return self.send_json(403, {"message": f"{who['name']} 不能发邀请（manager 的策略）"})
+        if kind not in pol["member_kinds"]:
+            return self.send_json(403, {"message": f"成员只能邀请 {'、'.join(pol['member_kinds']) or '（没有）'}，{kind} 要找管理员"})
+        day = dt.date.today().isoformat()
+        with self.store.lock:
+            log = [x for x in self.store.read("invites.json", []) if x.get("day") == day]
+            if sum(1 for x in log if x.get("by") == who["ip"]) >= pol["per_day"]:
+                return self.send_json(429, {"message": f"今天的邀请用完了（每天 {pol['per_day']} 个）"})
+        # 成员只能决定名字和种类；有效期、接入点、传输、探针都按管理员的设置
+        clean = {"kind": kind, "name": str(req.get("name") or "")}
+        try:
+            sign, revoke = self.local_signer()
+            out = self.issue(clean, self.settings()["pair"], sign, revoke, by=f"{who['name'] or '?'}@{who['ip']}",
+                             kinds=tuple(pol["member_kinds"]))
+        except Refused as e:
+            return self.send_json(e.status, {"message": e.message})
+        with self.store.lock:
+            log = [x for x in self.store.read("invites.json", []) if x.get("day") == day]
+            log.append({"day": day, "by": who["ip"], "by_name": who["name"], "name": out["name"], "ip": out["ip"], "kind": kind})
+            self.store.write("invites.json", log)
+        return self.send_json(200, out)
 
     def forget(self, cid: str) -> tuple[int, dict]:
         with self.store.lock:

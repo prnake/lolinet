@@ -29,6 +29,7 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet probe [show\|send] [-c FILE]` *root* | Print what the public probe would report this round; `send` reports it once for real. Reads `/etc/lolinet/probe.json` |
 | `lolinet probe off` *root* | Take the device off the public page, remove the probe service and delete its config. Turning it back on needs a new pairing |
 | `lolinet probe run` | The probe service's entry point |
+| `lolinet invite [--kind desktop\|userspace\|server] [--name N] [--manager URL[@IP]] [--json]` | Ask the network's manager for a pairing code for another machine; the address is assigned centrally. No root and no console account: the manager knows this node by its overlay address. `--manager` is needed only on devices paired before this existed; run as root, it is remembered |
 | `lolinet exit` | Whether this node is an exit node, its address and service state |
 | `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node |
 | `lolinet exit off` *root* | Stop and remove it |
@@ -44,7 +45,7 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 
 | Option | |
 | :-- | :-- |
-| `-c, --config FILE` | Use this config (the `loli.toml` from pairing). It is copied to `/etc/lolinet/loli.toml` with mode 600. A `# probe = {…}` line is moved to `/etc/lolinet/probe.json` and the probe installed; without one, an installed probe is left alone |
+| `-c, --config FILE` | Use this config (the `loli.toml` from pairing). It is copied to `/etc/lolinet/loli.toml` with mode 600. A `# probe = {…}` line is moved to `/etc/lolinet/probe.json` and the probe installed; without one, an installed probe is left alone. A `# lolinet = {…}` line (the manager's address) goes to `/etc/lolinet/lolinet.json` |
 | `--base-url URL` | The join site. Also read from `LOLINET_BASE_URL`; `install.sh` passes it this way |
 | `--upgrade-source SRC` | `github:<owner>/<repo>`, a manifest URL, or `base` to use the join site |
 | `--auto-upgrade on\|off` | The 6-hourly upgrade check. On by default |
@@ -67,7 +68,7 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 | :-- | :-- |
 | `/usr/local/bin/lolinet` | The binary |
 | `/etc/lolinet/loli.toml` | EasyTier config, mode 600. The last lines hold `# credential_id` and `# credential_expiry_unix`, which `lolinet status` reads |
-| `/etc/lolinet/lolinet.json` | Upgrade settings: `base_url`, `source`, `auto_upgrade`. Mode 644, no secrets |
+| `/etc/lolinet/lolinet.json` | Settings: `base_url`, `source`, `auto_upgrade`, and the manager `lolinet invite` asks (`manager`, `manager_ip`, from the pairing config's `# lolinet = {…}` line). Mode 644, no secrets |
 | `/var/log/lolinet/easytier.log` | Kernel log, 10 MB × 5 files |
 | `/var/log/lolinet/upgrade.log` | Upgrade log on macOS (journald on Linux). Written only on a switch or an error |
 | `/Library/LaunchDaemons/co.lo-li.lolinet.plist` | macOS service, RunAtLoad and KeepAlive |
@@ -121,6 +122,7 @@ The node list is the single source for the scripts, the Worker and the web build
 | `local_suffix` | `<name>.<edge_zone>` redirects to `<name><local_suffix>`, a name that resolves to an overlay address |
 | `join` | The join site's host. `LOLINET_BASE_URL` overrides it |
 | `console` | The easytier-web console's URL, reachable on the overlay only |
+| `manager` | The manager's URL on the overlay (`web/agent/mesh_manager.py` on the issuer relay). When set, `pair.py` ends each config with `# lolinet = {…}` so the device's `lolinet invite` knows where to ask |
 | `issuer` | The relay that runs the console and signs credentials. Scripts connect to its overlay IP and use the console's name for SNI and certificate checks |
 | `device_peers` | Relays a new device connects to. Default: the first three relays |
 

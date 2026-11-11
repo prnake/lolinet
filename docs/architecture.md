@@ -119,6 +119,10 @@ admin                         console (issuer)        join site (Worker + KV)   
 - **Without a code** the same script upgrades a device already in the network: it reuses the config on the machine and runs `lolinet up` only if the version, the service or the upgrade job needs it.
 - **lolidesk** comes last, in both cases: `install.sh` installs or updates `lolidesk` in `/usr/local/lib/lolidesk/` (linked from `/usr/local/bin/lolidesk`) from the same source as `lolinet`, only if it passes the sha256 check and runs on this machine. It doesn't start the host. Any failure here skips lolidesk and leaves the join alone.
 
+### Member invitations
+
+The admin flow above needs the console password. Members can also invite: `lolinet invite` asks the manager (`web/agent/mesh_manager.py`, on the issuer relay behind nginx on the overlay) for a code over the overlay. The manager identifies the member by the request's overlay source address, checks `policy.json`, picks an address from the pool for the requested kind, and has the issuer relay's own EasyTier node sign the credential through its local RPC; the relay keeps such credentials in its `credential_file`. From there it is the same flow: render, encrypt, KV, one-time code. [`lolinet/check_invite.py`](../lolinet/check_invite.py) runs the whole path on loopback (an issuer, a member, a stand-in Worker and nginx) and joins a new node with the code it gets.
+
 ## Auto-upgrade
 
 `lolinet up` installs a job that runs `lolinet upgrade --auto` every 6 hours: the LaunchDaemon `co.lo-li.lolinet-upgrade`, or `lolinet-upgrade.timer` with up to 30 minutes of random delay.

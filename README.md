@@ -113,6 +113,7 @@ The details are in [Architecture](docs/architecture.md).
 | **One time** | The ciphertext stays in Workers KV for 15 minutes and is deleted on the first fetch. Each IP gets 20 tries per 10 minutes |
 | **A credential per device** | EasyTier's secure mode: one credential per device, signed by the console, valid up to a year and not reusable |
 | **Revoke one device** | `uv run scripts/revoke.py laptop -`, or the **Credentials** page of the local console. The rest of the network is untouched |
+| **Members invite members** | `lolinet invite` on any device asks the [manager](docs/console.md#manager-on-the-issuer-relay) for a code over the overlay: no console account, and the address comes from the pool for the machine's kind. A policy decides who may invite what, and how often |
 
 ### Transport
 

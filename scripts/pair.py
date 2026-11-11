@@ -119,6 +119,9 @@ def new(args) -> None:
         near = (args.peers.split(",") if args.peers else DEFAULT_PEERS)[0]
         probe = probe_config(argparse.Namespace(name=args.name, near=near, location=args.location))
         config += f"# probe = {json.dumps(probe, separators=(',', ':'))}\n"
+    if NET.get("manager"):
+        # 内网管理面（lolinet invite 用）：lolinet up 存进 /etc/lolinet/lolinet.json；和 web/agent/mesh_manager.py 写的一样
+        config += f"# lolinet = {json.dumps({'manager': NET['manager'], 'manager_ip': CONSOLE_IP}, separators=(',', ':'))}\n"
     reg = STATE_DIR / "mesh-devices.json"
     devices = json.loads(reg.read_text()) if reg.exists() else []
     devices.append({"name": args.name, "overlay_ip": args.ip, "credential_id": cid, "expiry_unix": expiry,

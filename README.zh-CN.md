@@ -113,6 +113,7 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 | **一次性** | 密文在 Workers KV 里放 15 分钟，第一次取走就删。每个 IP 每 10 分钟最多试 20 次 |
 | **一台设备一条凭据** | EasyTier 的 secure mode：控制台给每台设备签一条凭据，最长 1 年、不可复用 |
 | **单独吊销** | `uv run scripts/revoke.py laptop -`，或者在本地控制台的 **凭据** 页操作。网里其他设备不受影响 |
+| **成员邀请成员** | 任何一台设备上 `lolinet invite`，经 overlay 问[管理面](docs/console.md#manager-on-the-issuer-relay)要配对码：不要控制台账号，地址按机器种类从地址池里分。谁能邀请什么、多久几次由策略决定 |
 
 ### 传输
 

@@ -24,6 +24,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[path = "../easytier-cli.rs"]
 mod et_cli;
 mod exit;
+mod invite;
 mod netcfg;
 mod probe;
 mod service;
@@ -113,6 +114,21 @@ enum Cmd {
     },
     /// 停掉并卸载系统服务（要 root），配置和二进制保留
     Down,
+    /// 邀请另一台机器入网：问内网管理面要一个配对码，地址由中心分配（不要 root，也不要控制台账号）
+    Invite {
+        /// desktop（有 TUN 的电脑）、userspace（无 TUN）、server（默认只有管理员能邀请）
+        #[arg(long, default_value = "desktop", value_parser = ["desktop", "userspace", "server"])]
+        kind: String,
+        /// 新机器的名字（小写字母、数字、-）；不给就是 <种类>-<4 位十六进制>
+        #[arg(long)]
+        name: Option<String>,
+        /// 管理面：https://manager.<edge_zone>，可以带 @<签发 relay 的 overlay 地址>；不给就用配对时记下的（root 跑会记住）
+        #[arg(long)]
+        manager: Option<String>,
+        /// 输出 JSON（给 Lolidesk.app 用）
+        #[arg(long)]
+        json: bool,
+    },
     /// 出口节点：网里别的机器经这台的 SOCKS5（端口 10180）上网，只对 overlay 开（不带子命令就是 status）
     Exit {
         #[command(subcommand)]
@@ -250,6 +266,7 @@ fn lolinet(args: Args) -> Result<()> {
             need_root()?;
             service::restart()
         }
+        Cmd::Invite { kind, name, manager, json } => invite::run(kind, name, manager, json),
         Cmd::Exit { cmd } => match cmd.unwrap_or(ExitCmd::Status) {
             ExitCmd::Status => exit::status(),
             ExitCmd::On { port, allow, lan } => exit::on(port, allow, lan),
@@ -321,6 +338,7 @@ fn up(
     let migrate = !Path::new(CONFIG).exists() && Path::new(OLD_CONFIG).exists();
     let src = config.or_else(|| migrate.then(|| OLD_CONFIG.into()));
     let mut probe_cfg = None;
+    let mut lolinet_line = None;
     if let Some(src) = &src {
         if !tool("easytier-core").arg("--check-config").arg("-c").arg(src).status()?.success() {
             bail!("配置检查没过：{}", src.display());
@@ -331,7 +349,13 @@ fn up(
             Ok(p) => probe_cfg = p,
             Err(e) => eprintln!("配置里的探针那一行用不了，这次不装公开探针：{e:#}"),
         }
-        let mut text: String = text.lines().filter(|l| !l.starts_with(probe::PAIR_LINE)).map(|l| format!("{l}\n")).collect();
+        // 配对包末尾给 lolinet 自己的那一行：内网管理面在哪（lolinet invite 用），存进 lolinet.json
+        lolinet_line = invite::from_pairing(&text);
+        let mut text: String = text
+            .lines()
+            .filter(|l| !l.starts_with(probe::PAIR_LINE) && !l.starts_with(invite::PAIR_LINE))
+            .map(|l| format!("{l}\n"))
+            .collect();
         if let Some(u) = userspace {
             text = netcfg::set_mode(&text, u);
         }
@@ -366,6 +390,10 @@ fn up(
     }
     if let Some(a) = auto_upgrade {
         st.auto = a;
+    }
+    if let Some((m, ip)) = lolinet_line {
+        st.manager = Some(m);
+        st.manager_ip = ip;
     }
     st.save()?;
     service::install()?;
