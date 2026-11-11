@@ -16,7 +16,6 @@
 
 use std::{
     fs,
-    os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -35,18 +34,15 @@ pub const BIN: &str = "/etc/lolinet/mihomo/mihomo";
 /// 原来装着的那份不动）。目录一路往上都得是 root 的、别人写不了，不然拷了也白拷。返回 -v 的第一行
 fn install_bin(src: &Path) -> Result<String> {
     fs::create_dir_all(DIR)?;
-    fs::set_permissions(DIR, fs::Permissions::from_mode(0o755))?;
+    crate::sys::chmod(DIR, 0o755)?;
     for dir in Path::new(DIR).ancestors() {
-        let m = fs::metadata(dir).with_context(|| format!("看 {}", dir.display()))?;
-        if m.uid() != 0 || m.mode() & 0o022 != 0 {
-            bail!("{} 不是只有 root 能写（owner {}，权限 {:o}）：mihomo 不能放这里跑成 root 服务", dir.display(), m.uid(), m.mode() & 0o777);
-        }
+        crate::sys::root_only(dir).context("mihomo 不能放这里跑成 root 服务")?;
     }
     let data = fs::read(src).with_context(|| format!("读 {}", src.display()))?;
     let staging = format!("{BIN}.new");
     write_file(&staging, &data, 0o755)?;
     // write_file 按 umask 建文件：权限再明确设一次；root 建的文件 owner 就是 root
-    fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
+    crate::sys::chmod(&staging, 0o755)?;
     let ver = match version(Path::new(&staging)) {
         Ok(v) => v,
         Err(_) => {

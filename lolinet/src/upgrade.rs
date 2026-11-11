@@ -17,7 +17,6 @@
 
 use std::{
     fs,
-    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -111,7 +110,7 @@ impl Tmp {
         let p = std::env::temp_dir().join(format!("lolinet-upgrade-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir(&p)?;
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o700))?;
+        crate::sys::chmod(&p, 0o700)?;
         Ok(Tmp(p))
     }
 }
@@ -310,7 +309,7 @@ fn replace(m: &Manifest, tmp: &Path, dry_run: bool, auto: bool) -> Result<()> {
     let tmp_bin = format!("{BIN}.tmp");
     let _ = fs::remove_file(&tmp_bin);
     fs::copy(&new, &tmp_bin)?;
-    fs::set_permissions(&tmp_bin, fs::Permissions::from_mode(0o755))?;
+    crate::sys::chmod(&tmp_bin, 0o755)?;
     fs::rename(&tmp_bin, BIN)?;
     let restarted = service::state().is_some() && service::restart().is_ok();
     service::restart_probe();
@@ -434,7 +433,7 @@ fn relink(link: &str, target: &str) -> Result<()> {
     }
     let tmp = format!("{link}.lolinet");
     let _ = fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(target, &tmp)?;
+    crate::sys::symlink(target, &tmp)?;
     fs::rename(&tmp, link)?;
     Ok(())
 }

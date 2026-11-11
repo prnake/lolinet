@@ -23,6 +23,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+#[cfg(unix)]
 use nix::libc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -270,6 +271,17 @@ fn now() -> String {
 
 /// root 启动的：配置读完就降到 nobody，后面采集和发送都不要特权（出口节点也用）
 pub(crate) fn drop_privileges() -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        // Windows：还没有以管理员跑的服务，没有可降的
+        Ok(())
+    }
+    #[cfg(unix)]
+    drop_to_nobody()
+}
+
+#[cfg(unix)]
+fn drop_to_nobody() -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(());
     }
@@ -374,11 +386,28 @@ fn linux_hardware(cfg: &Value) -> Map<String, Value> {
 }
 
 fn cores() -> Option<i64> {
-    Some(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } as i64).filter(|&n| n > 0)
+    #[cfg(unix)]
+    {
+        Some(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } as i64).filter(|&n| n > 0)
+    }
+    #[cfg(not(unix))]
+    {
+        std::thread::available_parallelism().ok().map(|n| n.get() as i64)
+    }
 }
 
 /// uname -m：macOS 上是 arm64 / x86_64（和 reporter.py 的 platform.machine() 一样）
 fn arch() -> String {
+    #[cfg(not(unix))]
+    {
+        std::env::consts::ARCH.to_owned()
+    }
+    #[cfg(unix)]
+    uname_machine()
+}
+
+#[cfg(unix)]
+fn uname_machine() -> String {
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };
     if unsafe { libc::uname(&mut u) } != 0 {
         return std::env::consts::ARCH.to_owned();
@@ -387,6 +416,17 @@ fn arch() -> String {
 }
 
 fn disk_total(path: &str) -> Option<u64> {
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+    #[cfg(unix)]
+    statvfs_total(path)
+}
+
+#[cfg(unix)]
+fn statvfs_total(path: &str) -> Option<u64> {
     let p = std::ffi::CString::new(path).ok()?;
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(p.as_ptr(), &mut st) } != 0 {

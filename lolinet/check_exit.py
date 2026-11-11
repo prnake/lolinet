@@ -146,8 +146,14 @@ def mesh(binary: str) -> None:
     B 设 bind_device = false：Linux 上 EasyTier 默认把出站 socket 绑到默认网卡，连不到回环上的 A（同 easytier/check_udp_pref.py）。
     A 不设：它只开监听，把 overlay 地址上的连接转给本机回环的是它，要按默认设置测"""
     tmp = tempfile.mkdtemp(prefix="lolinet-exit-")
-    core = os.path.join(tmp, "easytier-core")
-    os.symlink(os.path.abspath(binary), core)
+    # 内核：Unix 上是指向 lolinet 的链接 easytier-core（按 argv[0] 派发）。Windows 上建链接要特权，
+    # 拷一份 easytier-core.exe（按去掉 .exe 的文件名派发）：内核就是这个进程，测试结束杀得干净
+    if os.name == "nt":
+        core = os.path.join(tmp, "easytier-core.exe")
+        shutil.copy(binary, core)
+    else:
+        core = os.path.join(tmp, "easytier-core")
+        os.symlink(os.path.abspath(binary), core)
     pa, ra, rb, sb, ep = (free_port() for _ in range(5))
     a_ip = "10.188.200.1"
     conf = {
@@ -213,6 +219,10 @@ bind_device = false
             time.sleep(1)
         check(got.startswith(b"HTTP/1."),
               f"网里用：B 的 SOCKS5 -> {a_ip}:{ep}（A 转回环）-> A 的出口 -> example.com（出口回 {code}，读到 {got[:12]!r}{', ' + err if err and not got else ''}）")
+        # lolinet cli 派发给原版 easytier-cli（Unix 换 argv[0] 再 exec；Windows 设 LOLINET_AS、起子进程等它退出）
+        r = subprocess.run([binary, "cli", "-p", f"127.0.0.1:{rb}", "peer"], capture_output=True, text=True, timeout=30)
+        check(r.returncode == 0 and a_ip in r.stdout,
+              f"lolinet cli（派发给 easytier-cli）列出 B 的对端 A（{(r.stderr or r.stdout).strip()[-200:]}）")
         if not got:
             for name in ("a", "b"):
                 with open(os.path.join(tmp, f"{name}.log")) as f:

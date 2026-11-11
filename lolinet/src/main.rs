@@ -31,16 +31,13 @@ mod netcfg;
 mod probe;
 mod service;
 mod status;
+mod sys;
 mod upgrade;
 
 use std::{
     ffi::{OsStr, OsString},
     fs,
     io::Write as _,
-    os::unix::{
-        fs::{OpenOptionsExt as _, PermissionsExt as _},
-        process::CommandExt as _,
-    },
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     time::Duration,
@@ -50,9 +47,22 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 pub const RPC: &str = "127.0.0.1:15888";
+#[cfg(unix)]
 pub const CONFIG: &str = "/etc/lolinet/loli.toml";
+#[cfg(unix)]
 pub const BIN: &str = "/usr/local/bin/lolinet";
+#[cfg(unix)]
 pub const LOG_DIR: &str = "/var/log/lolinet";
+// Windows（第一步只前台跑，服务下一步做）：配置和日志在 ProgramData，程序在 Program Files
+#[cfg(not(unix))]
+pub const CONFIG: &str = r"C:\ProgramData\lolinet\loli.toml";
+#[cfg(not(unix))]
+pub const BIN: &str = r"C:\Program Files\lolinet\lolinet.exe";
+#[cfg(not(unix))]
+pub const LOG_DIR: &str = r"C:\ProgramData\lolinet\log";
+/// Windows 上换不了 argv[0]：[`tool`] 用这个环境变量告诉子进程当 easytier-core 还是 easytier-cli
+#[cfg(not(unix))]
+const AS_ENV: &str = "LOLINET_AS";
 pub const VERSION: &str = match option_env!("LOLINET_VERSION") {
     Some(v) => v,
     None => "dev",
@@ -255,9 +265,23 @@ enum ProbeCmd {
     },
 }
 
-fn main() -> ExitCode {
+/// 当谁跑：argv[0] 的文件名（Unix 上 easytier-core / easytier-cli 是指向 lolinet 的链接）；
+/// Windows 上看 [`AS_ENV`]（看完就删，内核起的子进程不会跟着当错），再看去掉 .exe 的文件名
+fn invoked_as() -> Option<String> {
+    #[cfg(not(unix))]
+    if let Ok(name) = std::env::var(AS_ENV) {
+        // 还没起别的线程
+        unsafe { std::env::remove_var(AS_ENV) };
+        return Some(name);
+    }
     let argv0 = std::env::args_os().next().unwrap_or_default();
-    match Path::new(&argv0).file_name().and_then(OsStr::to_str) {
+    let p = Path::new(&argv0);
+    let name = if cfg!(unix) { p.file_name() } else { p.file_stem() };
+    name.and_then(OsStr::to_str).map(str::to_owned)
+}
+
+fn main() -> ExitCode {
+    match invoked_as().as_deref() {
         // 和 easytier-core.rs 一样用单线程运行时
         Some("easytier-core") => tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -320,14 +344,7 @@ fn lolinet(args: Args) -> Result<()> {
             ProbeCmd::Off => probe::off(),
             ProbeCmd::Run { config } => probe::run(config),
         },
-        Cmd::Logs { follow, lines } => {
-            let mut tail = Command::new("tail");
-            tail.arg("-n").arg(lines.to_string());
-            if follow {
-                tail.arg("-F");
-            }
-            Err(tail.arg(Path::new(LOG_DIR).join("easytier.log")).exec().into())
-        }
+        Cmd::Logs { follow, lines } => logs(follow, lines),
         Cmd::Run { config } => {
             let dir = log_dir()?;
             Err(exec_as("easytier-core", core_args(&config, &dir)))
@@ -343,13 +360,18 @@ fn lolinet(args: Args) -> Result<()> {
 /// 日志目录：服务（root）写 /var/log/lolinet；没有 root 跑（容器里、userspace 模式）写不了那里，就写用户自己的
 /// $XDG_STATE_HOME/lolinet（默认 ~/.local/state/lolinet）
 fn log_dir() -> Result<PathBuf> {
-    if fs::create_dir_all(LOG_DIR).is_ok() && unsafe { nix::libc::access(c"/var/log/lolinet".as_ptr(), nix::libc::W_OK) } == 0 {
+    if fs::create_dir_all(LOG_DIR).is_ok() && sys::writable_dir(Path::new(LOG_DIR)) {
         return Ok(LOG_DIR.into());
     }
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))
-        .context("没有 HOME，也写不了 /var/log/lolinet")?;
+    // Windows：%LOCALAPPDATA%\lolinet；Unix：$XDG_STATE_HOME/lolinet
+    let state = if cfg!(unix) {
+        std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))
+    } else {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    }
+    .with_context(|| format!("没有 HOME，也写不了 {LOG_DIR}"))?;
     let dir = state.join("lolinet");
     fs::create_dir_all(&dir).with_context(|| format!("建 {}", dir.display()))?;
     eprintln!("lolinet：没有权限写 {LOG_DIR}，内核日志写到 {}", dir.display());
@@ -390,7 +412,7 @@ fn up(
     }
     // 目录 755：loli.toml 自己是 600；lolinet.json（升级设置，没有密钥）普通用户也读得到，lolinet status 要显示
     fs::create_dir_all("/etc/lolinet")?;
-    fs::set_permissions("/etc/lolinet", fs::Permissions::from_mode(0o755))?;
+    sys::chmod("/etc/lolinet", 0o755)?;
     let migrate = !Path::new(CONFIG).exists() && Path::new(OLD_CONFIG).exists();
     let src = config.or_else(|| migrate.then(|| OLD_CONFIG.into()));
     let mut probe_cfg = None;
@@ -506,7 +528,7 @@ fn install_self() -> Result<()> {
     fs::create_dir_all("/usr/local/bin")?;
     let tmp = format!("{BIN}.tmp");
     fs::copy(&exe, &tmp)?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+    sys::chmod(&tmp, 0o755)?;
     fs::rename(&tmp, BIN)?;
     println!("{} -> {BIN}", exe.display());
     Ok(())
@@ -523,25 +545,95 @@ fn link_legacy_names() -> Result<()> {
         }
         let tmp = Path::new(OLD_BIN_DIR).join(format!(".{name}.lolinet"));
         let _ = fs::remove_file(&tmp);
-        std::os::unix::fs::symlink(BIN, &tmp)?;
+        sys::symlink(BIN, &tmp)?;
         fs::rename(&tmp, &p)?;
     }
     Ok(())
 }
 
-/// 自己换个 argv[0] 跑：easytier-core / easytier-cli 的原版入口
+/// 自己换个身份跑：easytier-core / easytier-cli 的原版入口（Unix 换 argv[0]，Windows 设 [`AS_ENV`]）
 pub fn tool(name: &str) -> Command {
     let mut c = Command::new(std::env::current_exe().unwrap_or_else(|_| BIN.into()));
-    c.arg0(name);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        c.arg0(name);
+    }
+    #[cfg(not(unix))]
+    c.env(AS_ENV, name);
     c
 }
 
 fn exec_as<I: IntoIterator<Item = S>, S: AsRef<OsStr>>(name: &str, args: I) -> anyhow::Error {
-    anyhow::Error::new(tool(name).args(args).exec()).context(format!("exec {name}"))
+    let mut c = tool(name);
+    c.args(args);
+    exec(c).context(format!("exec {name}"))
+}
+
+/// Unix：换成这个程序（不回来）。Windows 没有 exec：起子进程等它退出，带着它的退出码退出
+fn exec(mut c: Command) -> anyhow::Error {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        anyhow::Error::new(c.exec())
+    }
+    #[cfg(not(unix))]
+    match c.status() {
+        Ok(st) => std::process::exit(st.code().unwrap_or(1)),
+        Err(e) => anyhow::Error::new(e),
+    }
+}
+
+/// 内核日志的最后几行（-f 一直跟着）。Unix 用 tail -F（日志轮转了也跟得上）；Windows 自己读
+fn logs(follow: bool, lines: usize) -> Result<()> {
+    let file = Path::new(LOG_DIR).join("easytier.log");
+    if cfg!(unix) {
+        let mut tail = Command::new("tail");
+        tail.arg("-n").arg(lines.to_string());
+        if follow {
+            tail.arg("-F");
+        }
+        tail.arg(&file);
+        return Err(exec(tail));
+    }
+    let text = fs::read(&file).with_context(|| format!("读 {}", file.display()))?;
+    let text = String::from_utf8_lossy(&text);
+    let all: Vec<&str> = text.lines().collect();
+    for l in &all[all.len().saturating_sub(lines)..] {
+        println!("{l}");
+    }
+    if !follow {
+        return Ok(());
+    }
+    let mut pos = text.len() as u64;
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let len = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        // 轮转了（文件变短）：从头读新的那份
+        if len < pos {
+            pos = 0;
+        }
+        if len > pos {
+            use std::io::{Read as _, Seek as _, SeekFrom};
+            let mut f = fs::File::open(&file)?;
+            f.seek(SeekFrom::Start(pos))?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            pos += buf.len() as u64;
+            print!("{}", String::from_utf8_lossy(&buf));
+            std::io::stdout().flush()?;
+        }
+    }
 }
 
 pub(crate) fn need_root() -> Result<()> {
-    if unsafe { nix::libc::geteuid() } != 0 {
+    if cfg!(not(unix)) {
+        bail!(
+            "Windows 上还不会装系统服务（下一步做，见 docs/design.md 的 Windows 一节）。\
+             现在先在前台跑内核：lolinet core -c <配置>（无 TUN 入网）"
+        );
+    }
+    if !sys::is_root() {
         bail!("要 root：前面加 sudo");
     }
     Ok(())
@@ -551,8 +643,7 @@ pub(crate) fn need_root() -> Result<()> {
 pub fn write_file(path: &str, data: &[u8], mode: u32) -> Result<()> {
     let tmp = format!("{path}.tmp");
     let _ = fs::remove_file(&tmp);
-    let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)
-        .with_context(|| format!("写 {tmp}"))?;
+    let mut f = sys::create_new(&tmp, mode).with_context(|| format!("写 {tmp}"))?;
     f.write_all(data)?;
     f.sync_all()?;
     fs::rename(&tmp, path).with_context(|| format!("改名到 {path}"))?;

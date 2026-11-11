@@ -1,0 +1,94 @@
+# Windows 上的 lolinet，第一步（docs/design.md 的 Windows 一节）：编 x86_64-pc-windows-msvc，跑 check_exit.py
+# （出口节点的 SOCKS5、两个无 TUN 节点经出口访问公网、lolinet cli 派发给 easytier-cli）。
+# 还不发包：发版的四个平台不变。Windows 的包等服务（服务控制管理器）和安装脚本做好再加，那会改发版约定，到时候一起动。
+name: windows
+
+on:
+  push:
+    branches: [main]
+    paths: [easytier/**, patches/**, lolinet/**, .github/workflows/windows.yml]
+  pull_request:
+    paths: [easytier/**, patches/**, lolinet/**, .github/workflows/windows.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # 和上游 core.yml 一样用 Git 自带的 bash，步骤和 build.yml 写法一致
+    shell: bash
+
+env:
+  # 测试脚本打中文；重定向时 Python 默认用 ANSI 代码页，会编码失败
+  PYTHONUTF8: "1"
+
+jobs:
+  lolinet:
+    name: windows-x86_64
+    runs-on: windows-latest
+    steps:
+      # 补丁是 LF 的：checkout 别换成 CRLF，不然 git apply 对不上
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - name: Fetch EasyTier and apply patches
+        run: |
+          grep -E '^[A-Z_]+=' easytier/build.env >> "$GITHUB_ENV"
+          set -a; eval "$(sed -nE "s/^([A-Z_]+)=(.*)$/\1='\2'/p" easytier/build.env)"; set +a
+          git clone -q --depth 1 --branch "$EASYTIER_REF" https://github.com/EasyTier/EasyTier.git src
+          test "$(git -C src rev-parse HEAD)" = "$EASYTIER_SHA" || { echo "tag $EASYTIER_REF 不再指向 $EASYTIER_SHA"; exit 1; }
+          for p in $EASYTIER_PATCHES $LOLINET_PATCHES; do git -C src apply --verbose "$GITHUB_WORKSPACE/$p"; done
+          cp -R lolinet/src src/easytier/src/lolinet
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "35.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust toolchain (from EasyTier rust-toolchain.toml)
+        working-directory: src
+        run: |
+          TC=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$TC" --profile minimal
+          rustup target add --toolchain "$TC" x86_64-pc-windows-msvc
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+          key: x86_64-pc-windows-msvc
+
+      # 上游 Windows 用 mimalloc（jemalloc 不支持 MSVC）
+      - name: Build
+        working-directory: src
+        run: |
+          LOLINET_VERSION=$(git -C .. describe --always) cargo build --release --locked --target x86_64-pc-windows-msvc \
+            -p easytier --features mimalloc --bin lolinet
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test
+        run: |
+          B=src/target/x86_64-pc-windows-msvc/release/lolinet.exe
+          ls -l "$B"
+          "$B" --version
+          # 要装系统服务的命令：Windows 上还不支持，要说清楚，不能半途装一半
+          if "$B" up 2> up.err; then echo "lolinet up 在 Windows 上不该成功"; exit 1; fi
+          grep -q 'Windows 上还不会装系统服务' up.err || { cat up.err; echo "lolinet up 没说 Windows 上还不支持"; exit 1; }
+          "$B" status
+          # 出口节点、两个无 TUN 节点经出口访问公网、lolinet cli 派发
+          python lolinet/check_exit.py "$B"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lolinet-windows-x86_64
+          path: src/target/x86_64-pc-windows-msvc/release/lolinet.exe
+          if-no-files-found: error

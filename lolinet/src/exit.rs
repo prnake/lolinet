@@ -413,10 +413,10 @@ fn code_of(e: &std::io::Error) -> u8 {
     match e.kind() {
         ErrorKind::ConnectionRefused => REP_REFUSED,
         ErrorKind::TimedOut => REP_HOST_UNREACH,
-        _ => match e.raw_os_error() {
-            Some(nix::libc::ENETUNREACH) => REP_NET_UNREACH,
-            Some(nix::libc::EHOSTUNREACH) => REP_HOST_UNREACH,
-            _ => REP_FAIL,
+        _ => match e.raw_os_error().and_then(crate::sys::unreachable) {
+            Some(false) => REP_NET_UNREACH,
+            Some(true) => REP_HOST_UNREACH,
+            None => REP_FAIL,
         },
     }
 }
