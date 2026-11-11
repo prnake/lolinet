@@ -113,9 +113,16 @@ up() {
 desk_dir() {
   case $1 in
     github)
-      tag=$(curl -fsS --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$GH/releases?per_page=30" 2>/dev/null \
-        | grep -o '"tag_name": *"lolidesk-[^"]*"' | head -n 1 | sed 's/.*"\(lolidesk-[^"]*\)"$/\1/')
-      [ -n "$tag" ] || return 1
+      # API 的列表不按发布时间排（排在前面的可能是旧版），按 published_at 取最新的，草稿、预发布不算。
+      # 只用 grep / awk 读：每个 Release 里依次是 tag_name、draft、prerelease、published_at（assets 里没有这几个键）
+      tag=$(curl -fsS --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$GH/releases?per_page=100" 2>/dev/null \
+        | grep -oE '"(tag_name|draft|prerelease|published_at)": *("[^"]*"|[a-z]+)' \
+        | awk -F'"' '$2 == "tag_name" { t = $4; skip = 0 }
+            ($2 == "draft" || $2 == "prerelease") && $3 ~ /true/ { skip = 1 }
+            $2 == "published_at" { if (t ~ /^lolidesk-/ && !skip && $4 != "" && ($4 "") > (best "")) { best = $4; tag = t }; t = "" }
+            END { print tag }')
+      case $tag in lolidesk-*) ;; *) return 1 ;; esac
+      case $tag in *[!A-Za-z0-9._-]*) return 1 ;; esac
       echo "https://github.com/$GH/releases/download/$tag" ;;
     base) echo "$BASE/dl" ;;
   esac
