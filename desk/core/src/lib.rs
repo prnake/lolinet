@@ -5,6 +5,7 @@
 
 pub mod decode;
 pub mod hosts;
+pub mod local;
 pub mod net;
 
 pub use net::{connect, fingerprint, resolve, Client, Welcome};

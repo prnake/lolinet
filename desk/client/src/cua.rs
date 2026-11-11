@@ -67,10 +67,17 @@ impl Cua {
         self.stream = None;
         let c = (self.connect)().await?;
         if !c.welcome.allow.cua {
-            bail!(
-                "{} 没开放 computer use（在它上面 lolidesk host allow cua on）",
-                c.welcome.host
-            );
+            // 主人那边关了整台的，还是只没给这台设备
+            match c.welcome.role {
+                lolidesk_proto::Role::Owner => bail!(
+                    "{} 没开放 computer use（在它上面 lolidesk host allow cua on）",
+                    c.welcome.host
+                ),
+                lolidesk_proto::Role::Device(_) => bail!(
+                    "{} 没给这台设备开放 computer use（那边的主人能改：lolidesk host limit 或 allow）",
+                    c.welcome.host
+                ),
+            }
         }
         self.client = Some(c.clone());
         Ok(c)

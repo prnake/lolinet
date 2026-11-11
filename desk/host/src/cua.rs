@@ -10,16 +10,22 @@ use anyhow::Result;
 use lolidesk_proto::{self as proto, CuaReq, CuaResp, DeskInput};
 use quinn::{RecvStream, SendStream};
 
-use crate::{config, desktop, input};
+use crate::{desktop, input};
 
 /// 一次 Input 最多这么多个事件（一段文字是一个事件）
 const MAX_EVENTS: usize = 256;
 
-pub async fn serve(mut send: SendStream, mut recv: RecvStream) -> Result<()> {
+/// `allowed`：现在还给不给 computer use（主机开关 ∧ 这台设备的限制，每个请求现算）；`why`：不给时的原因
+pub async fn serve(
+    mut send: SendStream,
+    mut recv: RecvStream,
+    allowed: impl Fn() -> bool,
+    why: String,
+) -> Result<()> {
     let mut injectors: HashMap<u32, input::Injector> = HashMap::new();
     while let Some(req) = proto::recv::<CuaReq>(&mut recv).await? {
-        let resp = if !config::allow().cua {
-            CuaResp::Denied("这台主机没开放 computer use（lolidesk host allow cua on）".into())
+        let resp = if !allowed() {
+            CuaResp::Denied(why.clone())
         } else {
             handle(req, &mut injectors).await
         };

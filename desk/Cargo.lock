@@ -4383,6 +4383,7 @@ dependencies = [
  "postcard",
  "quinn",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

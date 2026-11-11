@@ -9,6 +9,8 @@
 //!
 //! 版本 2：远程桌面可选分辨率、帧率和画质，键盘按物理键位（W3C `code`）收发。
 //! computer use 流（[`StreamKind::Cua`]）：给 agent 用的截图和输入，和远程桌面共用主机的屏幕录制、辅助功能授权。
+//! 配对（[`ControlReq::Pair`]）：还没凭据的设备经主人同意、或者用配对码，换一条只属于它的凭据（`g1.<id>.<密钥>`），
+//! 之后 Hello 就用它；主人能看到每台设备、每个配对码，单独吊销。主机自己的 token 是「主人」的钥匙（本机 app 和命令行用）。
 //! 控制流上能查这两个授权、在主机上打开设置页、重启主机服务（屏幕录制要重启才生效）。
 //! 终端两端都是 libghostty-vt：主机的终端是会话的唯一真相，客户端收它的 Mirror 帧（转义序列）照着画，
 //! 自己按当前模式给按键编码，把字节发回来。
@@ -80,6 +82,236 @@ pub enum ControlReq {
     OpenPermission(PermissionKind),
     /// 重启主机服务（屏幕录制要重启才生效）：先回 `Ok` 再重启；不是 LaunchAgent 跑的回 `Error`
     RestartHost,
+    /// 配对，不用先 Hello。带配对码就直接换凭据；不带就请主人同意（主机上弹框，最多等 [`PAIR_WAIT_SECS`] 秒）。
+    /// → [`ControlResp::Paired`] 或 `Denied`。拿到凭据后在同一条控制流上 Hello
+    Pair {
+        device: DeviceInfo,
+        code: Option<String>,
+    },
+    /// 谁能连这台电脑 → [`ControlResp::Access`]：主人看全部（含等着同意的）；配对过的设备只看自己和自己发的分享链接
+    Access,
+    /// 发一个配对码（主人；或者配对过的设备，给分享链接用，主机 `allow share` 开着时）→ [`ControlResp::Code`]
+    CreateCode {
+        label: String,
+        /// 多少秒后不能再用（已经用它配对的设备不受影响）；None 是不过期
+        expires_in: Option<u64>,
+        /// 最多几台设备用它配对；None 是不限
+        max_uses: Option<u32>,
+        /// 用它配对的设备能做什么（和主机的开关取交集）；None 是和主机一样
+        allow: Option<Allow>,
+    },
+    /// 吊销一台设备（`g-…`）或一个配对码（`c-…`，用它配对的设备一起）。主人什么都能吊销；
+    /// 设备能吊销自己、自己发的配对码和用它们配对的设备 → `Ok`
+    Revoke(String),
+    /// 主人答复一个配对请求 → `Ok`
+    Decide {
+        id: u64,
+        allow: bool,
+    },
+    /// 主人限制一台设备能做什么（None 是和主机一样）→ `Ok`
+    Limit {
+        grant: String,
+        allow: Option<Allow>,
+    },
+}
+
+/// 等主人同意最多多久
+pub const PAIR_WAIT_SECS: u64 = 120;
+
+/// 请求配对的设备自报的信息（主机记下来给主人看，不拿它做判断）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    /// 主机名
+    pub name: String,
+    /// macos / linux / …
+    pub os: String,
+    /// app、cli、mcp
+    pub kind: String,
+    pub version: String,
+}
+
+impl DeviceInfo {
+    /// 这台机器（kind：app、cli、mcp）
+    pub fn this(kind: &str) -> Self {
+        Self {
+            name: hostname(),
+            os: std::env::consts::OS.into(),
+            kind: kind.into(),
+            version: BUILD.into(),
+        }
+    }
+}
+
+/// 本机名（去掉 .local）
+pub fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    let n = unsafe { gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    let raw = if n == 0 {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        String::new()
+    };
+    let name = raw.trim_end_matches(".local").to_string();
+    if name.is_empty() {
+        "unknown".into()
+    } else {
+        name
+    }
+}
+
+unsafe extern "C" {
+    fn gethostname(name: *mut std::ffi::c_char, len: usize) -> i32;
+}
+
+/// 角色：主人（主机 token，本机 app、命令行）或者一台配对过的设备
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Role {
+    Owner,
+    Device(String),
+}
+
+/// 一台配对过的设备
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantInfo {
+    /// g-xxxxxxxx
+    pub id: String,
+    pub device: DeviceInfo,
+    /// 怎么配对的：主人同意的是 None，用配对码的是那个码的 id
+    pub code: Option<String>,
+    /// Unix 秒
+    pub created: u64,
+    pub created_addr: String,
+    /// 最近一次连上（Unix 秒）和从哪个地址
+    pub last_seen: u64,
+    pub last_addr: String,
+    /// 主人给它的限制（None 是和主机一样）
+    pub allow: Option<Allow>,
+    /// 现在连着几条
+    pub online: u32,
+}
+
+/// 一个配对码（密钥只在发的时候给一次，主机只存哈希）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeInfo {
+    /// c-xxxxxxxx
+    pub id: String,
+    pub label: String,
+    pub created: u64,
+    /// 谁发的：主人是 None，设备（分享链接）是它的 g-id
+    pub created_by: Option<String>,
+    pub expires: Option<u64>,
+    pub max_uses: Option<u32>,
+    pub uses: u32,
+    pub allow: Option<Allow>,
+}
+
+/// 等主人同意的配对请求
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInfo {
+    pub id: u64,
+    pub device: DeviceInfo,
+    pub addr: String,
+    pub since: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessInfo {
+    /// 问的这一方是不是主人
+    pub owner: bool,
+    /// 问的这一方的设备 id（主人是 None）
+    pub me: Option<String>,
+    pub grants: Vec<GrantInfo>,
+    pub codes: Vec<CodeInfo>,
+    pub pending: Vec<PendingInfo>,
+}
+
+// ---------------------------------------------------------------- 分享链接
+
+/// `lolidesk://pair?h=<主机:端口>&f=<证书指纹>&c=<配对码>&n=<主机名>`。带着指纹，导入的一方不用再核对。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairLink {
+    pub addr: String,
+    pub fingerprint: String,
+    pub code: String,
+    pub name: String,
+}
+
+impl PairLink {
+    pub fn to_url(&self) -> String {
+        format!(
+            "lolidesk://pair?h={}&f={}&c={}&n={}",
+            pct(&self.addr),
+            self.fingerprint,
+            pct(&self.code),
+            pct(&self.name)
+        )
+    }
+
+    /// 认 `lolidesk://pair?…`（前后的空白、引号去掉）；指纹要是 64 位十六进制
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s
+            .trim()
+            .trim_matches(|c| c == '\'' || c == '"' || c == '<' || c == '>');
+        let q = s.strip_prefix("lolidesk://pair?")?;
+        let (mut addr, mut fp, mut code, mut name) = (None, None, None, String::new());
+        for kv in q.split('&') {
+            let (k, v) = kv.split_once('=')?;
+            let v = unpct(v)?;
+            match k {
+                "h" => addr = Some(v),
+                "f" => fp = Some(v.to_ascii_lowercase()),
+                "c" => code = Some(v),
+                "n" => name = v,
+                _ => {}
+            }
+        }
+        let fp = fp.filter(|f| f.len() == 64 && f.bytes().all(|b| b.is_ascii_hexdigit()))?;
+        let addr = addr.filter(|a| !a.is_empty() && a.len() <= 128)?;
+        let code = code.filter(|c| !c.is_empty() && c.len() <= 64)?;
+        Some(Self {
+            addr,
+            fingerprint: fp,
+            code,
+            name,
+        })
+    }
+}
+
+fn pct(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~:[]".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn unpct(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' => {
+                let h = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+                out.push(u8::from_str_radix(h, 16).ok()?);
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// 远程桌面（和 computer use）要的系统权限。
@@ -114,8 +346,10 @@ pub enum ControlResp {
         desktop: bool,
         /// 主机存会话的历史和目录：重启后会话带着历史回来（程序重新起）。
         persistent: bool,
-        /// 这台主机开放了什么（`lolidesk host allow`）
+        /// 这台主机开放了什么（`lolidesk host allow`），已经和这台设备的限制取了交集
         allow: Allow,
+        /// 连上来的是主人还是哪台配对过的设备
+        role: Role,
     },
     Denied(String),
     Displays(Vec<DisplayInfo>),
@@ -127,12 +361,27 @@ pub enum ControlResp {
         screen_recording: bool,
         accessibility: bool,
     },
-    /// 做了（OpenPermission、RestartHost）
+    /// 做了（OpenPermission、RestartHost、Revoke、Decide、Limit）
     Ok,
+    /// 配对成功：以后 Hello 用这个凭据
+    Paired {
+        credential: String,
+        host: String,
+        grant: String,
+    },
+    Access(AccessInfo),
+    /// 发好的配对码：`secret` 只给这一次。`addr` 是主机在网里的地址（拼分享链接用）
+    Code {
+        info: CodeInfo,
+        secret: String,
+        addr: String,
+    },
 }
 
 /// 主机开放的能力。远程桌面和 computer use 用的是同一份屏幕录制、辅助功能授权，这里只是主机愿不愿意给。
+/// 存成 JSON 时少写的键按开算（`serde(default)`）；线上（postcard）每个字段都在。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Allow {
     /// 终端会话
     pub terminal: bool,
@@ -142,6 +391,10 @@ pub struct Allow {
     pub control: bool,
     /// agent 的 computer use（截图、键鼠）
     pub cua: bool,
+    /// 没配对过的设备能不能请求配对（主机上弹同意框）；只看主机的
+    pub pair: bool,
+    /// 配对过的设备能不能发分享链接（给别的机器用的配对码）
+    pub share: bool,
 }
 
 impl Default for Allow {
@@ -151,6 +404,82 @@ impl Default for Allow {
             desktop: true,
             control: true,
             cua: true,
+            pair: true,
+            share: true,
+        }
+    }
+}
+
+impl Allow {
+    /// 两边都开才开
+    pub fn and(self, o: Allow) -> Allow {
+        Allow {
+            terminal: self.terminal && o.terminal,
+            desktop: self.desktop && o.desktop,
+            control: self.control && o.control,
+            cua: self.cua && o.cua,
+            pair: self.pair && o.pair,
+            share: self.share && o.share,
+        }
+    }
+
+    /// 按名字开关一项（terminal、desktop、control、cua、pair、share）
+    pub fn set(&mut self, what: &str, on: bool) -> Result<(), String> {
+        let f = match what {
+            "terminal" => &mut self.terminal,
+            "desktop" => &mut self.desktop,
+            "control" => &mut self.control,
+            "cua" => &mut self.cua,
+            "pair" => &mut self.pair,
+            "share" => &mut self.share,
+            _ => {
+                return Err(format!(
+                    "没有 {what}：terminal、desktop、control、cua、pair、share"
+                ))
+            }
+        };
+        *f = on;
+        Ok(())
+    }
+
+    /// 给人看的一行：开着的几项
+    pub fn summary(&self) -> String {
+        let names = [
+            (self.terminal, "终端"),
+            (self.desktop, "看桌面"),
+            (self.control, "操作桌面"),
+            (self.cua, "agent"),
+            (self.share, "分享"),
+        ];
+        let on: Vec<&str> = names.iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
+        if on.is_empty() {
+            "什么都不能做".into()
+        } else {
+            on.join("、")
+        }
+    }
+
+    /// 什么都不能做（吊销了的设备）
+    pub fn none() -> Allow {
+        Allow {
+            terminal: false,
+            desktop: false,
+            control: false,
+            cua: false,
+            pair: false,
+            share: false,
+        }
+    }
+
+    /// 只看不控：能看终端和桌面，不能操作、不能给 agent 用、不能再分享
+    pub fn view_only() -> Allow {
+        Allow {
+            terminal: true,
+            desktop: true,
+            control: false,
+            cua: false,
+            pair: true,
+            share: false,
         }
     }
 }
@@ -634,6 +963,58 @@ pub mod palette {
 }
 
 #[cfg(test)]
+mod pair_link_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip() {
+        let l = PairLink {
+            addr: "10.188.16.10:10190".into(),
+            fingerprint: "ab".repeat(32),
+            code: "ABCD-EFGH-JKMN-PQRS".into(),
+            name: "我的 Mac & co".into(),
+        };
+        let url = l.to_url();
+        assert!(url.starts_with("lolidesk://pair?h=10.188.16.10:10190&f=abab"));
+        // 空格和名字里的 & 都转义了：只剩三个分隔参数的 &
+        assert!(!url.contains(' ') && url.matches('&').count() == 3);
+        assert_eq!(PairLink::parse(&url), Some(l.clone()));
+        assert_eq!(PairLink::parse(&format!("  '{url}' ")), Some(l.clone()));
+        // IPv6 地址、大写指纹
+        let v6 = PairLink {
+            addr: "[fd00::1]:10190".into(),
+            ..l.clone()
+        };
+        assert_eq!(
+            PairLink::parse(&v6.to_url().replace(&"ab".repeat(32), &"AB".repeat(32))),
+            Some(v6)
+        );
+        for bad in [
+            "https://example.com/pair?h=1&f=2&c=3",
+            "lolidesk://pair?h=1.2.3.4:1&c=X",
+            "lolidesk://pair?h=1.2.3.4:1&f=abc&c=X",
+            "lolidesk://pair?f=ababababababababababababababababababababababababababababababababab&c=X",
+            "lolidesk://pair?h=1&f=ababababababababababababababababababababababababababababababababab&c=X&n=%ZZ",
+        ] {
+            assert_eq!(PairLink::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn allow_helpers() {
+        let mut a = Allow::default();
+        a.set("cua", false).unwrap();
+        assert!(!a.cua && a.terminal);
+        assert!(a.set("nope", true).is_err());
+        assert_eq!(Allow::default().and(Allow::view_only()), Allow::view_only());
+        assert_eq!(Allow::none().summary(), "什么都不能做");
+        // allow.json 里少写的键按开算
+        let j: Allow = serde_json::from_str(r#"{"cua": false}"#).unwrap();
+        assert!(!j.cua && j.share && j.pair);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -726,6 +1107,7 @@ mod tests {
             [5, 1]
         );
         assert_eq!(postcard::to_stdvec(&ControlReq::RestartHost).unwrap(), [6]);
+        assert_eq!(postcard::to_stdvec(&ControlReq::Access).unwrap(), [8]);
         let resp = ControlResp::Permissions {
             screen_recording: true,
             accessibility: false,

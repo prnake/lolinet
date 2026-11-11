@@ -6,6 +6,7 @@
 //! 图形界面（终端 + 远程桌面）是 Lolidesk.app（desk/app），它的包里也带着这个程序。
 
 mod cua;
+mod pair;
 mod tui;
 
 use std::{path::PathBuf, sync::Arc};
@@ -100,6 +101,35 @@ enum Top {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// 和一台电脑配对：给分享链接（lolidesk://pair?…）直接配对；给主机地址就请那边的人点同意（或者 --code 用配对码）
+    Pair {
+        /// 分享链接，或者主机（overlay 地址或主机名，可带端口）
+        target: String,
+        /// 配对码（XXXX-XXXX-XXXX-XXXX）
+        #[arg(short, long)]
+        code: Option<String>,
+        /// 新主机不问，直接信任证书指纹
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// 给一台配对过的电脑发分享链接：别的机器用它配对，不用那边再同意（那边的主人看得到、能吊销）
+    Share {
+        host: String,
+        /// 备注：给谁、干什么用
+        #[arg(long, default_value = "")]
+        label: String,
+        /// 多久后不能再用来配对：30m、12h、7d；不给是不过期
+        #[arg(long)]
+        expires: Option<String>,
+        /// 最多几台设备用它配对
+        #[arg(long)]
+        uses: Option<u32>,
+        /// 用它配对的设备只能看
+        #[arg(long)]
+        view_only: bool,
+    },
+    /// 在一台电脑上：我（主人的话是全部）配对了哪些设备、发了哪些分享链接
+    Access { host: String },
     /// 调一次 computer use 的工具：screenshot、click、move、drag、scroll、type_text、key、cursor、displays
     Cua {
         host: String,
@@ -116,8 +146,8 @@ enum Top {
     },
 }
 
-/// 连一台主机：记住过的用记住的 token 和指纹；新主机要 token，先只握手拿指纹，核对过（或 -y）再发 token。
-/// interactive = false 时（MCP）不问，新主机没有 -y 就报错
+/// 连一台主机：记住过的用记住的凭据和指纹。新主机：给了 --token（主机 token）就核对指纹后用它；
+/// 没给就请那边的人同意配对（interactive），配对上再连。interactive = false 时（MCP）不问、不配对，没连过就报错
 async fn connect(
     host: String,
     token: Option<String>,
@@ -127,28 +157,15 @@ async fn connect(
     let addr = net::resolve(&host)?;
     let mut hosts = Hosts::load()?;
     let known = hosts.get(&addr);
-    let token = token
-        .or_else(|| known.as_ref().map(|h| h.token.clone()))
-        .context("第一次连要 --token（主机上 `lolidesk host token`）")?;
     let pinned = match known.as_ref().and_then(|h| h.fingerprint_bytes()) {
         Some(fp) => fp,
+        None => pair::confirm_fingerprint(addr, yes, interactive).await?,
+    };
+    let token = match token.or_else(|| known.as_ref().map(|h| h.token.clone())) {
+        Some(t) => t,
+        None if interactive => pair::pair_and_remember(addr, pinned, None).await?.1,
         None => {
-            let fp = net::fingerprint(addr).await?;
-            if !yes {
-                if !interactive {
-                    bail!("没连过 {addr}：先在终端里 lolidesk {host} --token <token> 连一次核对指纹，或者加 -y");
-                }
-                eprint!(
-                    "新主机 {addr} 的证书指纹：\n  {}\n和主机上 `lolidesk host token` 打印的指纹对一下。信任并记住？[y/N] ",
-                    hex::encode(fp)
-                );
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
-                if !matches!(line.trim(), "y" | "Y" | "yes") {
-                    bail!("没有信任，退出");
-                }
-            }
-            fp
+            bail!("没和 {addr} 配对过：先 lolidesk pair {host}（那边的人点同意），或者给 --token")
         }
     };
     let (client, fp) = net::connect(
@@ -172,7 +189,9 @@ fn cua_client(host: String, token: Option<String>, yes: bool) -> cua::Cua {
 
 fn main() -> Result<()> {
     let args = Args::parse_from(argv());
-    if let Some(Top::Host { cmd }) = args.cmd {
+    let access_cmd = matches!(&args.cmd, Some(Top::Host { cmd: Some(c) }) if c.is_access());
+    if let (Some(Top::Host { cmd }), false) = (&args.cmd, access_cmd) {
+        let cmd = cmd.clone();
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
@@ -188,7 +207,33 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    let rt = || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+    };
     match args.cmd {
+        Some(Top::Host { cmd: Some(cmd) }) => return rt()?.block_on(pair::host_cmd(cmd)),
+        Some(Top::Pair { target, code, yes }) => {
+            return rt()?.block_on(pair::pair_cmd(&target, code, yes))
+        }
+        Some(Top::Share {
+            host,
+            label,
+            expires,
+            uses,
+            view_only,
+        }) => {
+            return rt()?.block_on(async {
+                let c = connect(host, None, false, true).await?;
+                pair::share(c, label, expires, uses, view_only).await
+            })
+        }
+        Some(Top::Access { host }) => {
+            return rt()?.block_on(async {
+                pair::access_remote(connect(host, None, false, true).await?).await
+            })
+        }
         Some(Top::Mcp { host, token, yes }) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

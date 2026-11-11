@@ -88,6 +88,8 @@ pub struct Welcome {
     pub desktop: bool,
     pub persistent: bool,
     pub allow: lolidesk_proto::Allow,
+    /// 我在这台主机上是主人，还是一台配对过的设备
+    pub role: lolidesk_proto::Role,
 }
 
 pub struct Client {
@@ -174,6 +176,58 @@ fn client_config(pinned: Option<[u8; 32]>) -> Result<(quinn::ClientConfig, Arc<P
     Ok((cfg, pin))
 }
 
+/// 配对拿到的东西：以后 Hello 用 `credential`
+pub struct Paired {
+    pub credential: String,
+    pub host: String,
+    pub grant: String,
+    pub fingerprint: [u8; 32],
+}
+
+/// 配对：带配对码直接换凭据；不带就等主机那边的人同意（最多 [`proto::PAIR_WAIT_SECS`] 秒）。
+/// `pinned` 为 None 时接受任何证书（调用方已经让用户核对过指纹，或者 `-y`）；分享链接带着指纹，一定钉住
+pub async fn pair(
+    addr: SocketAddr,
+    pinned: Option<[u8; 32]>,
+    device: proto::DeviceInfo,
+    code: Option<String>,
+) -> Result<Paired> {
+    let (cfg, pin) = client_config(pinned)?;
+    let endpoint = endpoint_for(addr)?;
+    let conn = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect_with(cfg, addr, proto::SERVER_NAME)?,
+    )
+    .await
+    .with_context(|| format!("连 {addr} 超时"))?
+    .with_context(|| format!("连 {addr}"))?;
+    let fingerprint = pin.seen.lock().unwrap().context("握手没拿到证书指纹")?;
+    let (mut send, mut recv) = open(&conn, StreamKind::Control).await?;
+    proto::send(&mut send, &ControlReq::Pair { device, code }).await?;
+    let resp = tokio::time::timeout(
+        Duration::from_secs(proto::PAIR_WAIT_SECS + 15),
+        proto::recv::<ControlResp>(&mut recv),
+    )
+    .await
+    .context("主机一直没回配对请求")??;
+    conn.close(0u32.into(), b"paired");
+    match resp {
+        Some(ControlResp::Paired {
+            credential,
+            host,
+            grant,
+        }) => Ok(Paired {
+            credential,
+            host,
+            grant,
+            fingerprint,
+        }),
+        Some(ControlResp::Denied(why)) => bail!("{why}"),
+        None => bail!("主机关了连接（主机版本太旧，还不会配对？）"),
+        Some(other) => bail!("配对回应不对：{other:?}"),
+    }
+}
+
 /// 连上并 Hello。`pinned` 为 None 时接受任何证书（调用方已经让用户核对过，或者 CLI 的 `-y`）。
 pub async fn connect(
     addr: SocketAddr,
@@ -210,6 +264,7 @@ pub async fn connect(
             desktop,
             persistent,
             allow,
+            role,
         }) => Welcome {
             host,
             os,
@@ -217,6 +272,7 @@ pub async fn connect(
             desktop,
             persistent,
             allow,
+            role,
         },
         Some(ControlResp::Denied(why)) => bail!("主机拒绝：{why}"),
         other => bail!("Hello 回应不对：{other:?}"),

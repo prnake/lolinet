@@ -276,6 +276,7 @@ mod gui {
                     desktop: true,
                     persistent: true,
                     allow: Default::default(),
+                    role: lolidesk_proto::Role::Device("g-test".into()),
                 },
                 3.2,
                 vec![
@@ -320,6 +321,7 @@ mod gui {
                     desktop: true,
                     persistent: false,
                     allow: Default::default(),
+                    role: lolidesk_proto::Role::Device("g-test".into()),
                 },
                 11.0,
                 vec![session(2, "", "", "htop", "/")],

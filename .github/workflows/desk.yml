@@ -193,6 +193,9 @@ jobs:
           grep -q '没开放 computer use' mcp-off.out || { cat mcp-off.out; echo "关掉 cua 之后工具没被拒"; exit 1; }
           ./pkg/lolidesk host allow cua on
           kill $HOST
+          # 配对：配对码 / 分享链接、请求同意（同意、拒绝、冷却）、设备发分享链接、按设备限制、吊销连带、老 token
+          # （自己起一台主机，几台「设备」各用自己的 HOME；不弹系统对话框）
+          python3 scripts/check_pairing.py ./pkg/lolidesk
 
       - uses: actions/upload-artifact@v5
         with:

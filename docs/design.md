@@ -63,8 +63,20 @@ A machine's lolidesk host already holds the two macOS permissions that remote co
 - **Computer-use tools** over the same QUIC connection as the desktop and the terminal, authenticated by the same token and pinned certificate: `screenshot` (JPEG, scaled to a size the agent asks for), `click` (with button, count and modifiers), `move`, `drag`, `scroll`, `type_text`, `key` (`cmd+shift+t` and the like), `displays`, `cursor`. Coordinates are the last screenshot's pixels.
 - **`lolidesk mcp <host>`** is a stdio MCP server that forwards these tools to a host, so any agent on any machine in the network can use any other machine: `claude mcp add desk-studio -- lolidesk mcp 10.188.16.10`. `lolidesk cua <host> <tool> [json]` calls one tool from a shell.
 - **Same permissions, no new prompt.** If the host can capture the screen for a viewer, it can take a screenshot for an agent. Nothing new to grant.
-- **Permission switches.** `lolidesk host allow` sets `terminal`, `desktop`, `control` and `cua`, all on by default. A host can serve desktops view-only (`control off`) or keep agents off (`cua off`). Per-token scopes come next (**planned**).
+- **Permission switches.** `lolidesk host allow` sets `terminal`, `desktop`, `control` and `cua`, all on by default. A host can serve desktops view-only (`control off`) or keep agents off (`cua off`). Each paired device can be limited further (`lolidesk host limit`, **built**; see below).
 - **Person first.** As in Cindy's computer-use driver, input from an agent is refused while a person has used this Mac's keyboard or mouse in the last few seconds (`user_active`), so an agent never fights the person in front of the screen. Remote desktop viewers are people and aren't held back.
+
+## Computers pairing with computers
+
+Joining the network (above) makes a machine a member. Reaching its terminals and screen is a second, per-computer decision, because every computer runs the same program and is a host as well as a client (**built** in `lolidesk`; the app's screens for it are **planned**):
+
+- **This computer is the first host.** The host also listens on `127.0.0.1`, and the app and command line on the same machine connect as its *owner* with the host's token from the config directory. A terminal opened locally lives in the local host, so anyone you let in sees it too.
+- **Connect, then consent.** Any device in the network can ask to pair; the owner sees *「laptop」(10.188.16.11, macOS) wants to connect* in the app, or a system dialog when the app isn't open, and agrees once. The device then gets its own credential and never asks again.
+- **Codes and share links, one to many.** The owner can make pairing codes (optionally expiring, limited in uses, or view-only), and a paired device can make share links for the same host to bring in its other machines. A link carries the host's address and certificate fingerprint, so importing it needs no checking by eye.
+- **One place to see and revoke.** The host lists every device grouped by how it paired: by consent, or under the code it used, with its system and last connection. Revoking a code removes its devices; revoking a device removes its share links and the devices they brought in, and drops their open connections immediately.
+- **Room for finer permissions.** A device may do what the host offers (`lolidesk host allow`) and what its own limit allows (`lolidesk host limit`, or the code it used). Scopes per session or per display would go in the same place.
+
+This replaces one shared token per host, where a host couldn't tell its clients apart and revoking one meant revoking all.
 
 ## mihomo on phones and desktops
 
@@ -90,5 +102,6 @@ phone ─ mihomo (the only VPN)
 | Tailscale | Exit nodes, and `tailscale serve`-style "every node is reachable at its address" in userspace mode |
 | Headscale, NetBird | The center assigns addresses; members invite members within a policy |
 | Cindy | One permission grant for remote control and computer use; refuse agent input while the person is active |
+| Tailscale, Vibe42 | A request the other computer approves once, then a per-device key you can see and revoke; share links that bring in more devices |
 | Vibe42, kero | Terminals that live on the host (libghostty-vt Mirror frames), sessions that survive restarts |
 | mihomo, Stash | The overlay as one outbound among the user's own rules, instead of a second VPN |

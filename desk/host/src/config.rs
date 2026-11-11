@@ -27,7 +27,7 @@ pub fn config_dir() -> PathBuf {
         .join("host")
 }
 
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension("tmp");
@@ -43,53 +43,25 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// 开放的能力。每条连接、每条流开的时候现读，改了不用重启主机
+/// 本机的 app、命令行从哪里连这台主机（回环地址:端口），写在主机目录的 `local`；lolidesk_core::local 读它
+pub fn write_local(addr: std::net::SocketAddr) -> Result<()> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    write_private(&dir.join("local"), format!("{addr}\n").as_bytes())
+}
+
+/// 开放的能力（allow.json，少写的键按开算）。每条连接、每条流开的时候现读，改了不用重启主机
 pub fn allow() -> lolidesk_proto::Allow {
     fs::read(config_dir().join("allow.json"))
         .ok()
-        .and_then(|b| serde_json::from_slice::<AllowFile>(&b).ok())
-        .map(Into::into)
+        .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
 }
 
 pub fn set_allow(a: lolidesk_proto::Allow) -> Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
-    let f = AllowFile {
-        terminal: a.terminal,
-        desktop: a.desktop,
-        control: a.control,
-        cua: a.cua,
-    };
-    write_private(&dir.join("allow.json"), &serde_json::to_vec_pretty(&f)?)
-}
-
-/// allow.json：少写的键按开算
-#[derive(serde::Serialize, serde::Deserialize)]
-struct AllowFile {
-    #[serde(default = "on")]
-    terminal: bool,
-    #[serde(default = "on")]
-    desktop: bool,
-    #[serde(default = "on")]
-    control: bool,
-    #[serde(default = "on")]
-    cua: bool,
-}
-
-fn on() -> bool {
-    true
-}
-
-impl From<AllowFile> for lolidesk_proto::Allow {
-    fn from(f: AllowFile) -> Self {
-        Self {
-            terminal: f.terminal,
-            desktop: f.desktop,
-            control: f.control,
-            cua: f.cua,
-        }
-    }
+    write_private(&dir.join("allow.json"), &serde_json::to_vec_pretty(&a)?)
 }
 
 impl HostConfig {
