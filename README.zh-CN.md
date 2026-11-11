@@ -54,7 +54,7 @@ uv run scripts/pair.py new --name laptop --ip 10.188.16.11
 curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
 ```
 
-<sub>脚本先从 GitHub 最新的 Release 下载 `lolinet`（连不上或太慢就用准入站的 `dl/`），校验 sha256 并试跑一次，再兑换配对码，在设备上解密配置，把 `lolinet` 装到 `/usr/local/bin`，注册 launchd / systemd 服务，并打开自动升级（每 6 小时检查一次）。默认还会装公开探针，它只报硬件和大致位置；配对时加 `--no-probe` 就不装。发布过 [lolidesk](docs/lolidesk.md) 之后，也会装 `lolidesk` 和 `lolidesk-host`，但不启动主机。Linux 上需要 systemd。Docker 和没有 sudo 的 NAS 见[没有 systemd 的设备](docs/self-hosting.md#devices-without-systemd)。</sub>
+<sub>脚本先从 GitHub 最新的 Release 下载 `lolinet`（连不上或太慢就用准入站的 `dl/`），校验 sha256 并试跑一次，再兑换配对码，在设备上解密配置，把 `lolinet` 装到 `/usr/local/bin`，注册 launchd / systemd 服务，并打开自动升级（每 6 小时检查一次）。默认还会装公开探针，它只报硬件和大致位置；配对时加 `--no-probe` 就不装。发布过 [lolidesk](docs/lolidesk.md) 之后，也会装 `lolidesk`，但不启动主机。Linux 上需要 systemd。Docker 和没有 sudo 的 NAS 见[没有 systemd 的设备](docs/self-hosting.md#devices-without-systemd)。</sub>
 
 已经入网，或者是旧脚本装的？不带配对码再跑一次。它用本机现有的配置装上或升级 `lolinet`，已是最新就什么都不动：
 
@@ -113,6 +113,7 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 | **一次性** | 密文在 Workers KV 里放 15 分钟，第一次取走就删。每个 IP 每 10 分钟最多试 20 次 |
 | **一台设备一条凭据** | EasyTier 的 secure mode：控制台给每台设备签一条凭据，最长 1 年、不可复用 |
 | **单独吊销** | `uv run scripts/revoke.py laptop -`，或者在本地控制台的 **凭据** 页操作。网里其他设备不受影响 |
+| **成员邀请成员** | 任何一台设备上 `lolinet invite`，经 overlay 问[管理面](docs/console.md#manager-on-the-issuer-relay)要配对码：不要控制台账号，地址按机器种类从地址池里分。谁能邀请什么、多久几次由策略决定 |
 
 ### 传输
 
@@ -129,13 +130,21 @@ lolinet cli …                         # 原版 easytier-cli（lolinet core …
 
 `sudo lolinet up` 把它装成 macOS 的 LaunchDaemon 或 Linux 的 systemd 服务，管理口只听 `127.0.0.1:15888`。以前的 join 脚本用 `easytier-core` 装的设备，它也会接管：撤掉旧服务，拷过旧配置，把旧路径的二进制换成指向 `lolinet` 的链接。
 
+### 无 TUN 模式和出口节点
+
+`sudo lolinet up --userspace` 不建 TUN 网卡也能入网：本机程序经 `127.0.0.1:18080` 的 SOCKS5 进网，发到本机 overlay 地址的连接会转给 `127.0.0.1`。容器里能用，mihomo 或别的 VPN 已经占着 TUN 时也能用。
+
+`sudo lolinet exit on` 把这台的网络借给网里其他机器：端口 `10180` 上的 SOCKS5，TCP 和 UDP 都支持，只有 overlay 里连得到。它不让人打回环、云元数据，也不让人打私网地址（加 `--lan` 才放开）。浏览器、`curl --socks5-hostname` 或 mihomo 的规则都可以指向它。
+
+**手机和 mihomo。** 手机不用再开第二个 VPN，经 mihomo 进网：`lolinet invite --kind phone` 给一个链接，手机浏览器里用配对码解开一份 mihomo 配置，里面一条 WireGuard 出站连签发 relay，只走网内地址。哪些拒绝、哪些直连、哪些经哪台出口出去，都在管理面集中定，经内网下发；`lolinet mihomo` 给电脑出同样的配置。
+
 ### 自动升级
 
 | | |
 | :-- | :-- |
 | **发布清单** | `lolinet.json` 写的是设备应该跑的版本，以及每个平台的文件名和 sha256。本机版本和它不一样就换，所以把旧版本重新发布一次就是回退 |
 | **来源** | `install.sh` 从哪里下载成功就跟哪里：GitHub Releases（`github:prnake/lolinet`），GitHub 连不上时是准入站的 `dl/lolinet.json`。也可以用 `--upgrade-source` 指定任何清单 URL |
-| **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。探针的 `reporter.py` 和装了的 lolidesk 也一样换 |
+| **过三关** | 用系统 curl 下载，sha256 要和清单一致，新二进制要能跑起来并报出清单里的版本。三关都过了，才原子地换掉 `/usr/local/bin/lolinet` 并重启服务。设备的探针编在 `lolinet` 里，跟着一起换；装了的 lolidesk 也一样换 |
 | **不吵** | 每 6 小时跑一次，只有换了版本或出错时才写日志。`lolinet status` 能看到它开没开 |
 
 ### 本地控制台
@@ -150,7 +159,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 
 ### lolidesk
 
-跑在这张网里的远程终端和远程桌面，和 `lolinet` 分开发包。终端会话在主机上，断线不丢，多个客户端可以同看一个会话。主机是 macOS 时，桌面画面用硬件编码的 H.264，经 QUIC datagram 传。所有东西走一条 QUIC 连接，主机证书第一次连上时记住，之后钉扎。详见 [lolidesk（英文）](docs/lolidesk.md)。
+跑在这张网里的远程终端和远程桌面，和 `lolinet` 分开发包。终端会话在主机上，跑在 Ghostty 的终端核心（libghostty-vt）里，主机把屏幕同步给每个客户端。断线不丢，主机重启后会话带着历史回来，多个客户端可以同看一个会话，新会话可以直接起一个 coding agent。主机是 macOS 时，桌面画面用硬件编码的 H.264，经 QUIC datagram 传，分辨率、帧率和画质自己选。图形客户端用 [GPUI](https://github.com/zed-industries/zed) 写，还能用配对码把这台 Mac 加进网、列出各节点和延迟、邀请别的电脑或手机（手机扫二维码）、开关出口节点，并一步步带你开好 macOS 的两个授权。另有命令行客户端。网里任何一台机器上的 agent 都能经 `lolidesk mcp <主机>`（一个 MCP 服务）用那台的屏幕和键鼠，用的是远程桌面那份 macOS 授权，不用再授权；有人正在用这台电脑时，agent 的输入先等着。所有东西走一条 QUIC 连接，主机证书第一次连上时记住，之后钉扎。电脑之间要先配对：请求一次、对方同意，或者用配对码、分享链接；每台配对过的设备有自己的钥匙，主机列得出它最近什么时候连过，可以单独吊销。详见 [lolidesk（英文）](docs/lolidesk.md)。
 
 ## 仓库里有什么
 
@@ -160,9 +169,9 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 | `easytier/`、`patches/` | 钉住的 EasyTier 版本、三个补丁、实测脚本 |
 | `join/` | 准入站：Cloudflare Worker、`install.sh`、`deploy.py` |
 | `scripts/` | `pair.py` 出配对码，`revoke.py` 吊销，`device_config.py` 渲染配置 |
-| `probe/` | 公开探针上报（只用 Python 标准库）和它的服务文件 |
+| `probe/` | relay 的公开探针上报（只用 Python 标准库）。设备的探针编在 `lolinet` 里（`lolinet probe`，格式和签名相同） |
 | [`web/`](web/README.md) | 本地控制台、公开探针页面、控制台的 agent |
-| [`desk/`](desk/README.md) | lolidesk，Rust 工作区 |
+| [`desk/`](desk/README.md) | lolidesk，Rust 工作区：主机、图形客户端（GPUI）和命令行 |
 | [`nodes.example.yaml`](nodes.example.yaml) | 节点清单模板 |
 
 ## 文档
@@ -172,6 +181,7 @@ relay 和设备签名（HMAC）后把状态报给准入站，准入站首页展�
 | **[自己搭一套](docs/self-hosting.md)** | relay、准入站、安装包、加设备和吊销、发版（英文） |
 | **[完整参考](docs/reference.md)** | 命令行、`nodes.yaml`、环境变量、文件、端口、准入站接口、发布格式（英文） |
 | **[架构](docs/architecture.md)** | 各部分怎么做的：二进制、补丁、配对、升级、探针（英文） |
+| **[设计](docs/design.md)** | 往哪儿走：服务器、电脑和手机；出口节点、邀请、computer use、mihomo（英文） |
 | **[本地控制台](docs/console.md)** | 浏览器控制台、agent 和公开探针页面（英文） |
 | **[lolidesk](docs/lolidesk.md)** | 网里的远程终端和远程桌面（英文） |
 | **[猫眼](web/DESIGN.md)** | 控制台和探针的设计语言 |

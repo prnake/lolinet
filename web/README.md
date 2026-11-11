@@ -7,6 +7,7 @@ The local console and the public probe page. Two Vite builds share one set of Re
 | `index.html`, `src/App.tsx`, `src/pages/` | Local console: overview, nodes, credentials, pairing, design specimen. Builds to `dist/`, served by the agent |
 | `probe.html`, `src/probe/` | Public probe page for the join site's home page. Builds to `dist-probe/` with `vite.probe.config.ts` |
 | `agent/mesh_agent.py` | The console's backend: `easytier-cli` snapshots, a filtered proxy to `easytier-web`, pairing through `scripts/pair.py`. Python standard library only |
+| `agent/mesh_manager.py` | The always-on intranet variant for the issuer relay: whole-site sign-in with the console account, a Settings page, and server-side pairing through the join Worker's `/v1/manager/*`. See [docs/console.md](../docs/console.md#manager-on-the-issuer-relay) |
 | `vite.nodes.ts` | Reads `nodes.yaml` into `virtual:mesh-nodes`. The public build keeps only what may be published |
 | `src/ui/`, `src/viz/`, `src/styles/` | Components, topology / matrix / path charts, and the design tokens |
 | `DESIGN.md` | The Catseye design language (Chinese). Every colour, size, radius and duration lives in `src/styles/tokens.css` |

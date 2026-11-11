@@ -54,7 +54,7 @@ uv run scripts/pair.py new --name laptop --ip 10.188.16.11
 curl -fsSL https://join.edge.example.com/i | sudo sh -s XXXX-XXXX-XXXX
 ```
 
-<sub>The script downloads `lolinet` from the latest GitHub Release (or the join site's `dl/` if GitHub is unreachable or slow), checks its sha256 and test-runs it, then redeems the code, decrypts the config on the device, installs `lolinet` to `/usr/local/bin`, registers the launchd or systemd service, and turns on auto-upgrade (every 6 hours). It also installs the public probe, which reports only hardware and a rough location; pair with `--no-probe` to leave it out. Once a [lolidesk](docs/lolidesk.md) release is published, it installs `lolidesk` and `lolidesk-host` too, without starting the host. On Linux it needs systemd. For Docker or a NAS without sudo, see [devices without systemd](docs/self-hosting.md#devices-without-systemd).</sub>
+<sub>The script downloads `lolinet` from the latest GitHub Release (or the join site's `dl/` if GitHub is unreachable or slow), checks its sha256 and test-runs it, then redeems the code, decrypts the config on the device, installs `lolinet` to `/usr/local/bin`, registers the launchd or systemd service, and turns on auto-upgrade (every 6 hours). It also installs the public probe, which reports only hardware and a rough location; pair with `--no-probe` to leave it out. Once a [lolidesk](docs/lolidesk.md) release is published, it installs `lolidesk` too, without starting the host. On Linux it needs systemd. For Docker or a NAS without sudo, see [devices without systemd](docs/self-hosting.md#devices-without-systemd).</sub>
 
 Already in, or installed by an older script? Run it without a code. It uses the config already on the machine, installs or upgrades `lolinet`, and does nothing if it is current:
 
@@ -113,6 +113,7 @@ The details are in [Architecture](docs/architecture.md).
 | **One time** | The ciphertext stays in Workers KV for 15 minutes and is deleted on the first fetch. Each IP gets 20 tries per 10 minutes |
 | **A credential per device** | EasyTier's secure mode: one credential per device, signed by the console, valid up to a year and not reusable |
 | **Revoke one device** | `uv run scripts/revoke.py laptop -`, or the **Credentials** page of the local console. The rest of the network is untouched |
+| **Members invite members** | `lolinet invite` on any device asks the [manager](docs/console.md#manager-on-the-issuer-relay) for a code over the overlay: no console account, and the address comes from the pool for the machine's kind. A policy decides who may invite what, and how often |
 
 ### Transport
 
@@ -129,13 +130,21 @@ The details are in [Architecture](docs/architecture.md).
 
 `sudo lolinet up` installs it as a LaunchDaemon on macOS or a systemd unit on Linux, with the admin port bound to `127.0.0.1:15888`. It also takes over devices that an earlier join script set up with `easytier-core`: it removes the old service, copies the old config, and links the old binary paths to `lolinet`.
 
+### Userspace mode and exit nodes
+
+`sudo lolinet up --userspace` joins without a TUN interface: programs reach the network through SOCKS5 on `127.0.0.1:18080`, and connections to the node's overlay address arrive on `127.0.0.1`. It works in containers and next to mihomo or another VPN that already owns the TUN.
+
+`sudo lolinet exit on` lends the node's internet connection to the rest of the network: a SOCKS5 server with TCP and UDP on port `10180`, reachable only from the overlay. It refuses loopback, cloud metadata and (unless `--lan`) private destinations. Point a browser, `curl --socks5-hostname` or a mihomo rule at it.
+
+**Phones and mihomo.** A phone joins through mihomo instead of a second VPN: `lolinet invite --kind phone` gives a link that decrypts a mihomo config in the phone's browser, with a WireGuard outbound to the issuer relay for the network's addresses. What is rejected, what goes direct and what goes out through which exit node is decided centrally on the manager and fetched over the network; `lolinet mihomo` writes the same config for a computer.
+
 ### Auto-upgrade
 
 | | |
 | :-- | :-- |
 | **Manifest** | `lolinet.json` names the version devices should run, with each platform's file and sha256. If the local version differs, the device switches, so publishing an old version again rolls back |
 | **Sources** | Whichever `install.sh` downloaded from: GitHub Releases (`github:prnake/lolinet`), or the join site's `dl/lolinet.json` when GitHub was out of reach. Or any manifest URL with `--upgrade-source` |
-| **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The probe's `reporter.py` and any installed lolidesk binaries are updated the same way |
+| **Three checks** | The download comes through the system's curl, its sha256 must match, and the new binary must run and report the manifest's version. Only then is `/usr/local/bin/lolinet` replaced atomically and the service restarted. The device probe is built into `lolinet` and switches with it; an installed lolidesk is updated the same way |
 | **Quiet** | Runs every 6 hours and writes a log line only when it switches versions or fails. `lolinet status` shows whether it is on |
 
 ### Local console
@@ -150,7 +159,7 @@ Relays and devices send HMAC-signed reports to the join site, and its home page 
 
 ### lolidesk
 
-A remote terminal and remote desktop that run over the network, shipped separately from `lolinet`. Terminal sessions live on the host, so a dropped connection loses nothing and several clients can watch one session. On a macOS host, the desktop streams hardware-encoded H.264 over QUIC datagrams. One QUIC connection carries everything; the host's certificate is pinned on first use. See [lolidesk](docs/lolidesk.md).
+A remote terminal and remote desktop that run over the network, shipped separately from `lolinet`. Terminal sessions live on the host in Ghostty's terminal core (libghostty-vt), which streams its screen to each client. A dropped connection loses nothing, sessions come back with their history after a host restart, several clients can watch one session, and new sessions can start a coding agent. On a macOS host, the desktop streams hardware-encoded H.264 over QUIC datagrams at the resolution, frame rate and quality you pick. The desktop app is built with [GPUI](https://github.com/zed-industries/zed); it can also join the Mac to the network from a pairing code, list the nodes and their latency, invite another computer or a phone (with a QR code), switch the exit node, and walk you through the two macOS permissions. There is also a command-line client. Agents on any machine can use a host's screen and keyboard through `lolidesk mcp <host>`, an MCP server, with the same macOS permissions as the remote desktop and nothing new to grant; while a person is using the computer, agent input waits. One QUIC connection carries everything; the host's certificate is pinned on first use. Computers pair with each other: ask once and the other side agrees, or use a pairing code or share link; every paired device has its own key that the host lists with its last connection and can revoke. See [lolidesk](docs/lolidesk.md).
 
 ## What's in this repository
 
@@ -160,9 +169,9 @@ A remote terminal and remote desktop that run over the network, shipped separate
 | `easytier/`, `patches/` | The pinned EasyTier version, the three patches, and the checks that prove them |
 | `join/` | The join site: Cloudflare Worker, `install.sh`, `deploy.py` |
 | `scripts/` | `pair.py` issues pairing codes, `revoke.py` revokes, `device_config.py` renders configs |
-| `probe/` | The public probe reporter (Python standard library only) and its service files |
+| `probe/` | The relays' public probe reporter (Python standard library only). Devices use the one built into `lolinet` (`lolinet probe`, same format and signature) |
 | [`web/`](web/README.md) | The local console, the public probe page, and the console's agent |
-| [`desk/`](desk/README.md) | lolidesk, a Rust workspace |
+| [`desk/`](desk/README.md) | lolidesk, a Rust workspace: host, desktop app (GPUI) and command line |
 | [`nodes.example.yaml`](nodes.example.yaml) | Template for your node list |
 
 ## Documentation
@@ -172,6 +181,7 @@ A remote terminal and remote desktop that run over the network, shipped separate
 | **[Self-hosting](docs/self-hosting.md)** | Relays, the join site, packages, adding and revoking devices, releasing |
 | **[Reference](docs/reference.md)** | CLI, `nodes.yaml`, environment variables, files, ports, join-site endpoints, release format |
 | **[Architecture](docs/architecture.md)** | How the pieces work: the binary, the patches, pairing, upgrades, the probe |
+| **[Design](docs/design.md)** | Where it's going: servers, desktops and phones; exit nodes, invitations, computer use, mihomo |
 | **[Local console](docs/console.md)** | The browser console, its agent, and the public probe page |
 | **[lolidesk](docs/lolidesk.md)** | Remote terminal and desktop over the network |
 | **[Catseye](web/DESIGN.md)** | The design language of the console and probe (in Chinese) |

@@ -1,0 +1,53 @@
+[package]
+name = "lolidesk-app"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Lolidesk.app：lolidesk 的图形客户端（GPUI + gpui-component）。终端画在 GPUI 里（libghostty-vt），远程桌面零拷贝显示 NV12 画面"
+
+# 界面代码在库里（快照测试要从外面开窗口），可执行文件只是入口
+[lib]
+name = "lolidesk_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lolidesk-app"
+path = "src/main.rs"
+
+# 离屏渲染快照：GPUI 的 Mac 平台只能在主线程建，所以不用 libtest 的线程
+[[test]]
+name = "snapshots"
+path = "tests/snapshots.rs"
+harness = false
+
+[dependencies]
+lolidesk-proto.workspace = true
+lolidesk-core.workspace = true
+lolidesk-ghostty.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+quinn.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+
+# 图形界面在 macOS 和 Linux 上编（别的平台 main 是个空壳）
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+gpui-kit = "=0.9.1"
+# 邀请手机：配对链接的二维码（只要模块矩阵，自己画成方块）
+qrcode = { version = "0.14", default-features = false }
+
+# macOS：远程画面（CVPixelBuffer）、物理键码（NSEvent）、主机是不是这台 Mac（权限设置页在本机也打开）
+[target.'cfg(target_os = "macos")'.dependencies]
+if-addrs = "0.13"
+objc2-core-foundation = "0.3.2"
+objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", features = ["NSEvent", "NSApplication", "NSResponder", "NSPasteboard"] }
+objc2-foundation = { version = "0.3.2", features = ["NSString"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dev-dependencies]
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }

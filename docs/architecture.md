@@ -63,9 +63,36 @@ Peer URLs use the relay's public IP, not its DNS name: on some networks the loca
 
 - removes that service, which would compete for the same TUN device and credential;
 - copies `/etc/easytier/loli.toml` to `/etc/lolinet/loli.toml` if the new one doesn't exist yet, and leaves the old file in place;
-- replaces `easytier-core` and `easytier-cli` in the old directory (`/usr/local/libexec/easytier/` on macOS, `/opt/easytier/` on Linux) with symlinks to `lolinet`, so the probe and older scripts keep working.
+- replaces `easytier-core` and `easytier-cli` in the old directory (`/usr/local/libexec/easytier/` on macOS, `/opt/easytier/` on Linux) with symlinks to `lolinet`, so no-tun clients, a not-yet-migrated Python probe and older scripts keep working.
+- moves a device-mode Python probe (`/etc/mesh-probe/reporter.json`) to the built-in one, keeping its public id.
 
 **Credential expiry.** `pair.py` appends `# credential_id` and `# credential_expiry_unix` to the config as TOML comments. EasyTier ignores them; `lolinet status` reads them to show the days left. The config is mode 600, so this line needs `sudo`.
+
+## TUN and userspace
+
+A node joins in one of two modes. Both use the same credential, probe and auto-upgrade; only how traffic enters and leaves the overlay differs.
+
+| | TUN (default) | Userspace (`lolinet up --userspace`) |
+| :-- | :-- | :-- |
+| **Outbound** | A TUN interface takes the overlay's CIDR; any program reaches overlay addresses directly | Programs use the SOCKS5 proxy on `127.0.0.1:18080`, which EasyTier serves from its own user-space TCP/IP stack (smoltcp). The routing table isn't touched |
+| **Inbound** | Packets for the node's overlay address arrive on the TUN interface | EasyTier delivers TCP and UDP for the node's overlay address to `127.0.0.1`, same port, through its proxy |
+| **Needs** | Root and `/dev/net/tun` | Nothing from the kernel. Works in containers and next to another VPN or mihomo that owns the TUN |
+
+The mode is two lines of `loli.toml`: `socks5_proxy = "socks5://127.0.0.1:18080"` at the top and `no_tun = true` under `[flags]`. `lolinet up --userspace` and `--tun` edit those lines in place rather than rewriting the file, because `# credential_id` and other comments at the end are read by `lolinet status`, and check the result with `easytier-core --check-config` before it replaces the old config.
+
+Inbound delivery to loopback has a consequence worth knowing: on a userspace node, every service that listens on `127.0.0.1` is reachable from the overlay at the node's address. Keep private services on another address, or keep the node in TUN mode.
+
+## Exit nodes
+
+`lolinet exit on` makes a node lend its internet connection to the rest of the network through a SOCKS5 server built into `lolinet` ([`lolinet/src/exit.rs`](../lolinet/src/exit.rs)). A rule engine on the client side (mihomo on a phone, a browser's proxy settings, `curl --socks5-hostname`) decides what goes out where; nothing else changes on the exit node: no IP forwarding, no NAT rules.
+
+- **Listening.** On the overlay address in TUN mode. On `127.0.0.1` in userspace mode, where EasyTier's inbound delivery brings overlay connections to it. In TUN mode the service waits for the address to appear, since it may start before EasyTier has brought up the interface.
+- **Who may connect.** The source must be in `allow` (default: the overlay's CIDR, plus loopback). Any other source is closed before the SOCKS5 handshake. There is no SOCKS5 authentication: the overlay already authenticated the peer.
+- **Where it goes.** Loopback, link-local (including cloud metadata at `169.254.169.254`), multicast and unspecified destinations are always refused, so the exit can't be used against the exit node itself. Private and CGNAT ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`) are refused unless the node runs with `--lan`, which makes it a subnet router for its local network. Domain names are resolved on the exit node and the resulting address is checked the same way.
+- **TCP** is two sockets with `TCP_NODELAY`, copied in both directions with 64 KiB buffers; on loopback it moves about 30 Gbit/s, as fast as the test client. **UDP** (`UDP ASSOCIATE`) gives each association its own relay socket on the listening address and a pair of outbound sockets (IPv4 and IPv6). The association ends when its TCP control connection does, as RFC 1928 requires. In userspace mode the relay socket is on loopback, so the reply names `0.0.0.0` and clients use the address they connected to, which is the convention.
+- **The service** starts as root to read `loli.toml` (mode 600) and bind, then drops to `nobody`. It runs on one thread, caps itself at 4096 connections, and logs only errors.
+
+[`lolinet/check_exit.py`](../lolinet/check_exit.py) tests all of this without root: the refusals, `CONNECT` to the internet, DNS over `UDP ASSOCIATE`, and two userspace nodes on loopback where one reaches the other's exit through its own SOCKS5 and the other's overlay address. CI runs it on every platform that can execute the build.
 
 ## Pairing
 
@@ -86,11 +113,35 @@ admin                         console (issuer)        join site (Worker + KV)   
 - **Code**: 12 characters from an alphabet without look-alikes (no `0`, `O`, `1`, `I`, `L`), shown in groups of four.
 - **Encryption**: PBKDF2-SHA256 with 200,000 rounds derives the key and IV, then AES-256-CBC, in OpenSSL's `Salted__` format. The device decrypts with `openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256`, which every macOS and Linux has.
 - **The Worker** stores the ciphertext under a hash of the code, deletes it on the first `GET`, and allows each IP 20 attempts per 10 minutes. `HEAD` requests are refused so they can't use up a code. The code itself never reaches the Worker.
-- **The probe** rides along: unless the code was made with `--no-probe`, the config ends with a `# probe = {…}` line holding the device's public id and report key. `install.sh` and `lolinet up` take that line out before the config goes to EasyTier.
+- **The probe** rides along: unless the code was made with `--no-probe`, the config ends with a `# probe = {…}` line holding the device's public id and report key. `lolinet up` moves that line to `/etc/lolinet/probe.json` and installs the probe service; it never reaches EasyTier.
 - **Before redeeming**, `install.sh` checks that the machine is supported (macOS, or Linux with systemd) and downloads and verifies `lolinet`, so a code isn't spent on a machine that can't use it or can't get the client.
 - **Where `lolinet` comes from.** The latest GitHub Release, pinned to one tag through the `releases/latest` redirect. If GitHub is unreachable or too slow (common from mainland China), the join site's `dl/`, which holds the same release's files. `lolinet up` then points auto-upgrade at the source that worked, so a device never flips between two sources that are briefly on different versions.
 - **Without a code** the same script upgrades a device already in the network: it reuses the config on the machine and runs `lolinet up` only if the version, the service or the upgrade job needs it.
-- **lolidesk** comes last, in both cases: `install.sh` installs or updates `lolidesk-host` and `lolidesk` in `/usr/local/bin` from the same source as `lolinet`, each only if it passes the sha256 check and runs on this machine. It doesn't start the host. Any failure here skips lolidesk and leaves the join alone.
+- **lolidesk** comes last, in both cases: `install.sh` installs or updates `lolidesk` in `/usr/local/lib/lolidesk/` (linked from `/usr/local/bin/lolidesk`) from the same source as `lolinet`, only if it passes the sha256 check and runs on this machine. It doesn't start the host. Any failure here skips lolidesk and leaves the join alone.
+
+### Member invitations
+
+The admin flow above needs the console password. Members can also invite: `lolinet invite` asks the manager (`web/agent/mesh_manager.py`, on the issuer relay behind nginx on the overlay) for a code over the overlay. The manager identifies the member by the request's overlay source address, checks `policy.json`, picks an address from the pool for the requested kind, and has the issuer relay's own EasyTier node sign the credential through its local RPC; the relay keeps such credentials in its `credential_file`. From there it is the same flow: render, encrypt, KV, one-time code. [`lolinet/check_invite.py`](../lolinet/check_invite.py) runs the whole path on loopback (an issuer, a member, a stand-in Worker and nginx) and joins a new node with the code it gets.
+
+### Phones and mihomo
+
+A phone runs one VPN, so the overlay becomes one of mihomo's outbounds instead of a second VPN. `lolinet invite --kind phone` makes the manager add a named WireGuard client to the issuer relay's VPN portal (EasyTier attaches it as a peer with an address from `10.188.48.0/20`, and derives its key from the portal key and the name) and render a mihomo config:
+
+- a `wireguard` proxy `lolinet` to the relay, carrying only the overlay's CIDR;
+- rules that send the overlay's addresses, the manager's name and `<name><local_suffix>` names to `lolinet`, then three rule-providers (`reject`, `direct`, `exit`) and `MATCH,DIRECT`;
+- a proxy-provider with the exit nodes, each a `socks5` to `<overlay address>:10180` dialled through `lolinet`, in the order the admin chose and ending with a direct entry; they form the `出口` group the `exit` rules point at.
+- for each route (rules that must leave through one particular machine), a rule-provider, a proxy-provider holding only that machine's exit (or an unreachable address while it isn't registered, so the route fails closed), and a group `线路·<name>`; routes are matched after `reject` and `direct` and before `exit`.
+
+The providers are fetched from the manager through `lolinet` every 10 minutes, so the admin changes routing for every phone and desktop in one place, and nothing about the network is on a public URL. The pairing ciphertext goes to KV as usual; the phone opens `<join>/m#CODE` and the page decrypts it with WebCrypto (the code stays after `#`, which browsers never send). Desktops get the same config from `lolinet mihomo`. How mihomo and lolinet share the machine:
+
+| | TUN mode (two TUNs) | Userspace mode (mihomo is the only TUN) |
+| :-- | :-- | :-- |
+| An app reaching an overlay address | System route to lolinet's TUN; mihomo's TUN excludes the CIDR (`route-exclude-address`), so mihomo never sees it | mihomo's TUN, rule `IP-CIDR,<cidr>,lolinet`, then lolinet's SOCKS5 on `127.0.0.1:18080` |
+| An app reaching the internet | mihomo's TUN, then the central rules: reject, direct or an exit node | Same |
+| mihomo's own connections (exit nodes, fetching rules from the manager, apps using port 7890) | Through `127.0.0.1:18080` | Same |
+| lolinet's own traffic to relays | Bound to the physical interface by EasyTier, so it skips mihomo's routes; mihomo's rules also send `PROCESS-NAME lolinet` / `easytier-core` and every relay's public address `DIRECT`, first | Same |
+
+The third row is why lolinet's loopback SOCKS5 is needed in both modes. With `auto-detect-interface`, mihomo binds every connection it dials to the physical interface (`IP_BOUND_IF` on macOS, `SO_BINDTODEVICE` on Linux), except for loopback and similar addresses; Go counts `10.x` as ordinary unicast, so a direct dial to `10.188.x.x` would leave through Wi-Fi instead of lolinet's TUN. In TUN mode `lolinet mihomo on` turns the SOCKS5 on (`socks5_proxy` without `no_tun`) and restarts lolinet, and `lolinet up --tun` keeps it while the mihomo service is installed. Both configs hijack DNS (`dns-hijack: any:53`) and sniff TLS, HTTP and QUIC, so domain rules also match traffic that reaches mihomo as bare IPs through the TUN. Overlay names under the edge zone are kept out of fake-IP and resolve to their real overlay addresses. This is read from mihomo v1.19.33's source and not yet run against a real mihomo. `sudo lolinet mihomo on` runs it as a root service (`co.lo-li.lolinet-mihomo` / `lolinet-mihomo.service`) from `/etc/lolinet/mihomo/`, after `mihomo -t` accepts the config; `lolinet` itself never contains mihomo, so its size limit holds. [`lolinet/check_service.py`](../lolinet/check_service.py) installs the exit node and mihomo services for real as root in CI (mihomo replaced by a stub) and checks they run, answer and uninstall cleanly.
 
 ## Auto-upgrade
 
@@ -106,7 +157,7 @@ admin                         console (issuer)        join site (Worker + KV)   
 2. The sha256 must match the manifest.
 3. The new binary must run on this machine and print the manifest's version from `--version`.
 
-Then it replaces `/usr/local/bin/lolinet` atomically and restarts the service. If the probe is installed and the release's `reporter.py` differs, that is replaced too and the probe restarted. The job logs only switches and errors.
+Then it replaces `/usr/local/bin/lolinet` atomically and restarts the service. The probe is part of the binary, so it switches with it; each run also tidies the probe (takes over a Python one, reinstalls a service file this version writes differently). The job logs only switches and errors.
 
 **lolidesk** follows its own manifest, `lolidesk.json`, because its releases are separate and never `latest`. From the join site or a manifest URL it is the file next to `lolinet.json`; from a `github:` source it is in the newest `lolidesk-*` release, which `lolinet` finds through the GitHub API. Only binaries already in `/usr/local/bin` are considered, and only when their `--version` differs from the manifest. They pass the same sha256 check and test run, and then the files are replaced. A running host isn't restarted, since that would end its terminal sessions; it picks up the new version on its next start.
 
@@ -114,7 +165,7 @@ Then it replaces `/usr/local/bin/lolinet` atomically and restarts the service. I
 
 The join site's home page shows the network's health to anyone, without naming anything.
 
-**Reports.** [`probe/reporter.py`](../probe/reporter.py) needs only the Python standard library (macOS's `/usr/bin/python3` 3.9 is enough) and runs without root.
+**Reports.** Devices report with `lolinet probe`, built into `lolinet` ([`src/probe.rs`](../lolinet/src/probe.rs)): it reads hardware from `system_profiler` / `sysctl` (macOS) or `/proc` and `/sys/class/dmi` (Linux), asks the local kernel for the nearest relay, and sends through the system's curl with the key on stdin. It starts as root and drops to `nobody`. Relays, and devices in Docker that can't run the `lolinet` service, use [`probe/reporter.py`](../probe/reporter.py), which needs only the Python standard library (macOS's `/usr/bin/python3` 3.9 is enough) and runs without root. Both send the same format with the same signature.
 
 - **Relays** report every 30 seconds: CPU, memory, disk, network rate and traffic, load, uptime, OS and EasyTier version from `/proc` and `easytier-cli -o json peer`, plus their links to other relays and to devices.
 - **Devices** send a heartbeat every 60 seconds with hardware only: model, chip, memory, total storage, OS and architecture, and a location. The location is a fixed city, or "near <city>" for the nearest relay by measured latency. Never a hostname, address, serial number or load.

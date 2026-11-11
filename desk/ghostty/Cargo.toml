@@ -1,0 +1,13 @@
+[package]
+name = "lolidesk-ghostty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "libghostty-vt（Ghostty 的终端核心）的绑定：运行时载入；Mirror（主机终端到客户端终端的帧）和 History"
+
+[dependencies]
+anyhow.workspace = true
+libloading.workspace = true
+tracing.workspace = true
+# 载入时读库自带的类型清单（ghostty_type_json），核对结构体布局、拿格子的位
+serde_json.workspace = true

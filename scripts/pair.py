@@ -6,7 +6,8 @@
 
 设备上执行：curl -fsSL <准入站>/i | sudo sh -s <配对码>（准入站 = LOLINET_BASE_URL，不设就是节点清单的 network.join）
 默认连公开探针一起装：配置末尾加一行 `# probe = {...}`（设备公开 id + 上报密钥，probe/device.py 同一套派生），
-install.sh 取出来装成系统服务、不留在 EasyTier 配置里；--no-probe 不装，--location 写死公开的城市。
+lolinet up 把它存成 /etc/lolinet/probe.json、装成系统服务（lolinet 内置的探针），不留在 EasyTier 配置里；
+--no-probe 不装，--location 写死公开的城市。
 
 控制台只在 overlay 上（节点清单的 network.console，跑在 network.issuer 那台 relay 上）。本机要么已装 TUN 版，要么先起一个
 no-tun 实例并用 --socks 指过去。连接直接打 issuer 的 overlay IP，SNI 和证书校验用控制台域名（本机解析器可能是 fake-IP）。
@@ -118,6 +119,9 @@ def new(args) -> None:
         near = (args.peers.split(",") if args.peers else DEFAULT_PEERS)[0]
         probe = probe_config(argparse.Namespace(name=args.name, near=near, location=args.location))
         config += f"# probe = {json.dumps(probe, separators=(',', ':'))}\n"
+    if NET.get("manager"):
+        # 内网管理面（lolinet invite 用）：lolinet up 存进 /etc/lolinet/lolinet.json；和 web/agent/mesh_manager.py 写的一样
+        config += f"# lolinet = {json.dumps({'manager': NET['manager'], 'manager_ip': CONSOLE_IP}, separators=(',', ':'))}\n"
     reg = STATE_DIR / "mesh-devices.json"
     devices = json.loads(reg.read_text()) if reg.exists() else []
     devices.append({"name": args.name, "overlay_ip": args.ip, "credential_id": cid, "expiry_unix": expiry,

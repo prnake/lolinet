@@ -23,9 +23,21 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet routes` | `easytier-cli route` |
 | `lolinet logs [-f] [-n 50]` | The kernel log, `/var/log/lolinet/easytier.log` |
 | `lolinet up [options]` *root* | Install the binary and the service and start it. Takes over an `easytier` service that an earlier join script installed. Prints the status at the end |
-| `lolinet down` *root* | Stop and remove the service. The config and binary stay |
+| `lolinet down` *root* | Stop and remove the service and the probe. The config and binary stay |
 | `lolinet restart` *root* | Restart the kernel |
-| `lolinet upgrade [options]` *root* | Switch to the version the release manifest names (see below). Also updates the probe and the lolidesk binaries, if installed |
+| `lolinet upgrade [options]` *root* | Switch to the version the release manifest names (see below). Also updates lolidesk, if installed |
+| `lolinet probe [show\|send] [-c FILE]` *root* | Print what the public probe would report this round; `send` reports it once for real. Reads `/etc/lolinet/probe.json` |
+| `lolinet probe off` *root* | Take the device off the public page, remove the probe service and delete its config. Turning it back on needs a new pairing |
+| `lolinet probe run` | The probe service's entry point |
+| `lolinet invite [--kind desktop\|userspace\|phone\|server] [--name N] [--manager URL[@IP]] [--json]` | Ask the network's manager for a pairing code for another machine or a phone; the address is assigned centrally. For a phone it prints a `<join>/m#CODE` link instead of a command. No root and no console account: the manager knows this node by its overlay address. `--manager` is needed only on devices paired before this existed; run as root, it is remembered |
+| `lolinet mihomo [--mode tun\|userspace] [-o FILE] [--manager URL[@IP]]` | This computer's mihomo config from the manager: overlay addresses through lolinet, the central reject / direct / exit rules and the exit nodes as providers that mihomo refreshes over the overlay every 10 minutes. The mode defaults to this node's |
+| `lolinet mihomo on [--bin PATH] [--mode tun\|userspace] [--manager URL[@IP]]` *root* | Fetch that config into `/etc/lolinet/mihomo/config.yaml`, check it with `mihomo -t`, and run mihomo as a service. In TUN mode it also turns on lolinet's SOCKS5 on `127.0.0.1:18080` (mihomo reaches the overlay through it) and restarts lolinet; `lolinet up --tun` keeps it while mihomo is installed. `lolinet` doesn't ship mihomo: `--bin`, else the copy in `Lolidesk.app`, else one on the system. The service runs a root-owned copy of it (see below) |
+| `lolinet mihomo refresh` *root* | Fetch the config again and, if it changed (a route was added, an exit moved), switch to it and restart mihomo. The upgrade job does this every 6 hours; rules and which node a route uses update by themselves every 10 minutes |
+| `lolinet mihomo off` *root* | Stop and remove the mihomo service and its copy of mihomo; the rule caches in `/etc/lolinet/mihomo/` stay |
+| `lolinet exit` | Whether this node is an exit node, its address and service state |
+| `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node. Also registers it with the manager, if it can, so mihomo lists it |
+| `lolinet exit off` *root* | Stop and remove it, and take it off the manager's list |
+| `lolinet exit run [--listen ADDR] [--allow CIDR]… [--lan]` | The exit service's entry point. With `--listen` it ignores the config and allows loopback by default (for tests) |
 | `lolinet run [-c FILE]` | The service's entry point: run the EasyTier kernel in the foreground with `/etc/lolinet/loli.toml` |
 | `lolinet core …` | Stock `easytier-core`, arguments passed through |
 | `lolinet cli …` | Stock `easytier-cli`, arguments passed through, aimed at the local service's admin port |
@@ -37,10 +49,12 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 
 | Option | |
 | :-- | :-- |
-| `-c, --config FILE` | Use this config (the `loli.toml` from pairing). It is copied to `/etc/lolinet/loli.toml` with mode 600 |
+| `-c, --config FILE` | Use this config (the `loli.toml` from pairing). It is copied to `/etc/lolinet/loli.toml` with mode 600. A `# probe = {…}` line is moved to `/etc/lolinet/probe.json` and the probe installed; without one, an installed probe is left alone. A `# lolinet = {…}` line (the manager's address) goes to `/etc/lolinet/lolinet.json` |
 | `--base-url URL` | The join site. Also read from `LOLINET_BASE_URL`; `install.sh` passes it this way |
 | `--upgrade-source SRC` | `github:<owner>/<repo>`, a manifest URL, or `base` to use the join site |
 | `--auto-upgrade on\|off` | The 6-hourly upgrade check. On by default |
+| `--userspace` | Join without a TUN interface: programs on this machine reach the overlay through SOCKS5 on `127.0.0.1:18080`, and connections to this node's overlay address are delivered to `127.0.0.1`. Also read from `LOLINET_USERSPACE=1`, so `curl … \| sudo LOLINET_USERSPACE=1 sh -s CODE` pairs in this mode. Writes `socks5_proxy` and `[flags] no_tun = true` into `loli.toml` |
+| `--tun` | Back to TUN mode, the default: removes those two settings |
 
 **`lolinet upgrade` options.**
 
@@ -58,29 +72,58 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 | :-- | :-- |
 | `/usr/local/bin/lolinet` | The binary |
 | `/etc/lolinet/loli.toml` | EasyTier config, mode 600. The last lines hold `# credential_id` and `# credential_expiry_unix`, which `lolinet status` reads |
-| `/etc/lolinet/lolinet.json` | Upgrade settings: `base_url`, `source`, `auto_upgrade`. Mode 644, no secrets |
-| `/var/log/lolinet/easytier.log` | Kernel log, 10 MB × 5 files |
+| `/etc/lolinet/lolinet.json` | Settings: `base_url`, `source`, `auto_upgrade`, and the manager `lolinet invite` asks (`manager`, `manager_ip`, from the pairing config's `# lolinet = {…}` line). Mode 644, no secrets |
+| `/var/log/lolinet/easytier.log` | Kernel log, 10 MB × 5 files. `lolinet run` without root (a container, a userspace node run by hand) writes to `$XDG_STATE_HOME/lolinet/` (default `~/.local/state/lolinet/`) instead |
 | `/var/log/lolinet/upgrade.log` | Upgrade log on macOS (journald on Linux). Written only on a switch or an error |
 | `/Library/LaunchDaemons/co.lo-li.lolinet.plist` | macOS service, RunAtLoad and KeepAlive |
 | `/Library/LaunchDaemons/co.lo-li.lolinet-upgrade.plist` | macOS upgrade job |
 | `/etc/systemd/system/lolinet.service` | Linux service, `Restart=always` |
 | `/etc/systemd/system/lolinet-upgrade.{service,timer}` | Linux upgrade job, every 6 hours with up to 30 minutes of random delay |
 
-The public probe, when installed:
+The exit node, when turned on. It runs `/usr/local/bin/lolinet exit run`, starts as root, binds its port and drops to `nobody`. It listens on the overlay address in TUN mode and on `127.0.0.1` in userspace mode:
 
 | Path | macOS | Linux |
 | :-- | :-- | :-- |
-| Reporter | `/usr/local/libexec/mesh-probe/reporter.py` | `/opt/mesh-probe/reporter.py` |
-| Config (id and report key) | `/etc/mesh-probe/reporter.json` | `/etc/mesh-probe/reporter.json`, passed with `LoadCredential` |
-| Service | `/Library/LaunchDaemons/co.lo-li.mesh-probe.plist` | `/etc/systemd/system/mesh-probe.service` |
-| Log | `/var/log/mesh-probe.log` | journald |
+| Settings (`port`, `allow`, `lan`) | `/etc/lolinet/exit.json`, mode 644 | `/etc/lolinet/exit.json`, mode 644 |
+| Service | `/Library/LaunchDaemons/co.lo-li.lolinet-exit.plist` | `/etc/systemd/system/lolinet-exit.service` |
+| Log | `/var/log/lolinet/exit.log`, errors only | journald |
+
+mihomo, when turned on with `lolinet mihomo on`. It runs `/etc/lolinet/mihomo/mihomo -d /etc/lolinet/mihomo` as root (its TUN needs it). That binary is a root-owned copy (755) of the one `on` found: the copy in `Lolidesk.app` or Homebrew's are writable by the user, and a root service must not run a file any process of the user could replace. `on` copies it first and runs nothing as root before that, not even `-v`; it refuses if `/etc/lolinet/mihomo` or a directory above it is writable by anyone but root. Run `on` again after updating mihomo:
+
+| Path | macOS | Linux |
+| :-- | :-- | :-- |
+| Config and mihomo's own caches | `/etc/lolinet/mihomo/` | `/etc/lolinet/mihomo/` |
+| The binary the service runs | `/etc/lolinet/mihomo/mihomo` | `/etc/lolinet/mihomo/mihomo` |
+| Which binary (and where it was copied from) and mode | `/etc/lolinet/mihomo.json` | `/etc/lolinet/mihomo.json` |
+| Service | `/Library/LaunchDaemons/co.lo-li.lolinet-mihomo.plist` | `/etc/systemd/system/lolinet-mihomo.service` |
+| Log | `/var/log/lolinet/mihomo.log` | journald |
+
+The public probe, when installed. It runs `/usr/local/bin/lolinet probe run`, starts as root and drops to `nobody` after reading its config:
+
+| Path | macOS | Linux |
+| :-- | :-- | :-- |
+| Config (id and report key) | `/etc/lolinet/probe.json`, mode 600 | `/etc/lolinet/probe.json`, mode 600 |
+| Service | `/Library/LaunchDaemons/co.lo-li.lolinet-probe.plist` | `/etc/systemd/system/lolinet-probe.service` |
+| Log | `/var/log/lolinet/probe.log` | journald |
+
+Earlier installs ran the Python reporter instead (`reporter.py` under `/usr/local/libexec/mesh-probe/` or `/opt/mesh-probe/`, config `/etc/mesh-probe/reporter.json`, service `co.lo-li.mesh-probe` or `mesh-probe.service`). `lolinet up` and `lolinet upgrade` move a device-mode config to `/etc/lolinet/probe.json`, keeping the public id, and remove the old service. Relay-mode configs are not touched.
 
 lolidesk, once a lolidesk release is published:
 
 | Path | |
 | :-- | :-- |
-| `/usr/local/bin/lolidesk-host` | The lolidesk host. `install.sh` installs it but doesn't start it. `lolinet upgrade` replaces it when `lolidesk.json` names another version |
+| `/usr/local/lib/lolidesk/` | lolidesk (`lolidesk` and `libghostty-vt`), linked from `/usr/local/bin/lolidesk`. `install.sh` installs it but doesn't start the host. `lolinet upgrade` replaces it when `lolidesk.json` names another version |
+| `/usr/local/bin/lolidesk-host` | Older installs only: now a link to `lolidesk`, which acts as `lolidesk host` under that name |
 | `/usr/local/bin/lolidesk` | The lolidesk client, updated the same way |
+
+Per user, not installed by `install.sh`:
+
+| Path | |
+| :-- | :-- |
+| `~/Library/LaunchAgents/co.lo-li.lolidesk.plist` | macOS: the host service, written by `lolidesk host install` (or by the app for *本机*). Runs `<that lolidesk> host run`; logs in `~/Library/Logs/lolidesk/host.log` |
+| `~/.config/systemd/user/lolidesk.service` | Linux: the same as a `systemd --user` unit (`$XDG_CONFIG_HOME`); logs with `journalctl --user -u lolidesk` |
+| `<config dir>/lolidesk/app.json` | The app's preferences (`~/Library/Application Support` on macOS, `~/.config` on Linux): video settings, font size, `option_as_alt`, `local_host` (start this computer's host; on by default) and `local_host_program` (the program the host service ran before `local_host` was turned off, installed again when it is turned on) |
+| `~/.local/share/applications/lolidesk.desktop` | Linux: the app's menu entry, written by *加到应用菜单*; handles `lolidesk://` links (`MimeType=x-scheme-handler/lolidesk;`). `Lolidesk.app` registers the scheme in its `Info.plist` |
 
 Paths from before `lolinet`, which `lolinet up` takes over: the config `/etc/easytier/loli.toml` (copied if `/etc/lolinet/loli.toml` doesn't exist yet), and the binary directory `/usr/local/libexec/easytier/` on macOS or `/opt/easytier/` on Linux, where `easytier-core` and `easytier-cli` become symlinks to `lolinet`.
 
@@ -102,6 +145,7 @@ The node list is the single source for the scripts, the Worker and the web build
 | `local_suffix` | `<name>.<edge_zone>` redirects to `<name><local_suffix>`, a name that resolves to an overlay address |
 | `join` | The join site's host. `LOLINET_BASE_URL` overrides it |
 | `console` | The easytier-web console's URL, reachable on the overlay only |
+| `manager` | The manager's URL on the overlay (`web/agent/mesh_manager.py` on the issuer relay). When set, `pair.py` ends each config with `# lolinet = {…}` so the device's `lolinet invite` knows where to ask |
 | `issuer` | The relay that runs the console and signs credentials. Scripts connect to its overlay IP and use the console's name for SNI and certificate checks |
 | `device_peers` | Relays a new device connects to. Default: the first three relays |
 
@@ -142,6 +186,7 @@ Optional. `device_config.py` renders configs for devices listed here; `pair.py` 
 | Variable | Used by | |
 | :-- | :-- | :-- |
 | `LOLINET_BASE_URL` | scripts, web build, `install.sh`, `lolinet up` | The join site, for example `https://join.edge.example.com`. Default `https://<network.join>`. The Worker writes it into `install.sh` when serving `/i` |
+| `LOLINET_USERSPACE` | `lolinet up`, so also `install.sh` | `1` joins without TUN, as `lolinet up --userspace` |
 | `LOLINET_GITHUB` | `install.sh` | The GitHub repository to download `lolinet` from. Default `prnake/lolinet` |
 | `LOLINET_NODES` | scripts, web build | Path to the node list |
 | `LOLINET_HOME` | scripts, agent | Admin data directory with `.env` and `state/`. Default `~/.config/lolinet`. `FLEET_REPO` is still read as a fallback |
@@ -149,7 +194,7 @@ Optional. `device_config.py` renders configs for devices listed here; `pair.py` 
 | `PROBE_MASTER` | `deploy.py` | The probe master key, 64 lowercase hex digits. Required in CI; locally it comes from `state/mesh-probe.json` and is generated if missing |
 | `ET_WSS_SNI` | patched `easytier-core` | Default SNI for WSS URLs without `?sni=`, such as peer URLs learned from other nodes |
 | `LOLINET_VERSION` | `lolinet` build | The version compiled in; `build.sh` and CI set it from `git describe` |
-| `LOLIDESK_VERSION` | lolidesk build | The version `lolidesk-host --version` and `lolidesk --version` print; `make desk` and CI set it from `git describe`, otherwise it is the Cargo version |
+| `LOLIDESK_VERSION` | lolidesk build | The version `lolidesk --version` prints; `make desk` and CI set it from `git describe`, otherwise it is the Cargo version |
 | `MESH_AGENT` | `npm run dev` | Where the dev server proxies `/api`. Default `http://127.0.0.1:10188` |
 | `MESH_JOIN` | `npm run dev:probe` | Where the probe dev server proxies `/v1`. Default: the join site |
 
@@ -176,18 +221,19 @@ Run them with `uv run`; each declares its own dependencies.
 | `scripts/device_config.py --name N --out FILE [--cred ID] [--by-name]` | Render a config for a device in `nodes.yaml` from a saved credential |
 | `join/deploy.py worker` | Upload the Worker with its bindings, attach the custom domains, turn off `workers.dev` |
 | `join/deploy.py site` | Upload `web/dist-probe/` as the join site's home page |
-| `join/deploy.py release DIR` | Upload `lolinet-*` and `easytier-*` packages, the probe bundle, then `dl/lolinet.json` |
-| `join/deploy.py install` | Upload the probe bundle and `install.sh`, once all four `lolinet` packages and `dl/lolinet.json` are on the join site |
+| `join/deploy.py release DIR` | Upload `lolinet-*` and `easytier-*` packages, then `dl/lolinet.json` |
+| `join/deploy.py install` | Upload `install.sh`, once all four `lolinet` packages and `dl/lolinet.json` are on the join site |
 | `join/deploy.py lolidesk DIR` | Upload the four `lolidesk-*` packages from a lolidesk release, then `dl/lolidesk.json` |
 | `join/deploy.py dist FILE…` | Upload any files to `dl/` with a `.sha256` next to each |
 | `probe/device.py relay --name N --out FILE` | A relay's probe config: report key, device-id key and report URL |
-| `probe/device.py config --name N --out FILE [options]` | A device's probe config, for devices not installed by `install.sh` |
+| `probe/device.py config --name N --out FILE [options]` | A device's probe config for `reporter.py`, for devices without `lolinet` (Docker) |
 | `probe/device.py id --name N` | The public id a hostname gets |
 | `probe/device.py bye --name N` | Remove a device from the public page |
 | `probe/device.py install-mac` / `uninstall-mac` | Run the probe as a user LaunchAgent on this Mac, without root |
 | `lolinet/build.sh` | Build `lolinet` for this machine (`TARGET`, `FEATURES` to cross-compile) |
-| `lolinet/release.py DIR` | Write `lolinet.json` and the probe bundle next to four `lolinet-*` packages |
+| `lolinet/release.py DIR` | Write `lolinet.json` next to four `lolinet-*` packages |
 | `easytier/check_sni.py PATH` | Start a fake relay and check that `easytier-core` sends the right SNI |
+| `sudo lolinet/check_probe.py PATH` | Install the built-in probe from this `lolinet` for real and check it end to end. Changes system services; meant for CI runners |
 
 ## Join site
 
@@ -198,6 +244,7 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 | `GET /` | The public probe page for browsers; for anything else, a short text with the install command |
 | `GET /i` | `install.sh`, with the join site's address filled in. See [`install.sh`](#installsh) |
 | `GET /dl/<file>` | Packages, `.sha256` files and `lolinet.json` from R2 |
+| `GET /m` | The phone redemption page. With the code after `#`, it fetches `/v1/pair/<id>` and decrypts the mihomo config in the browser (PBKDF2-SHA256 200,000 rounds, AES-256-CBC, OpenSSL's `Salted__` format, the same as `install.sh`), then offers it to download or copy. The code is never sent |
 | `GET /v1/pair/<id>` | The pairing ciphertext, once. `<id>` is the first 32 hex digits of the code's sha256. 20 attempts per IP per 10 minutes |
 | `GET /v1/probe` | The public snapshot: relays by region, devices by anonymous id, links, availability. Cached 10 seconds, CORS open |
 | `GET /v1/probe/link?a=&b=` | 24 hours of latency between two relays, both directions |
@@ -213,13 +260,13 @@ The Worker answers on the join host and on every `<name>.<edge_zone>` bound to i
 
 | Command | |
 | :-- | :-- |
-| `curl <join site>/i \| sudo sh -s CODE` | New device: download and check `lolinet`, then redeem the code, `lolinet up -c` the config, install the probe |
-| `curl <join site>/i \| sudo sh` | Device already in: use `/etc/lolinet/loli.toml` (or the older `/etc/easytier/loli.toml`) and run `lolinet up`. Does nothing when the version matches and the service and upgrade job are in place. Updates an installed probe's `reporter.py`. Refuses relay configs (they hold `network_secret`). `repair` and `upgrade` are accepted as the argument too |
+| `curl <join site>/i \| sudo sh -s CODE` | New device: download and check `lolinet`, then redeem the code, `lolinet up -c` the config, which installs the probe |
+| `curl <join site>/i \| sudo sh` | Device already in: use `/etc/lolinet/loli.toml` (or the older `/etc/easytier/loli.toml`) and run `lolinet up`. Does nothing when the version matches and the service, upgrade job and probe (if configured) are in place. Takes over an older Python probe. Refuses relay configs (they hold `network_secret`). `repair` and `upgrade` are accepted as the argument too |
 | `curl <join site>/i \| sh -s check` | Download and check only, then print the latest version, the local one and whether to install. No root needed |
 
 **Where it downloads.** GitHub first: the redirect of `https://github.com/$LOLINET_GITHUB/releases/latest` pins the tag, and every file comes from that release. If GitHub is unreachable, slower than 50 KB/s for 20 seconds, or has no usable manifest, it uses `<join site>/dl/`. The package's sha256 must match that release's `lolinet.json`, and the new binary must print the manifest's version. `lolinet up` gets `--upgrade-source github:<repo>` or `base` to match where the download came from.
 
-**lolidesk.** All three commands also handle lolidesk. They read `lolidesk.json` from the newest `lolidesk-*` release on GitHub (through the API, since these releases don't take `latest`), or from `<join site>/dl/` when `lolinet` came from there or GitHub has none. Pairing and `sudo sh` install `lolidesk-host` and `lolidesk` to `/usr/local/bin`, or replace them, when their `--version` differs; each must pass the sha256 check and a test run first, and one that doesn't is skipped. `check` says whether they would be installed or updated. A lolidesk problem never fails the script.
+**lolidesk.** All three commands also handle lolidesk. They read `lolidesk.json` from the newest `lolidesk-*` release on GitHub (through the API, since these releases don't take `latest`), or from `<join site>/dl/` when `lolinet` came from there or GitHub has none. Pairing and `sudo sh` install lolidesk to `/usr/local/lib/lolidesk/` (linked from `/usr/local/bin/lolidesk`), or replace it, when its `--version` differs or the old separate binaries are still in `/usr/local/bin`; it must pass the sha256 check and a test run first, and is skipped otherwise. `check` says whether they would be installed or updated. A lolidesk problem never fails the script.
 
 ## Release artifacts
 
@@ -229,7 +276,6 @@ A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same f
 | :-- | :-- |
 | `lolinet-<os>-<arch>.tar.gz` | `lolinet` and `BUILD-INFO` at the archive root. `<os>-<arch>` is `linux-x86_64`, `linux-aarch64`, `macos-aarch64` or `macos-x86_64` |
 | `easytier-<os>-<arch>.tar.gz` | The patched `easytier-core` and `easytier-cli`, and `BUILD-INFO` |
-| `mesh-probe.tar.gz` | `reporter.py`, `mesh-probe.service`, `co.lo-li.mesh-probe.plist`. Built reproducibly (zero timestamps) |
 | `*.sha256`, `SHA256SUMS` | Checksums |
 | `lolinet.json` | The manifest |
 
@@ -241,20 +287,19 @@ A `lolinet-<version>` GitHub Release, and the join site's `dl/`, hold the same f
  "lolinet": {
   "macos-aarch64": {"file": "lolinet-macos-aarch64.tar.gz", "sha256": "…"},
   "…": {}
- },
- "probe": {"file": "mesh-probe.tar.gz"}
+ }
 }
 ```
 
-All four packages must carry the same version. Package URLs are resolved next to the manifest's URL, so a manifest and its packages always sit in one directory.
+All four packages must carry the same version. Older manifests also had a `"probe"` entry for the Python probe bundle; the probe is now part of `lolinet`, and older `lolinet` versions ignore a manifest without it. Package URLs are resolved next to the manifest's URL, so a manifest and its packages always sit in one directory.
 
 The `dist` workflow uploads every release to the join site's `dl/` unchanged, packages first and the manifest last, so a device never sees a manifest whose packages aren't there yet.
 
-lolidesk ships as `lolidesk-<version>` releases, published by the `desk` workflow on every push to `main` that changes `desk/` and never marked latest. Each holds `lolidesk-<os>-<arch>.tar.gz` for the same four platforms (`lolidesk-host`, `lolidesk` and `BUILD-INFO`, whose first line is `lolidesk <version>`), `*.sha256`, `SHA256SUMS` and the manifest `lolidesk.json`:
+lolidesk ships as `lolidesk-<version>` releases, published by the `desk` workflow on every push to `main` that changes `desk/` and never marked latest. Each holds `lolidesk-<os>-<arch>.tar.gz` for the same four platforms (`lolidesk`, `libghostty-vt.dylib` or `.so`, `BUILD-INFO` whose first line is `lolidesk <version>`; `Lolidesk.app` on macOS; `lolidesk-app`, `lolidesk.desktop` and `lolidesk.svg` on Linux), `*.sha256`, `SHA256SUMS` and the manifest `lolidesk.json`:
 
 ```json
 {
- "version": "<lolidesk-host --version>",
+ "version": "<lolidesk --version>",
  "lolidesk": {
   "macos-aarch64": {"file": "lolidesk-macos-aarch64.tar.gz", "sha256": "…"},
   "…": {}
@@ -270,11 +315,12 @@ On the join site these sit in `dl/` next to `lolinet.json`. See [lolidesk](lolid
 | :-- | :-- |
 | `443` | WSS from devices to relays; HTTPS for the console on the issuer's overlay address |
 | `127.0.0.1:15888` | Admin port of the `lolinet` service |
-| `127.0.0.1:15897` | Admin port by convention for a no-tun instance (one without a TUN interface, reachable through SOCKS5) |
-| `127.0.0.1:18080` | SOCKS5 port by convention for a no-tun instance; pass it to the scripts with `--socks` |
+| `127.0.0.1:15897` | Admin port by convention for a separate no-tun instance (one without a TUN interface, reachable through SOCKS5), such as the old menu-bar app's |
+| `127.0.0.1:18080` | SOCKS5 into the overlay on a node in userspace mode (`lolinet up --userspace`), and by convention for a separate no-tun instance; pass it to the scripts with `--socks` |
+| `10180` | Exit node SOCKS5 (`lolinet exit on`), on the node's overlay address |
 | `127.0.0.1:10188` | The local console's agent |
 | `127.0.0.1:11211` | easytier-web's API on the issuer relay |
-| `10190` | `lolidesk-host`, on the host's overlay address |
+| `10190` | `lolidesk host` (terminal, desktop and computer use on one QUIC port), on the host's overlay address |
 | `5188`, `5189` | Dev servers for the console and the probe page |
 
 ### Address plan
@@ -287,5 +333,6 @@ The example network uses `10.188.0.0/16`:
 | `10.188.1.0/24` | Servers |
 | `10.188.16.0/20` | Computers with TUN |
 | `10.188.32.0/20` | Clients without TUN |
+| `10.188.48.0/20` | Phones, through the issuer relay's WireGuard portal (see [Design](design.md#mihomo-on-phones-and-desktops)) |
 
 `lolinet status` and the probe reporter treat `10.188.0.0/24` as the relay range, and the console's Pair page picks the next free address from the computer or client range.

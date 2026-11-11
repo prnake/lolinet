@@ -1,6 +1,6 @@
 //! lolinet：基于 EasyTier 的组网命令行。EasyTier（easytier/build.env 的版本 + patches/）整个编进同一个二进制，
 //! 按 argv[0] 分发：叫 easytier-core / easytier-cli 时就是原版（`lolinet up` 把老路径的这两个名字链接过来，
-//! 探针、no-tun 客户端、老脚本照用）；叫 lolinet 时管后台服务、看状态。构建见 lolinet/build.sh。
+//! no-tun 客户端、老脚本照用）；叫 lolinet 时管后台服务、看状态、跑公开探针。构建见 lolinet/build.sh。
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 use mimalloc::MiMalloc;
@@ -23,6 +23,12 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 #[path = "../easytier-cli.rs"]
 mod et_cli;
+mod exit;
+mod invite;
+mod manager;
+mod mihomo;
+mod netcfg;
+mod probe;
 mod service;
 mod status;
 mod upgrade;
@@ -70,7 +76,8 @@ enum Cmd {
     Peers,
     /// 路由表（easytier-cli route）
     Routes,
-    /// 装成系统服务并启动（要 root）；会接管 join 脚本以前装的 easytier 服务，默认带自动升级
+    /// 装成系统服务并启动（要 root）；会接管 join 脚本以前装的 easytier 服务，默认带自动升级。
+    /// 配置末尾有配对时的 `# probe = {...}` 就一起装公开探针
     Up {
         /// 换成这份配置（配对得到的 loli.toml）；不给就用现有的
         #[arg(short, long)]
@@ -84,8 +91,15 @@ enum Cmd {
         /// 自动升级 on / off（默认 on）；不给就沿用上次的
         #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
         auto_upgrade: Option<bool>,
+        /// 无 TUN 入网：本机程序经 127.0.0.1:18080 的 SOCKS5 进网，发到本机 overlay 地址的连接转给 127.0.0.1。
+        /// 容器、没有 /dev/net/tun、或者 mihomo 之类已经占着 TUN 时用；不给就沿用配置里的
+        #[arg(long, env = "LOLINET_USERSPACE", value_parser = clap::builder::FalseyValueParser::new(), conflicts_with = "tun")]
+        userspace: bool,
+        /// 换回 TUN 模式（默认）
+        #[arg(long)]
+        tun: bool,
     },
-    /// 按发布清单升级 lolinet、探针和装了的 lolidesk（要 root）；定时任务每 6 小时跑一次 --auto
+    /// 按发布清单升级 lolinet 和装了的 lolidesk（要 root）；定时任务每 6 小时跑一次 --auto
     Upgrade {
         /// 只看发布的版本，不下载不换（不要 root）
         #[arg(long)]
@@ -102,6 +116,46 @@ enum Cmd {
     },
     /// 停掉并卸载系统服务（要 root），配置和二进制保留
     Down,
+    /// 邀请另一台机器入网：问内网管理面要一个配对码，地址由中心分配（不要 root，也不要控制台账号）
+    Invite {
+        /// desktop（有 TUN 的电脑）、userspace（无 TUN）、phone（mihomo 经 WireGuard 进网）、server（默认只有管理员能邀请）
+        #[arg(long, default_value = "desktop", value_parser = ["desktop", "userspace", "phone", "server"])]
+        kind: String,
+        /// 新机器的名字（小写字母、数字、-）；不给就是 <种类>-<4 位十六进制>
+        #[arg(long)]
+        name: Option<String>,
+        /// 管理面：https://manager.<edge_zone>，可以带 @<签发 relay 的 overlay 地址>；不给就用配对时记下的（root 跑会记住）
+        #[arg(long)]
+        manager: Option<String>,
+        /// 输出 JSON（给 Lolidesk.app 用）
+        #[arg(long)]
+        json: bool,
+    },
+    /// 这台电脑的 mihomo 配置：网内地址走 lolinet，规则和出口节点由内网管理面集中下发。
+    /// 不带子命令打印配置；on / off 把 mihomo 跑成系统服务（要 root）
+    #[command(args_conflicts_with_subcommands = true)]
+    Mihomo {
+        #[command(subcommand)]
+        cmd: Option<MihomoCmd>,
+        /// tun 或 userspace；不给就看本机内核是哪种
+        #[arg(long, value_parser = ["tun", "userspace"])]
+        mode: Option<String>,
+        /// 写到这个文件；不给就打到 stdout
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        manager: Option<String>,
+    },
+    /// 出口节点：网里别的机器经这台的 SOCKS5（端口 10180）上网，只对 overlay 开（不带子命令就是 status）
+    Exit {
+        #[command(subcommand)]
+        cmd: Option<ExitCmd>,
+    },
+    /// 公开探针：准入站首页的设备卡片，只报硬件和位置（不带子命令就是 show）
+    Probe {
+        #[command(subcommand)]
+        cmd: Option<ProbeCmd>,
+    },
     /// 重启后台进程（要 root）
     Restart,
     /// 看内核日志
@@ -128,6 +182,76 @@ enum Cmd {
     Cli {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MihomoCmd {
+    /// 取配置、用 mihomo -t 检查，装成系统服务并启动（要 root）
+    On {
+        /// mihomo 的二进制；不给就用 Lolidesk.app 里带的、系统里装的
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        #[arg(long, value_parser = ["tun", "userspace"])]
+        mode: Option<String>,
+        #[arg(long)]
+        manager: Option<String>,
+    },
+    /// 停掉并卸载（要 root）
+    Off,
+    /// 马上从管理面重新取配置，变了就换上、重启 mihomo（要 root；自动升级的定时任务每 6 小时也做一次）
+    Refresh,
+}
+
+#[derive(Subcommand)]
+enum ExitCmd {
+    /// 看开没开、地址和服务状态
+    Status,
+    /// 开（要 root）：装成系统服务，开机自启
+    On {
+        #[arg(long, default_value_t = exit::PORT)]
+        port: u16,
+        /// 只让这些网段用（可以给多次），默认整个 overlay 网段
+        #[arg(long)]
+        allow: Vec<String>,
+        /// 也让人经这台去私网地址（10/8、172.16/12、192.168/16 等，相当于子网路由）；回环和链路本地始终不行
+        #[arg(long)]
+        lan: bool,
+    },
+    /// 关（要 root）
+    Off,
+    /// 服务入口；--listen 给了就不读配置（测试用）
+    #[command(hide = true)]
+    Run {
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
+        #[arg(long)]
+        allow: Vec<String>,
+        #[arg(long)]
+        lan: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProbeCmd {
+    /// 打印这一轮要报的内容，不发（配置是 600，要 sudo）
+    Show {
+        /// 探针配置，默认 /etc/lolinet/probe.json
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// 照常采一次并真发出去，看准入站收没收
+    Send {
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+    /// 关掉（要 root）：从公开页面撤下、卸载服务、删配置；以后要再装得重新配对
+    Off,
+    /// 服务入口：常驻，每 60 秒上报一次（launchd / systemd 调它）
+    #[command(hide = true)]
+    Run {
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -162,7 +286,10 @@ fn lolinet(args: Args) -> Result<()> {
         Cmd::Status => status::show(),
         Cmd::Peers => Err(exec_as("easytier-cli", ["peer"])),
         Cmd::Routes => Err(exec_as("easytier-cli", ["route"])),
-        Cmd::Up { config, base_url, upgrade_source, auto_upgrade } => up(config, base_url, upgrade_source, auto_upgrade),
+        Cmd::Up { config, base_url, upgrade_source, auto_upgrade, userspace, tun } => {
+            let mode = if userspace { Some(true) } else if tun { Some(false) } else { None };
+            up(config, base_url, upgrade_source, auto_upgrade, mode)
+        }
         Cmd::Upgrade { check, dry_run, auto, source } => upgrade::run(check, dry_run, auto, source),
         Cmd::Down => {
             need_root()?;
@@ -174,6 +301,25 @@ fn lolinet(args: Args) -> Result<()> {
             need_root()?;
             service::restart()
         }
+        Cmd::Invite { kind, name, manager, json } => invite::run(kind, name, manager, json),
+        Cmd::Mihomo { cmd, mode, out, manager } => match cmd {
+            None => mihomo::run(mode, out, manager),
+            Some(MihomoCmd::On { bin, mode, manager }) => mihomo::on(bin, mode, manager),
+            Some(MihomoCmd::Off) => mihomo::off(),
+            Some(MihomoCmd::Refresh) => mihomo::refresh_cmd(),
+        },
+        Cmd::Exit { cmd } => match cmd.unwrap_or(ExitCmd::Status) {
+            ExitCmd::Status => exit::status(),
+            ExitCmd::On { port, allow, lan } => exit::on(port, allow, lan),
+            ExitCmd::Off => exit::off(),
+            ExitCmd::Run { listen, allow, lan } => exit::run(listen, allow, lan),
+        },
+        Cmd::Probe { cmd } => match cmd.unwrap_or(ProbeCmd::Show { config: None }) {
+            ProbeCmd::Show { config } => probe::show(config, false),
+            ProbeCmd::Send { config } => probe::show(config, true),
+            ProbeCmd::Off => probe::off(),
+            ProbeCmd::Run { config } => probe::run(config),
+        },
         Cmd::Logs { follow, lines } => {
             let mut tail = Command::new("tail");
             tail.arg("-n").arg(lines.to_string());
@@ -183,8 +329,8 @@ fn lolinet(args: Args) -> Result<()> {
             Err(tail.arg(Path::new(LOG_DIR).join("easytier.log")).exec().into())
         }
         Cmd::Run { config } => {
-            fs::create_dir_all(LOG_DIR).with_context(|| format!("建 {LOG_DIR}"))?;
-            Err(exec_as("easytier-core", core_args(&config)))
+            let dir = log_dir()?;
+            Err(exec_as("easytier-core", core_args(&config, &dir)))
         }
         Cmd::Core { args } => Err(exec_as("easytier-core", args)),
         Cmd::Cli { args } => Err(exec_as("easytier-cli", args)),
@@ -194,11 +340,26 @@ fn lolinet(args: Args) -> Result<()> {
 /// 后台进程的 easytier-core 参数。v2.7.0 不认配置文件里的 rpc_portal，命令行给，否则管理口听 0.0.0.0；
 /// 日志只写文件（10 MB 一份、留 5 份）。终端那份关掉：打洞超时之类的 warn / error 很密，launchd 收的 stderr 不轮转，
 /// 一天能涨好几 MB；参数错误、panic 直接写 stderr，launchd / journald 照样收得到。
-fn core_args(config: &Path) -> Vec<OsString> {
-    let mut v: Vec<OsString> = vec!["-c".into(), config.into()];
+/// 日志目录：服务（root）写 /var/log/lolinet；没有 root 跑（容器里、userspace 模式）写不了那里，就写用户自己的
+/// $XDG_STATE_HOME/lolinet（默认 ~/.local/state/lolinet）
+fn log_dir() -> Result<PathBuf> {
+    if fs::create_dir_all(LOG_DIR).is_ok() && unsafe { nix::libc::access(c"/var/log/lolinet".as_ptr(), nix::libc::W_OK) } == 0 {
+        return Ok(LOG_DIR.into());
+    }
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))
+        .context("没有 HOME，也写不了 /var/log/lolinet")?;
+    let dir = state.join("lolinet");
+    fs::create_dir_all(&dir).with_context(|| format!("建 {}", dir.display()))?;
+    eprintln!("lolinet：没有权限写 {LOG_DIR}，内核日志写到 {}", dir.display());
+    Ok(dir)
+}
+
+fn core_args(config: &Path, log_dir: &Path) -> Vec<OsString> {
+    let mut v: Vec<OsString> = vec!["-c".into(), config.into(), "--file-log-dir".into(), log_dir.into()];
     for a in [
         "--rpc-portal", RPC,
-        "--file-log-dir", LOG_DIR,
         "--file-log-level", "info",
         "--file-log-size", "10",
         "--file-log-count", "5",
@@ -209,7 +370,13 @@ fn core_args(config: &Path) -> Vec<OsString> {
     v
 }
 
-fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<String>, auto_upgrade: Option<bool>) -> Result<()> {
+fn up(
+    config: Option<PathBuf>,
+    base_url: Option<String>,
+    upgrade_source: Option<String>,
+    auto_upgrade: Option<bool>,
+    userspace: Option<bool>,
+) -> Result<()> {
     need_root()?;
     if let Some(b) = &base_url {
         if !(b.starts_with("https://") || b.starts_with("http://")) {
@@ -226,17 +393,52 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     fs::set_permissions("/etc/lolinet", fs::Permissions::from_mode(0o755))?;
     let migrate = !Path::new(CONFIG).exists() && Path::new(OLD_CONFIG).exists();
     let src = config.or_else(|| migrate.then(|| OLD_CONFIG.into()));
+    let mut probe_cfg = None;
+    let mut lolinet_line = None;
     if let Some(src) = &src {
         if !tool("easytier-core").arg("--check-config").arg("-c").arg(src).status()?.success() {
             bail!("配置检查没过：{}", src.display());
         }
         let text = fs::read_to_string(src).with_context(|| format!("读 {}", src.display()))?;
-        // 配对包末尾给探针的那一行不进 EasyTier 配置（join/install.sh 也是这么处理的）
-        let text: String = text.lines().filter(|l| !l.starts_with("# probe = ")).map(|l| format!("{l}\n")).collect();
-        write_file(CONFIG, text.as_bytes(), 0o600)?;
+        // 配对包末尾给探针的那一行（scripts/pair.py 写的公开 id + 上报密钥）单独存，不进 EasyTier 配置
+        match probe::from_pairing(&text) {
+            Ok(p) => probe_cfg = p,
+            Err(e) => eprintln!("配置里的探针那一行用不了，这次不装公开探针：{e:#}"),
+        }
+        // 配对包末尾给 lolinet 自己的那一行：内网管理面在哪（lolinet invite 用），存进 lolinet.json
+        lolinet_line = manager::from_pairing(&text);
+        let mut text: String = text
+            .lines()
+            .filter(|l| !l.starts_with(probe::PAIR_LINE) && !l.starts_with(manager::PAIR_LINE))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        if let Some(u) = userspace {
+            text = netcfg::set_mode(&text, u);
+        }
+        // 装着 mihomo 服务：它经回环 SOCKS5 进网，切回 TUN 也别把这个口关了
+        if mihomo::installed().is_some() {
+            text = netcfg::set_socks(&text, true);
+        }
+        write_config(&text)?;
         println!("配置 {} -> {CONFIG}", src.display());
     } else if !Path::new(CONFIG).exists() {
         bail!("没有配置：sudo lolinet up -c <配对得到的 loli.toml>");
+    } else if let Some(u) = userspace {
+        let text = fs::read_to_string(CONFIG)?;
+        let mut new = netcfg::set_mode(&text, u);
+        if mihomo::installed().is_some() {
+            new = netcfg::set_socks(&new, true);
+        }
+        if new != text {
+            write_config(&new)?;
+        }
+    }
+    let net = netcfg::Net::parse(&fs::read_to_string(CONFIG)?)?;
+    if net.userspace {
+        println!(
+            "模式    userspace（无 TUN）：本机程序经 socks5://{} 进网；发到本机 overlay 地址的连接会转给 127.0.0.1",
+            net.socks.as_deref().unwrap_or(netcfg::SOCKS)
+        );
     }
     install_self()?;
     service::remove_legacy()?;
@@ -252,9 +454,25 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     if let Some(a) = auto_upgrade {
         st.auto = a;
     }
+    if let Some((m, ip)) = lolinet_line {
+        st.manager = Some(m);
+        st.manager_ip = ip;
+    }
     st.save()?;
     service::install()?;
     service::install_upgrade(st.auto)?;
+    // 公开探针：这次的配置带了就换上；以前 install.sh 装的 python 版接管过来。探针出错不影响入网
+    let probe_res = (|| {
+        if let Some(p) = &probe_cfg {
+            probe::save(p)?;
+        }
+        probe::reconcile(true, &|m| println!("{m}"))
+    })();
+    if let Err(e) = probe_res {
+        eprintln!("公开探针没装上：{e:#}");
+    }
+    // 出口节点开着的话，模式或地址可能变了：重新拉起
+    exit::refresh();
     // 等内核起来、管理口连得上，再给 peer 几秒握手
     for _ in 0..30 {
         if status::node().is_some() {
@@ -264,6 +482,19 @@ fn up(config: Option<PathBuf>, base_url: Option<String>, upgrade_source: Option<
     }
     std::thread::sleep(Duration::from_secs(5));
     status::show()
+}
+
+/// 换配置前先让 easytier-core 检查一遍：检查过的才换上（先写同目录临时文件，600）
+pub(crate) fn write_config(text: &str) -> Result<()> {
+    let check = format!("{CONFIG}.check");
+    write_file(&check, text.as_bytes(), 0o600)?;
+    let ok = tool("easytier-core").arg("--check-config").arg("-c").arg(&check).status()?.success();
+    if !ok {
+        let _ = fs::remove_file(&check);
+        bail!("新配置检查没过（{CONFIG} 没动）");
+    }
+    fs::rename(&check, CONFIG).with_context(|| format!("改名到 {CONFIG}"))?;
+    Ok(())
 }
 
 /// 把自己装到 /usr/local/bin/lolinet（先写临时文件再改名，正在跑的旧版本不受影响）
@@ -281,8 +512,8 @@ fn install_self() -> Result<()> {
     Ok(())
 }
 
-/// 老路径的 easytier-core / easytier-cli 换成指向 lolinet 的链接：探针（reporter.py 找 easytier-cli）、
-/// no-tun 客户端（如菜单栏 App）和以前的脚本不用改。
+/// 老路径的 easytier-core / easytier-cli 换成指向 lolinet 的链接：no-tun 客户端（如菜单栏 App）、
+/// 还没换成内置探针的 python 版（reporter.py 找 easytier-cli）和以前的脚本不用改。
 fn link_legacy_names() -> Result<()> {
     fs::create_dir_all(OLD_BIN_DIR)?;
     for name in ["easytier-core", "easytier-cli"] {

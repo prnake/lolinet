@@ -57,7 +57,8 @@
 .side__self-main { display: flex; flex-direction: column; min-width: 0; }
 .side__self-name { display: flex; align-items: center; gap: 8px; font-weight: 500; }
 .side__self-ip { font-size: var(--t-cap); color: var(--fg-3); }
-.side__agent { padding: 0 var(--s-2); font-size: 10.5px; color: var(--fg-4); }
+.side__agent { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 var(--s-2); font-size: 10.5px; color: var(--fg-4); }
+.side__agent .iconbtn { width: 24px; height: 24px; }
 
 .top {
   position: sticky;
@@ -197,6 +198,7 @@
 }
 .pick__item:hover { color: var(--fg); border-color: var(--line-2); }
 .pick__item.is-on { background: var(--ink-3); border-color: var(--line-3); color: var(--fg); }
+.pick__ord { margin-left: 2px; font-size: 10px; color: var(--fg-3); }
 
 .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-4); margin-top: var(--s-6); padding-top: var(--s-5); border-top: 1px solid var(--line); }
 .fact__title { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-weight: 500; }
@@ -340,6 +342,18 @@
 .notes { display: flex; flex-direction: column; gap: 6px; font-size: var(--t-xs); color: var(--fg-3); }
 .notes li::before { content: "·"; margin-right: 8px; color: var(--fg-4); }
 
+/* ---------- 设置（manager） ---------- */
+.formgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); }
+@media (max-width: 700px) {
+  .formgrid { grid-template-columns: minmax(0, 1fr); }
+}
+.settings__cap { margin-top: var(--s-4); padding-top: var(--s-5); border-top: 1px solid var(--line); }
+.confpre {
+  margin: 0; padding: var(--s-4); max-height: 520px; overflow: auto;
+  border-radius: var(--r-md); background: var(--void); border: 1px solid var(--line);
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-2); white-space: pre; tab-size: 2;
+}
+
 .waiting { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 360px; text-align: center; overflow: hidden; }
 .waiting__hero { position: relative; display: grid; place-items: center; width: 132px; height: 132px; margin-bottom: var(--s-2); }
 .waiting__title { font-size: 20px; font-weight: 500; letter-spacing: -0.02em; }
@@ -387,3 +401,18 @@
 .coredown__body { max-width: 60ch; font-size: var(--t-xs); line-height: 1.7; color: var(--fg-3); }
 .coredown .cmd { width: min(620px, 100%); margin-top: var(--s-2); }
 .coredown__err { font-size: 11px; color: var(--fg-4); }
+
+/* ---------- 分流（manager） ---------- */
+.rulebox {
+  width: 100%; min-height: 76px; padding: 8px 12px; resize: vertical;
+  border-radius: var(--r-md); background: var(--ink-2); border: 1px solid var(--line-2); color: var(--fg);
+  font-size: 12px; line-height: 1.6;
+}
+.rulebox::placeholder { color: var(--fg-4); }
+.rulebox:hover { border-color: var(--line-3); }
+.rulebox:focus { outline: none; border-color: var(--eye-line); box-shadow: 0 0 0 3px var(--eye-wash); }
+.route-card { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--ink-1); }
+.route-card__head { display: flex; align-items: flex-end; gap: var(--s-3); }
+.route-card__head .field { flex: 1; }
+.order { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-sm); color: var(--fg-2); }
+.order b { color: var(--fg); font-weight: 500; }

@@ -52,6 +52,14 @@ The issuer relay (`network.issuer`) also runs the console, `easytier-web-embed`:
 - Use Gateway mode for the network, and make the console listen only on the overlay.
 - Put HTTPS in front of it on the issuer's overlay address, port 443, with a certificate valid for the console's name (a wildcard `*.edge.example.com` from Let's Encrypt over DNS-01 works). `pair.py`, `revoke.py` and the local console's agent all verify it.
 - Point `console-local.edge.example.com` at the issuer's overlay IP, DNS only (not proxied).
+- For [member invitations](console.md#manager-on-the-issuer-relay), run the manager next to the console and give the issuer `credential_file = "/etc/lolinet/credentials.json"` (any path) in its config, so the credentials it signs survive a restart.
+- For phones, also give it a WireGuard portal and open that UDP port to the internet:
+
+  ```toml
+  [vpn_portal_config]
+  wireguard_listen = "0.0.0.0:51820"
+  wireguard_private_key = "<openssl rand -base64 32>"   # every phone's key derives from this; keep it
+  ```
 
 Then record each relay in `$LOLINET_HOME/state/`:
 
@@ -83,7 +91,7 @@ export LOLINET_BASE_URL=https://join.edge.example.com
 uv run join/deploy.py worker                          # the Worker, KV / R2 / Durable Object bindings, custom domains
 (cd web && npm ci && npm run build:probe) && uv run join/deploy.py site   # the public probe page
 gh release download <lolinet-… tag> --repo prnake/lolinet --dir out   # a lolinet release, or your own build
-uv run join/deploy.py release out                     # packages, probe bundle, then the manifest dl/lolinet.json
+uv run join/deploy.py release out                     # packages, then the manifest dl/lolinet.json
 uv run join/deploy.py install                         # install.sh, once the packages are there
 ```
 
@@ -203,7 +211,7 @@ The join site needs all four platforms: `linux-x86_64`, `linux-aarch64`, `macos-
 
 ### Releasing from a fork
 
-- **lolinet:** run the `build` workflow on `main` with **release** checked, or push a `v*` tag. It publishes `lolinet-<version>` with the four `lolinet-*` and `easytier-*` packages, the probe bundle, `SHA256SUMS` and `lolinet.json`, and marks it latest.
+- **lolinet:** run the `build` workflow on `main` with **release** checked, or push a `v*` tag. It publishes `lolinet-<version>` with the four `lolinet-*` and `easytier-*` packages, `SHA256SUMS` and `lolinet.json`, and marks it latest.
 - **lolidesk:** every push to `main` that changes `desk/` publishes `lolidesk-<commit>` with `lolidesk.json` once the `desk` workflow passes, without marking it latest. To publish by hand, run `desk` on `main` with **release** checked.
 
 Either way, `dist` then copies the release to your join site if the secrets above are set.

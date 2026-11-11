@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Lolidesk
+GenericName=远程终端
+Comment=lolinet 网里的远程终端和远程桌面
+Exec=lolidesk-app %u
+TryExec=lolidesk-app
+Icon=lolidesk
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupWMClass=lolidesk
+StartupNotify=true
+MimeType=x-scheme-handler/lolidesk;

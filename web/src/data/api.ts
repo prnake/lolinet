@@ -1,5 +1,5 @@
 import { md5 } from "./md5";
-import type { AgentInfo, Credential, NetworkSummary, PairResult, RegisteredDevice, Snapshot } from "./types";
+import type { AgentInfo, Credential, MihomoRules, MihomoView, NetworkSummary, PairResult, RegisteredDevice, Settings, SettingsView, Snapshot } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -8,7 +8,16 @@ export class ApiError extends Error {
 }
 
 // probe：配对码里带公开探针配置，install.sh 一起装（默认 true；false 时 pair.py --no-probe）
-export type PairRequest = { name: string; ip: string; ttl_days: number; peers: string[]; probe?: boolean };
+// transport / code_minutes 只有 manager 认（本机 agent 转调 pair.py，用它的默认值）
+export type PairRequest = {
+  name: string;
+  ip: string;
+  ttl_days: number;
+  peers: string[];
+  probe?: boolean;
+  transport?: "wss" | "tcp";
+  code_minutes?: number;
+};
 
 /** 页面只认这个接口；真 agent 和演示数据各实现一份。 */
 export interface Backend {
@@ -23,6 +32,14 @@ export interface Backend {
   networks(): Promise<NetworkSummary[]>;
   credentials(networkId: string): Promise<Credential[]>;
   revoke(networkId: string, credentialId: string): Promise<void>;
+  /** 以下只有 manager 有 */
+  logout(): Promise<void>;
+  settings(): Promise<SettingsView>;
+  saveSettings(s: Settings): Promise<SettingsView>;
+  previewSettings(s: Settings): Promise<string>;
+  /** 分流规则和登记过的出口节点 */
+  mihomo(): Promise<MihomoView>;
+  saveMihomo(m: MihomoRules): Promise<MihomoView>;
 }
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -67,4 +84,10 @@ export const liveBackend: Backend = {
   credentials: async (nid) => (await call<{ credentials: Credential[] }>(`/api/v1/networks/${nid}/credentials`)).credentials,
   revoke: async (nid, cid) =>
     void (await call(`/api/v1/networks/${nid}/credentials/${encodeURIComponent(cid)}`, { method: "DELETE" })),
+  logout: async () => void (await call("/api/mesh/logout", json({}))),
+  settings: () => call("/api/mesh/settings"),
+  saveSettings: (s) => call("/api/mesh/settings", json(s)),
+  previewSettings: async (s) => (await call<{ config: string }>("/api/mesh/settings/preview", json({ settings: s }))).config,
+  mihomo: () => call("/api/mesh/mihomo"),
+  saveMihomo: (m) => call("/api/mesh/mihomo", json(m)),
 };

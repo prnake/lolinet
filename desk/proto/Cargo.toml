@@ -11,3 +11,6 @@ bytes.workspace = true
 serde.workspace = true
 postcard.workspace = true
 quinn.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

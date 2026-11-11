@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["proto", "host", "client"]
+members = ["proto", "ghostty", "core", "host", "client", "app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,9 @@ repository = "https://github.com/prnake/lolinet"
 
 [workspace.dependencies]
 lolidesk-proto = { path = "proto" }
+lolidesk-core = { path = "core" }
+lolidesk-ghostty = { path = "ghostty" }
+lolidesk-host = { path = "host" }
 anyhow = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
@@ -26,7 +29,9 @@ sha2 = "0.10"
 hex = "0.4"
 rand = "0.9"
 dirs = "7"
-alacritty_terminal = "0.26"
+libloading = "0.8"
+libc = "0.2"
+serde_json = "1"
 
 [profile.release]
 opt-level = 3

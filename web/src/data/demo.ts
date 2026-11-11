@@ -3,7 +3,7 @@
 import nodesDoc from "virtual:mesh-nodes";
 import type { Backend, PairRequest } from "./api";
 import fixture from "./demo-snapshot.json";
-import type { AgentInfo, CenterNode, Credential, CliPeer, CliRoute, RegisteredDevice, Snapshot } from "./types";
+import type { AgentInfo, CenterNode, Credential, CliPeer, CliRoute, MihomoRules, RegisteredDevice, Settings, SettingsView, Snapshot } from "./types";
 
 const base = fixture as unknown as Snapshot;
 const now = () => Math.floor(Date.now() / 1000);
@@ -22,7 +22,46 @@ const state = {
     { name: "pad", overlay_ip: "10.188.32.1", credential_id: "pad-20261105211804", expiry_unix: now() + 86400 * 5, paired_at: "2026-11-05T21:18:04" },
   ] as RegisteredDevice[],
   joined: [] as Joined[],
+  settings: {
+    pair: { ttl_days: 365, code_minutes: 15, peers: nodesDoc.network.device_peers ?? nodesDoc.relays.slice(0, 3).map((r) => r.name), transport: "wss", probe: true },
+    device: { latency_first: true, enable_kcp_proxy: true, udp_peers: false },
+  } as Settings,
+  mihomo: {
+    reject: ["DOMAIN-SUFFIX,ads.example.com"],
+    direct: ["GEOIP,CN"],
+    exit: ["GEOSITE,openai"],
+    exit_order: ["mbp-studio"],
+    routes: [{ name: "办公室", exit: "mbp-studio", rules: ["DOMAIN-SUFFIX,web.com"] }],
+  } as MihomoRules,
+  exits: [{ name: "mbp-studio", ip: "10.188.16.11", port: 10180, since: now() - 3600 * 5 }],
 };
+
+/** 演示用的配置预览：结构和 manager 渲染的一样，relay 地址用占位 */
+function demoPreview(s: Settings) {
+  const n = nodesDoc.network;
+  const lines = ['hostname = "<设备名>"', `instance_name = "${n.name}"`, 'ipv4 = "10.188.16.x/16"', "dhcp = false", "listeners = []", "",
+    "[network_identity]", `network_name = "${n.name}"`, "", "[secure_mode]", "enabled = true", 'local_private_key = "<控制台签发的凭据私钥>"'];
+  for (const p of s.pair.peers) {
+    const uri = s.pair.transport === "tcp" ? `tcp://<${p} EIP>:<端口>` : `wss://<${p} EIP>:443/?sni=<伪装 SNI>`;
+    lines.push("", "[[peer]]", `# ${p}.${n.edge_zone}`, `uri = "${uri}"`);
+    if (s.pair.transport === "wss" && s.device.udp_peers) lines.push("", "[[peer]]", `# ${p}.${n.edge_zone} udp`, `uri = "udp://<${p} EIP>:<端口>"`);
+  }
+  lines.push("", "[flags]", "private_mode = true");
+  if (s.device.latency_first) lines.push("latency_first = true");
+  if (s.device.enable_kcp_proxy) lines.push("enable_kcp_proxy = true");
+  return lines.join("\n") + "\n";
+}
+
+function settingsView(): SettingsView {
+  return {
+    settings: structuredClone(state.settings),
+    defaults: { pair: { ttl_days: 365, code_minutes: 15, peers: state.settings.pair.peers, transport: "wss", probe: true }, device: { latency_first: true, enable_kcp_proxy: true, udp_peers: false } },
+    relays: nodesDoc.relays.map((r) => ({ name: r.name, region: r.region, overlay_ip: r.overlay_ip })),
+    network: { name: nodesDoc.network.name, cidr: nodesDoc.network.cidr, edge_zone: nodesDoc.network.edge_zone, issuer: nodesDoc.network.issuer, console: nodesDoc.network.console },
+    base_url: `https://${nodesDoc.network.join}`,
+    preview: demoPreview(state.settings),
+  };
+}
 
 const jitter = (v: number) => Math.max(0.5, v * (0.96 + Math.random() * 0.08));
 
@@ -66,6 +105,10 @@ const info: AgentInfo = {
   pair: true,
   registry: true,
   join: nodesDoc.network.join,
+  manager: true,
+  login_required: false,
+  logged_in: true,
+  user: "demo",
 };
 
 export const demoBackend: Backend = {
@@ -82,7 +125,8 @@ export const demoBackend: Backend = {
     state.credentials.unshift({ credential_id: cid, expiry_unix: expiry, reusable: false, online_peers: [] });
     state.devices.unshift({ name: req.name, overlay_ip: req.ip, credential_id: cid, expiry_unix: expiry, paired_at: new Date().toISOString().slice(0, 19) });
     join(req);
-    return { name: req.name, ip: req.ip, code, credential_id: cid, command: `curl -fsSL https://${nodesDoc.network.join}/i | sudo sh -s ${code}`, expires_at: now() + 900 };
+    const minutes = req.code_minutes ?? state.settings.pair.code_minutes;
+    return { name: req.name, ip: req.ip, code, credential_id: cid, command: `curl -fsSL https://${nodesDoc.network.join}/i | sudo sh -s ${code}`, expires_at: now() + minutes * 60 };
   },
   forget: async (cid) => {
     state.devices = state.devices.filter((d) => d.credential_id !== cid);
@@ -103,5 +147,19 @@ export const demoBackend: Backend = {
   revoke: async (_nid, cid) => {
     await wait(400);
     state.credentials = state.credentials.filter((c) => c.credential_id !== cid);
+  },
+  logout: async () => {},
+  settings: async () => settingsView(),
+  saveSettings: async (s) => {
+    await wait(300);
+    state.settings = structuredClone(s);
+    return settingsView();
+  },
+  previewSettings: async (s) => demoPreview(s),
+  mihomo: async () => ({ mihomo: structuredClone(state.mihomo), exits: structuredClone(state.exits) }),
+  saveMihomo: async (m) => {
+    await wait(300);
+    state.mihomo = structuredClone(m);
+    return { mihomo: structuredClone(state.mihomo), exits: structuredClone(state.exits) };
   },
 };

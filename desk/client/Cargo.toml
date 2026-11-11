@@ -3,7 +3,7 @@ name = "lolidesk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "lolidesk 客户端：GUI（egui）和 TUI，连 lolinet 内网里的 lolidesk-host"
+description = "lolidesk：连别的电脑（在当前终端里接会话，列会话、显示器，管理记住的主机），也让这台电脑能被连（lolidesk host）"
 
 [[bin]]
 name = "lolidesk"
@@ -11,25 +11,15 @@ path = "src/main.rs"
 
 [dependencies]
 lolidesk-proto.workspace = true
+lolidesk-core.workspace = true
+lolidesk-host.workspace = true
 anyhow.workspace = true
-bytes.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-quinn.workspace = true
-rustls.workspace = true
-rustls-pki-types.workspace = true
-sha2.workspace = true
 hex.workspace = true
-dirs.workspace = true
-alacritty_terminal.workspace = true
 crossterm = "0.29"
-eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "system_fonts", "x11", "wayland"] }
-egui = "0.37"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-core-foundation = { version = "0.3.2", features = ["CFDictionary", "CFString", "CFNumber", "CFArray", "CFBase"] }
-objc2-core-media = "0.3.2"
-objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer", "CVReturn", "CVBase"] }
-objc2-video-toolbox = { version = "0.3.2", features = ["VTDecompressionSession", "VTDecompressionProperties", "VTErrors", "VTBase", "VTSession", "objc2-core-media", "objc2-core-video"] }
+quinn.workspace = true
+serde_json.workspace = true
+base64 = "0.22"

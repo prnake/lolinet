@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import { ago } from "./data/format";
 import { nodesDoc } from "./data/model";
 import { MeshProvider, useMesh, useNow } from "./data/store";
-import { Access } from "./pages/Access";
+import { Access, Login } from "./pages/Access";
 import { Design } from "./pages/Design";
 import { Nodes } from "./pages/Nodes";
 import { Overview } from "./pages/Overview";
 import { Pair } from "./pages/Pair";
+import { Routing } from "./pages/Routing";
+import { Settings } from "./pages/Settings";
 import { go, useRoute } from "./router";
 import { Button, Chip, CommandPill, Cursor, Icon, Mark, StatusDot, swarmVar, ThemeSwitch, ToastProvider, type IconName } from "./ui";
 
@@ -15,7 +17,11 @@ const NAV: { id: string; label: string; icon: IconName }[] = [
   { id: "nodes", label: "节点", icon: "nodes" },
   { id: "access", label: "凭据", icon: "key" },
   { id: "pair", label: "配对", icon: "pair" },
+  { id: "routing", label: "分流", icon: "route" },
+  { id: "settings", label: "设置", icon: "settings" },
 ];
+/** 只有 manager（签发 relay 上）有的页 */
+const MANAGER_ONLY = ["routing", "settings"];
 
 export default function App() {
   return (
@@ -28,12 +34,30 @@ export default function App() {
 }
 
 function Shell() {
-  const { phase } = useMesh();
+  const { phase, info } = useMesh();
   const route = useRoute();
+  if (phase === "login") return <Gate />;
   if (route[0] === "design") return <Frame route={route}><Design /></Frame>;
   if (phase !== "ready") return <Boot />;
-  const page = { overview: <Overview />, nodes: <Nodes id={route[1]} />, access: <Access />, pair: <Pair /> }[route[0]] ?? <Overview />;
-  return <Frame route={route}>{page}</Frame>;
+  const pages: Record<string, React.ReactNode> = { overview: <Overview />, nodes: <Nodes id={route[1]} />, access: <Access />, pair: <Pair /> };
+  if (info?.manager) {
+    pages.settings = <Settings />;
+    pages.routing = <Routing />;
+  }
+  return <Frame route={route}>{pages[route[0]] ?? <Overview />}</Frame>;
+}
+
+/** manager 整站登录：账号就是 easytier-web 控制台的 */
+function Gate() {
+  const { retry } = useMesh();
+  return (
+    <div className="boot">
+      <div className="boot__theme">
+        <ThemeSwitch />
+      </div>
+      <Login onDone={retry} title="登录 lo-li mesh" sub={`控制台账号 · ${location.host}`} />
+    </div>
+  );
 }
 
 function Frame({ route, children }: { route: string[]; children: React.ReactNode }) {
@@ -51,7 +75,11 @@ function Frame({ route, children }: { route: string[]; children: React.ReactNode
 }
 
 function Sidebar({ active }: { active: string }) {
-  const { mesh, info, backend, phase } = useMesh();
+  const { mesh, info, backend, phase, retry } = useMesh();
+  const logout = async () => {
+    await backend.logout().catch(() => {});
+    retry();
+  };
   const self = mesh?.self;
   const counts: Record<string, number | undefined> = { nodes: mesh?.nodes.length };
   return (
@@ -64,7 +92,7 @@ function Sidebar({ active }: { active: string }) {
         {nodesDoc.network.name} · {nodesDoc.network.cidr}
       </div>
       <nav className="side__nav">
-        {NAV.map((n) => (
+        {NAV.filter((n) => !MANAGER_ONLY.includes(n.id) || info?.manager).map((n) => (
           <a key={n.id} href={`#/${n.id}`} className={`side__item ${active === n.id ? "is-on" : ""}`}>
             <Icon name={n.icon} />
             <span>{n.label}</span>
@@ -94,11 +122,21 @@ function Sidebar({ active }: { active: string }) {
           {backend.demo ? (
             <Chip tone="warn">演示数据</Chip>
           ) : (
-            info && (
+            info &&
+            (info.manager ? (
+              <>
+                <span>
+                  {info.user ?? "—"} · manager {info.agent}
+                </span>
+                <button className="iconbtn" onClick={logout} aria-label="退出登录" title="退出登录">
+                  <Icon name="logout" />
+                </button>
+              </>
+            ) : (
               <>
                 {info.read_only && <Chip>只读</Chip>} agent {info.agent} · rpc {info.rpc.split(":").pop()}
               </>
-            )
+            ))
           )}
         </div>
       </div>
@@ -106,7 +144,7 @@ function Sidebar({ active }: { active: string }) {
   );
 }
 
-const TITLES: Record<string, string> = { overview: "总览", nodes: "节点", access: "凭据", pair: "配对", design: "设计语言" };
+const TITLES: Record<string, string> = { overview: "总览", nodes: "节点", access: "凭据", pair: "配对", routing: "分流", settings: "设置", design: "设计语言" };
 
 function Topbar({ section }: { section: string }) {
   const { updatedAt, error, refresh, snap, phase } = useMesh();

@@ -13,6 +13,7 @@ network:
   edge_zone: edge.example.com # <relay>.edge.example.com -> relay 公网地址
   join: join.edge.example.com # 准入站（Cloudflare Worker）；环境变量 LOLINET_BASE_URL 可以覆盖
   console: https://console-local.edge.example.com  # easytier-web 控制台，只在 overlay 上
+  manager: https://manager.edge.example.com  # 内网管理面（web/agent/mesh_manager.py，和控制台同一台）：配置末尾写给设备，lolinet invite 找它要配对码
   issuer: surtr               # 签发凭据、跑控制台的 relay
   device_peers: [surtr, hoshiguma, gavial]  # pair.py 和配对页给设备默认连的 relay
 
