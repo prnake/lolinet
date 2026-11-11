@@ -81,6 +81,15 @@ mod gui {
     const H: f32 = 820.;
 
     pub fn run() {
+        // 测试里改偏好（字号、本机主机开关）会存盘、记住主机会写 hosts：都写到一个临时的 HOME，
+        // 别动跑测试的人自己的 app.json、hosts，也别读到这台真装着的主机服务。还没起别的线程，改环境变量是安全的
+        let tmp_home =
+            std::env::temp_dir().join(format!("lolidesk-snapshots-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_home).expect("建临时 HOME");
+        unsafe {
+            std::env::set_var("HOME", &tmp_home);
+            std::env::set_var("XDG_CONFIG_HOME", tmp_home.join(".config"));
+        }
         // 没有 Metal 设备（比如某些虚拟机）、Linux 上没有 Vulkan / GL 就画不了：跳过，不算失败
         match gpui_kit::platform::current_headless_renderer() {
             Ok(Some(_)) => {}
@@ -145,6 +154,7 @@ mod gui {
         if let Some(dir) = &out {
             println!("快照在 {}", dir.display());
         }
+        let _ = std::fs::remove_dir_all(&tmp_home);
         if failed > 0 {
             std::process::exit(1);
         }
