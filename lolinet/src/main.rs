@@ -199,6 +199,8 @@ enum MihomoCmd {
     },
     /// 停掉并卸载（要 root）
     Off,
+    /// 马上从管理面重新取配置，变了就换上、重启 mihomo（要 root；自动升级的定时任务每 6 小时也做一次）
+    Refresh,
 }
 
 #[derive(Subcommand)]
@@ -304,6 +306,7 @@ fn lolinet(args: Args) -> Result<()> {
             None => mihomo::run(mode, out, manager),
             Some(MihomoCmd::On { bin, mode, manager }) => mihomo::on(bin, mode, manager),
             Some(MihomoCmd::Off) => mihomo::off(),
+            Some(MihomoCmd::Refresh) => mihomo::refresh_cmd(),
         },
         Cmd::Exit { cmd } => match cmd.unwrap_or(ExitCmd::Status) {
             ExitCmd::Status => exit::status(),

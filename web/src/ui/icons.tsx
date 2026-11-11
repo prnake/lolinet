@@ -28,6 +28,7 @@ const paths = {
   moon: "M13.5 9.5A5.5 5.5 0 1 1 6.5 2.5a4.5 4.5 0 0 0 7 7z",
   auto: "M8 2.5a5.5 5.5 0 1 0 0 11zM8 2.5a5.5 5.5 0 0 1 0 11",
   settings: "M2.5 4.5h5M10.5 4.5h3M2.5 11.5h2M7.5 11.5h6M9 3v3M6 10v3",
+  route: "M3 13.5v-4a3 3 0 0 1 3-3h7M10.5 4l2.5 2.5-2.5 2.5M3 2.5v4",
 } as const;
 
 export type IconName = keyof typeof paths;

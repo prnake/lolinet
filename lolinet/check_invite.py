@@ -137,6 +137,11 @@ def cli_json(cli: str, rpc: int, *args: str):
     return json.loads(out.stdout)
 
 
+def route_key(name: str) -> str:
+    """和 web/agent/mesh_manager.py 的 route_key 一样"""
+    return "r" + hashlib.sha256(name.encode()).hexdigest()[:8]
+
+
 def t_order(text: str) -> bool:
     keys = ["PROCESS-NAME,lolinet,DIRECT", "IP-CIDR,10.188.0.0/16,lolinet", "RULE-SET,lolinet-reject,REJECT",
             "RULE-SET,lolinet-direct,DIRECT", "RULE-SET,lolinet-exit,", "MATCH,DIRECT"]
@@ -250,7 +255,9 @@ private_mode = true
             "device": {"latency_first": True, "enable_kcp_proxy": False, "udp_peers": False}}))
         (state / "policy.json").write_text(json.dumps({"per_day": 3}))
         (state / "mihomo.json").write_text(json.dumps({"reject": ["DOMAIN-SUFFIX,ads.example.com"], "direct": ["GEOIP,CN"],
-                                                       "exit": ["DOMAIN-SUFFIX,openai.com"], "exit_order": ["laptop"]}))
+                                                       "exit": ["DOMAIN-SUFFIX,openai.com"], "exit_order": ["laptop"],
+                                                       "routes": [{"name": "办公室", "exit": "laptop", "rules": ["DOMAIN-SUFFIX,web.com"]},
+                                                                  {"name": "美国", "exit": "nobox", "rules": ["DOMAIN-SUFFIX,example.org"]}]}))
         cfg = {
             "network": {"name": NETWORK, "cidr": "10.188.0.0/16", "sni": "speedtest.example.com", "edge_zone": "edge.example.com",
                         "issuer": "issuer", "console": "", "local_suffix": "-local.edge.example.com"},
@@ -369,6 +376,31 @@ private_mode = true
               and "tun:" in us and "route-exclude-address" not in us,
               "电脑两种配置都劫持 DNS、开 sniffer，lolinet 的底层流量（进程、relay 公网地址）最先直连；userspace 下 mihomo 是唯一的 TUN")
         check(t_order(tun), "规则顺序：底层直连 → 网内 → 拒绝 → 直连 → 出口 → 其余直连")
+
+        # ---- 线路：一组规则固定从某台出口出去 ----
+        office, usa = route_key("办公室"), route_key("美国")
+        for t in (tun, us, phone_yaml):
+            ok = (f"RULE-SET,lolinet-{office},线路·办公室" in t and f"RULE-SET,lolinet-{usa},线路·美国" in t
+                  and t.index(f"RULE-SET,lolinet-{office}") < t.index("RULE-SET,lolinet-exit,")
+                  and t.index("RULE-SET,lolinet-direct,DIRECT") < t.index(f"RULE-SET,lolinet-{office}")
+                  and f"/api/mesh/mihomo/route/{office}/exit.yaml?via=lolinet" in t)
+            if not ok:
+                break
+        check(ok, "电脑和手机的配置里每条线路一个规则集和组，排在拒绝 / 直连之后、通用出口之前")
+        code_, body = get(f"/api/mesh/mihomo/route/{office}/rules.yaml", "10.188.48.1")
+        check(code_ == 200 and '"DOMAIN-SUFFIX,web.com"' in body and yaml_ok(body), "线路「办公室」的规则从内网取")
+        code_, body = get(f"/api/mesh/mihomo/route/{office}/exit.yaml?via=lolinet", "10.188.48.1")
+        check(code_ == 200 and '"线路·办公室 → laptop"' in body and 'server: "10.188.16.10"' in body and "port: 10180" in body
+              and 'dialer-proxy: "lolinet"' in body and yaml_ok(body), f"线路「办公室」的出口是 laptop（{body.strip()[:120]}）")
+        code_, body = get(f"/api/mesh/mihomo/route/{usa}/exit.yaml?via=lolinet", "10.188.48.1")
+        check(code_ == 200 and "nobox 没开出口" in body and 'server: "127.0.0.1"' in body and "port: 9" in body,
+              "线路「美国」的节点没开出口：给一个连不通的地址，不变成直连")
+        code_, body = get("/api/mesh/mihomo/route/r00000000/rules.yaml", "10.188.48.1")
+        code2, body2 = get("/api/mesh/mihomo/route/r00000000/exit.yaml", "10.188.48.1")
+        check(code_ == 200 and body.strip() == "payload: []" and "线路已删除" in body2,
+              "删掉的线路：老配置取到空规则和连不通的出口")
+        code_, _ = get(f"/api/mesh/mihomo/route/{office}/exit.yaml", "10.188.99.98")
+        check(code_ == 403, "网外来源取不到线路")
         check(all(yaml_ok(v) for v in outs.values()), "两份电脑配置都是合法 YAML")
         if FAILS:
             print(outs["userspace"][:2500])

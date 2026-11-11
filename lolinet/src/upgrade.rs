@@ -264,6 +264,12 @@ pub fn run(check: bool, dry_run: bool, auto: bool, source: Option<String>) -> Re
         if let Err(e) = probe::reconcile(false, &|m| println!("{stamp}{m}")) {
             println!("{stamp}公开探针：{e:#}");
         }
+        // mihomo 服务：管理面加了线路、出口换了地址，配置要换（规则本身 mihomo 自己取）
+        match crate::mihomo::refresh() {
+            Ok(true) => println!("{stamp}mihomo 配置换成了管理面现在的，已重启 mihomo"),
+            Ok(false) => {}
+            Err(e) => println!("{stamp}mihomo 配置没换：{e:#}"),
+        }
     }
     if auto {
         // 定时任务的输出进 /var/log/lolinet/upgrade.log：只记换了什么和出错，平时不写

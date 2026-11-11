@@ -7,6 +7,7 @@ import { Design } from "./pages/Design";
 import { Nodes } from "./pages/Nodes";
 import { Overview } from "./pages/Overview";
 import { Pair } from "./pages/Pair";
+import { Routing } from "./pages/Routing";
 import { Settings } from "./pages/Settings";
 import { go, useRoute } from "./router";
 import { Button, Chip, CommandPill, Cursor, Icon, Mark, StatusDot, swarmVar, ThemeSwitch, ToastProvider, type IconName } from "./ui";
@@ -16,8 +17,11 @@ const NAV: { id: string; label: string; icon: IconName }[] = [
   { id: "nodes", label: "节点", icon: "nodes" },
   { id: "access", label: "凭据", icon: "key" },
   { id: "pair", label: "配对", icon: "pair" },
+  { id: "routing", label: "分流", icon: "route" },
   { id: "settings", label: "设置", icon: "settings" },
 ];
+/** 只有 manager（签发 relay 上）有的页 */
+const MANAGER_ONLY = ["routing", "settings"];
 
 export default function App() {
   return (
@@ -36,7 +40,10 @@ function Shell() {
   if (route[0] === "design") return <Frame route={route}><Design /></Frame>;
   if (phase !== "ready") return <Boot />;
   const pages: Record<string, React.ReactNode> = { overview: <Overview />, nodes: <Nodes id={route[1]} />, access: <Access />, pair: <Pair /> };
-  if (info?.manager) pages.settings = <Settings />;
+  if (info?.manager) {
+    pages.settings = <Settings />;
+    pages.routing = <Routing />;
+  }
   return <Frame route={route}>{pages[route[0]] ?? <Overview />}</Frame>;
 }
 
@@ -85,7 +92,7 @@ function Sidebar({ active }: { active: string }) {
         {nodesDoc.network.name} · {nodesDoc.network.cidr}
       </div>
       <nav className="side__nav">
-        {NAV.filter((n) => n.id !== "settings" || info?.manager).map((n) => (
+        {NAV.filter((n) => !MANAGER_ONLY.includes(n.id) || info?.manager).map((n) => (
           <a key={n.id} href={`#/${n.id}`} className={`side__item ${active === n.id ? "is-on" : ""}`}>
             <Icon name={n.icon} />
             <span>{n.label}</span>
@@ -137,7 +144,7 @@ function Sidebar({ active }: { active: string }) {
   );
 }
 
-const TITLES: Record<string, string> = { overview: "总览", nodes: "节点", access: "凭据", pair: "配对", settings: "设置", design: "设计语言" };
+const TITLES: Record<string, string> = { overview: "总览", nodes: "节点", access: "凭据", pair: "配对", routing: "分流", settings: "设置", design: "设计语言" };
 
 function Topbar({ section }: { section: string }) {
   const { updatedAt, error, refresh, snap, phase } = useMesh();

@@ -4,7 +4,7 @@
 - 出口节点：一份 userspace 的 /etc/lolinet/loli.toml（不用真起内核），`lolinet exit on --port <P>` 装服务
   （launchd co.lo-li.lolinet-exit / systemd lolinet-exit.service），服务降到 nobody 后在 127.0.0.1:<P> 上完成 SOCKS5 握手，
   `lolinet exit` 报运行中；`lolinet exit off` 之后服务没了、端口关了。
-- mihomo：一个假的 mihomo（-v 报版本，-t 说配置没问题，平时一直睡），一个替身管理面给配置，
+- mihomo：一个假的 mihomo（-v 报版本，-t 说配置没问题，平时一直睡），一个替身管理面给配置（会变，测 refresh），
   `lolinet mihomo on --bin <假的> --manager …` 写 /etc/lolinet/mihomo/config.yaml、装服务并跑起来，
   服务的命令行是 `<假的> -d /etc/lolinet/mihomo`；`lolinet status` 里有 mihomo 一行；`lolinet mihomo off` 之后服务没了。
 
@@ -84,7 +84,8 @@ def socks_ok(port: int) -> bool:
 
 
 class Manager(http.server.BaseHTTPRequestHandler):
-    """替身管理面：给 mihomo 配置，收出口登记"""
+    """替身管理面：给 mihomo 配置（带版本号，测 refresh），收出口登记"""
+    rev = 1
 
     def log_message(self, *a):
         pass
@@ -99,7 +100,8 @@ class Manager(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/mesh/mihomo/config.yaml?mode="):
             mode = self.path.rsplit("=", 1)[1]
-            return self.reply(200, f"# check_service {mode}\nmixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n".encode(), "text/yaml")
+            body = f"# check_service {mode} rev {Manager.rev}\nmixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n"
+            return self.reply(200, body.encode(), "text/yaml")
         self.reply(404, b'{"message":"not found"}', "application/json")
 
     def do_POST(self):
@@ -156,6 +158,12 @@ def main() -> None:
         check(wait(lambda: service_running("co.lo-li.lolinet-mihomo", "lolinet-mihomo")), "mihomo 服务在跑")
         ps = run("ps", "ax", "-o", "command=").stdout
         check(f"{fake} -d /etc/lolinet/mihomo" in ps or "sleep 3600" in ps, "服务跑的是 <mihomo> -d /etc/lolinet/mihomo")
+        Manager.rev = 2
+        r = run(binary, "mihomo", "refresh")
+        check(r.returncode == 0 and "换成了" in r.stdout and "rev 2" in cfg.read_text(), f"管理面的配置变了：mihomo refresh 换上（{r.stdout.strip()}）")
+        r = run(binary, "mihomo", "refresh")
+        check(r.returncode == 0 and "没动" in r.stdout, "没变就不动")
+        check(wait(lambda: service_running("co.lo-li.lolinet-mihomo", "lolinet-mihomo")), "换完 mihomo 服务还在跑")
         r = run(binary, "status")
         check("mihomo" in r.stdout and "运行中" in r.stdout.split("mihomo", 1)[-1][:200], "lolinet status 里有 mihomo 一行")
         r = run(binary, "mihomo", "off")

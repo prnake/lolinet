@@ -107,21 +107,59 @@ pub fn on(bin: Option<PathBuf>, mode: Option<String>, manager_flag: Option<Strin
         service::restart()?;
         println!("lolinet 打开了 127.0.0.1:18080（mihomo 经它进网），已重启 lolinet");
     }
+    put_config(&bin, &body)?;
+    let st = json!({"bin": bin, "mode": mode});
+    write_file(SETTINGS, format!("{}\n", serde_json::to_string_pretty(&st)?).as_bytes(), 0o644)?;
+    service::install_mihomo(&bin)?;
+    println!("mihomo 已作为系统服务启动（{ver}，{mode} 模式，配置 {DIR}/config.yaml）");
+    println!("  规则、线路绑哪台出口由管理面集中下发，mihomo 每 10 分钟自己取；");
+    println!("  管理面加了线路要换配置：自动升级的定时任务（每 6 小时）会做，马上要就 sudo lolinet mihomo refresh");
+    Ok(())
+}
+
+/// 先写到旁边让 mihomo -t 检查，过了才换上
+fn put_config(bin: &Path, body: &str) -> Result<()> {
     fs::create_dir_all(DIR)?;
-    // 先写到旁边检查（mihomo -t），过了才换上
     let staging = format!("{DIR}/config.yaml.new");
     write_file(&staging, body.as_bytes(), 0o644)?;
-    let t = Command::new(&bin).args(["-t", "-d", DIR, "-f", &staging]).output()?;
+    let t = Command::new(bin).args(["-t", "-d", DIR, "-f", &staging]).output()?;
     if !t.status.success() {
         let _ = fs::remove_file(&staging);
         bail!("mihomo 说配置不对：{}", String::from_utf8_lossy(&t.stdout).trim());
     }
     fs::rename(&staging, format!("{DIR}/config.yaml"))?;
-    let st = json!({"bin": bin, "mode": mode});
-    write_file(SETTINGS, format!("{}\n", serde_json::to_string_pretty(&st)?).as_bytes(), 0o644)?;
+    Ok(())
+}
+
+/// 装着 mihomo 服务的话：重新取配置，变了（管理面加了线路、改了节点地址）就换上、重启 mihomo。
+/// 返回换没换；没装 mihomo 是 Ok(false)。线路里的规则、线路绑哪台不用这一步，mihomo 自己每 10 分钟取
+pub fn refresh() -> Result<bool> {
+    let Ok(raw) = fs::read(SETTINGS) else {
+        return Ok(false);
+    };
+    let v: Value = serde_json::from_slice(&raw).with_context(|| format!("{SETTINGS} 不是 JSON"))?;
+    let bin = PathBuf::from(v.get("bin").and_then(Value::as_str).context("mihomo.json 里没有 bin")?);
+    let mode = v.get("mode").and_then(Value::as_str).unwrap_or("tun").to_owned();
+    let body = fetch(&mode, None)?;
+    if fs::read_to_string(format!("{DIR}/config.yaml")).is_ok_and(|now| now == body) {
+        return Ok(false);
+    }
+    version(&bin)?;
+    put_config(&bin, &body)?;
     service::install_mihomo(&bin)?;
-    println!("mihomo 已作为系统服务启动（{ver}，{mode} 模式，配置 {DIR}/config.yaml）");
-    println!("  规则和出口节点由管理面集中下发，mihomo 每 10 分钟自己取；控制面板 http://127.0.0.1:9090（没开就没有）");
+    Ok(true)
+}
+
+pub fn refresh_cmd() -> Result<()> {
+    crate::need_root()?;
+    if !Path::new(SETTINGS).exists() {
+        bail!("没装 mihomo 服务：sudo lolinet mihomo on");
+    }
+    if refresh()? {
+        println!("mihomo 配置换成了管理面现在的，已重启 mihomo");
+    } else {
+        println!("mihomo 配置和管理面现在的一样，没动");
+    }
     Ok(())
 }
 

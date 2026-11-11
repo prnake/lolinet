@@ -100,6 +100,13 @@ export type SettingsView = {
   preview: string;
 };
 
+/** 分流（manager 的 mihomo.json）：一条线路 = 一组规则固定从一台出口节点出去 */
+export type MihomoRoute = { name: string; exit: string; rules: string[] };
+export type MihomoRules = { reject: string[]; direct: string[]; exit: string[]; exit_order: string[]; routes: MihomoRoute[] };
+/** lolinet exit on 登记过的出口节点 */
+export type ExitNode = { name: string; ip: string; port: number; since: number };
+export type MihomoView = { mihomo: MihomoRules; exits: ExitNode[] };
+
 export type TemporaryPeer = {
   peer_id: number;
   credential_id?: string | null;

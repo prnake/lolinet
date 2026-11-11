@@ -3,7 +3,7 @@
 import nodesDoc from "virtual:mesh-nodes";
 import type { Backend, PairRequest } from "./api";
 import fixture from "./demo-snapshot.json";
-import type { AgentInfo, CenterNode, Credential, CliPeer, CliRoute, RegisteredDevice, Settings, SettingsView, Snapshot } from "./types";
+import type { AgentInfo, CenterNode, Credential, CliPeer, CliRoute, MihomoRules, RegisteredDevice, Settings, SettingsView, Snapshot } from "./types";
 
 const base = fixture as unknown as Snapshot;
 const now = () => Math.floor(Date.now() / 1000);
@@ -26,6 +26,14 @@ const state = {
     pair: { ttl_days: 365, code_minutes: 15, peers: nodesDoc.network.device_peers ?? nodesDoc.relays.slice(0, 3).map((r) => r.name), transport: "wss", probe: true },
     device: { latency_first: true, enable_kcp_proxy: true, udp_peers: false },
   } as Settings,
+  mihomo: {
+    reject: ["DOMAIN-SUFFIX,ads.example.com"],
+    direct: ["GEOIP,CN"],
+    exit: ["GEOSITE,openai"],
+    exit_order: ["mbp-studio"],
+    routes: [{ name: "办公室", exit: "mbp-studio", rules: ["DOMAIN-SUFFIX,web.com"] }],
+  } as MihomoRules,
+  exits: [{ name: "mbp-studio", ip: "10.188.16.11", port: 10180, since: now() - 3600 * 5 }],
 };
 
 /** 演示用的配置预览：结构和 manager 渲染的一样，relay 地址用占位 */
@@ -148,4 +156,10 @@ export const demoBackend: Backend = {
     return settingsView();
   },
   previewSettings: async (s) => demoPreview(s),
+  mihomo: async () => ({ mihomo: structuredClone(state.mihomo), exits: structuredClone(state.exits) }),
+  saveMihomo: async (m) => {
+    await wait(300);
+    state.mihomo = structuredClone(m);
+    return { mihomo: structuredClone(state.mihomo), exits: structuredClone(state.exits) };
+  },
 };

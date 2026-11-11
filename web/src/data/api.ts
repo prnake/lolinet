@@ -1,5 +1,5 @@
 import { md5 } from "./md5";
-import type { AgentInfo, Credential, NetworkSummary, PairResult, RegisteredDevice, Settings, SettingsView, Snapshot } from "./types";
+import type { AgentInfo, Credential, MihomoRules, MihomoView, NetworkSummary, PairResult, RegisteredDevice, Settings, SettingsView, Snapshot } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -37,6 +37,9 @@ export interface Backend {
   settings(): Promise<SettingsView>;
   saveSettings(s: Settings): Promise<SettingsView>;
   previewSettings(s: Settings): Promise<string>;
+  /** 分流规则和登记过的出口节点 */
+  mihomo(): Promise<MihomoView>;
+  saveMihomo(m: MihomoRules): Promise<MihomoView>;
 }
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -85,4 +88,6 @@ export const liveBackend: Backend = {
   settings: () => call("/api/mesh/settings"),
   saveSettings: (s) => call("/api/mesh/settings", json(s)),
   previewSettings: async (s) => (await call<{ config: string }>("/api/mesh/settings/preview", json({ settings: s }))).config,
+  mihomo: () => call("/api/mesh/mihomo"),
+  saveMihomo: (m) => call("/api/mesh/mihomo", json(m)),
 };

@@ -275,9 +275,21 @@ def encrypt(code: str, plain: bytes) -> str:
 # ---------- mihomo ----------
 
 RULE_SETS = ("reject", "direct", "exit")
-DEFAULT_MIHOMO = {"reject": [], "direct": [], "exit": [], "exit_order": []}
+DEFAULT_MIHOMO = {"reject": [], "direct": [], "exit": [], "exit_order": [], "routes": []}
+# 线路：一组规则固定从一台出口节点出去。名字进 mihomo 的组名和规则（RULE-SET,…,组名），不能有逗号、引号
+ROUTE_NAME_RE = re.compile(r"^[^\x00-\x1f,\"'\\]{1,24}$")
+MAX_ROUTES = 16
 RULE_RE = re.compile(r"^[A-Z][A-Z0-9-]*,[^\n\r]{1,256}$")
 EXIT_GROUP = "出口"
+
+
+def check_rules(k: str, v) -> tuple[list | None, str | None]:
+    if not isinstance(v, list) or not all(isinstance(r, str) and RULE_RE.match(r.strip()) for r in v):
+        return None, f"{k} 是 mihomo 的 classical 规则列表，如 DOMAIN-SUFFIX,example.com、IP-CIDR,1.2.3.0/24、GEOSITE,openai"
+    bad = [r for r in v if r.split(",", 1)[0] in ("RULE-SET", "SUB-RULE", "MATCH", "AND", "OR", "NOT")]
+    if bad:
+        return None, f"{k} 里不能用 {bad[0].split(',', 1)[0]}"
+    return [r.strip() for r in v], None
 
 
 def check_mihomo(d) -> tuple[dict | None, str | None]:
@@ -285,18 +297,43 @@ def check_mihomo(d) -> tuple[dict | None, str | None]:
         return None, "要是 JSON 对象"
     out = dict(DEFAULT_MIHOMO)
     for k in RULE_SETS:
-        v = d.get(k, [])
-        if not isinstance(v, list) or not all(isinstance(r, str) and RULE_RE.match(r.strip()) for r in v):
-            return None, f"{k} 是 mihomo 的 classical 规则列表，如 DOMAIN-SUFFIX,example.com、IP-CIDR,1.2.3.0/24、GEOSITE,openai"
-        bad = [r for r in v if r.split(",", 1)[0] in ("RULE-SET", "SUB-RULE", "MATCH", "AND", "OR", "NOT")]
-        if bad:
-            return None, f"{k} 里不能用 {bad[0].split(',', 1)[0]}"
-        out[k] = [r.strip() for r in v]
+        rules, err = check_rules(k, d.get(k, []))
+        if err:
+            return None, err
+        out[k] = rules
     order = d.get("exit_order", [])
     if not isinstance(order, list) or not all(isinstance(x, str) and NAME_RE.match(x) for x in order):
         return None, "exit_order 是出口节点的主机名列表"
     out["exit_order"] = order
+    routes = d.get("routes", [])
+    if not isinstance(routes, list) or len(routes) > MAX_ROUTES:
+        return None, f"routes 是线路列表，最多 {MAX_ROUTES} 条"
+    out["routes"], seen = [], set()
+    for r in routes:
+        if not isinstance(r, dict):
+            return None, "每条线路是 {name, exit, rules}"
+        name = str(r.get("name", "")).strip()
+        if not ROUTE_NAME_RE.match(name):
+            return None, f"线路名 1–24 个字，不能有逗号、引号：{name!r}"
+        if name in seen:
+            return None, f"线路名重复：{name}"
+        seen.add(name)
+        if not isinstance(r.get("exit"), str) or not NAME_RE.match(r["exit"]):
+            return None, f"线路「{name}」的出口要是网里一台机器的主机名"
+        rules, err = check_rules(f"线路「{name}」", r.get("rules", []))
+        if err:
+            return None, err
+        out["routes"].append({"name": name, "exit": r["exit"], "rules": rules})
     return out, None
+
+
+def route_key(name: str) -> str:
+    """线路在配置里的 id（provider 名、URL）：按名字算，线路删了、挪了位置，老配置也不会把规则对到别的线路上"""
+    return "r" + hashlib.sha256(name.encode()).hexdigest()[:8]
+
+
+def route_group(name: str) -> str:
+    return f"线路·{name}"
 
 
 def y(s: str) -> str:
@@ -308,20 +345,37 @@ def rule_provider(rules: list) -> str:
     return "payload:\n" + "".join(f"  - {y(r)}\n" for r in rules) if rules else "payload: []\n"
 
 
+def socks_line(name: str, ip: str, port: int, via: str | None) -> str:
+    return (f"  - {{name: {y(name)}, type: socks5, server: {y(ip)}, port: {int(port)}, udp: true"
+            + (f", dialer-proxy: {y(via)}" if via else "") + "}")
+
+
 def exit_proxies(exits: list, order: list, via: str | None) -> str:
     """出口节点 -> socks5 代理，按管理员定的顺序（没列的按名字），最后一个是直连（不走出口）"""
     rank = {n: i for i, n in enumerate(order)}
     lines = ["proxies:"]
     for e in sorted(exits, key=lambda e: (rank.get(e["name"], len(rank)), e["name"])):
-        lines.append(f"  - {{name: {y(e['name'] + ' 出口')}, type: socks5, server: {y(e['ip'])}, port: {int(e['port'])}, udp: true"
-                     + (f", dialer-proxy: {y(via)}" if via else "") + "}")
+        lines.append(socks_line(e["name"] + " 出口", e["ip"], e["port"], via))
     lines.append(f"  - {{name: {y('直连（不走出口）')}, type: direct}}")
     return "\n".join(lines) + "\n"
 
 
-def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | None = None) -> str:
+def route_proxies(route: dict | None, name: str, exits: list, via: str | None) -> str:
+    """一条线路的出口（proxy-provider 只有这一个）。出口节点没登记（没开 lolinet exit、线路删了）时给一个连不通的地址：
+    这条线路的流量失败，不会悄悄变成直连"""
+    e = next((x for x in exits if route and x.get("name") == route["exit"]), None)
+    if e:
+        return "proxies:\n" + socks_line(f"{name} → {e['name']}", e["ip"], e["port"], via) + "\n"
+    why = f"{route['exit']} 没开出口" if route else "线路已删除"
+    return "proxies:\n" + socks_line(f"{name}：{why}", "127.0.0.1", 9, via) + "\n"
+
+
+def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | None = None, routes: list | None = None) -> str:
     """mode：phone（mihomo 经 WireGuard 进网）、userspace（电脑，lolinet 无 TUN，mihomo 是唯一的 TUN）、
     tun（电脑，两个 TUN：mihomo 的让开 overlay 网段，普通程序访问网内直接走 lolinet 的 TUN）。
+
+    routes：线路（一组规则固定从某台出口出去）。每条一个 rule-provider（规则）、一个 proxy-provider（出口，只有它）
+    和一个组；规则和这条线路绑哪台都经内网动态取，线路本身（有哪几条）写死在这份配置里，加了线路要重新取配置。
 
     电脑上 mihomo 自己拨出去的连接（出口节点、从管理面拉规则、走 7890 端口的程序访问网内）一律经 lolinet 在回环上的
     SOCKS5（127.0.0.1:18080）：mihomo 开了 auto-detect-interface 后，每条往外拨的连接都绑在物理网卡上
@@ -364,10 +418,24 @@ def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | Non
     out += ["", "proxy-providers:", "  lolinet-exits:", "    type: http", f"    url: {y(manager + '/api/mesh/mihomo/proxies.yaml?via=lolinet')}",
             "    path: ./lolinet/exits.yaml", "    interval: 600", "    proxy: lolinet",
             "    health-check: {enable: true, url: https://cp.cloudflare.com/generate_204, interval: 600, lazy: true}",
-            "", "proxy-groups:", f"  - name: {y(EXIT_GROUP)}", "    type: select", "    use: [lolinet-exits]", "", "rule-providers:"]
+            ""]
+    for r in routes or []:
+        k = route_key(r["name"])
+        out[-1:-1] = [f"  lolinet-{k}-exit:", "    type: http",
+                      f"    url: {y(manager + '/api/mesh/mihomo/route/' + k + '/exit.yaml?via=lolinet')}",
+                      f"    path: ./lolinet/{k}-exit.yaml", "    interval: 600", "    proxy: lolinet"]
+    out += ["proxy-groups:", f"  - name: {y(EXIT_GROUP)}", "    type: select", "    use: [lolinet-exits]"]
+    for r in routes or []:
+        out += [f"  - name: {y(route_group(r['name']))}", "    type: select", f"    use: [lolinet-{route_key(r['name'])}-exit]"]
+    out += ["", "rule-providers:"]
     for k in RULE_SETS:
         out += [f"  lolinet-{k}:", "    type: http", "    behavior: classical", "    format: yaml",
                 f"    url: {y(manager + '/api/mesh/mihomo/rules/' + k + '.yaml')}", f"    path: ./lolinet/{k}.yaml",
+                "    interval: 600", "    proxy: lolinet"]
+    for r in routes or []:
+        k = route_key(r["name"])
+        out += [f"  lolinet-{k}:", "    type: http", "    behavior: classical", "    format: yaml",
+                f"    url: {y(manager + '/api/mesh/mihomo/route/' + k + '/rules.yaml')}", f"    path: ./lolinet/{k}.yaml",
                 "    interval: 600", "    proxy: lolinet"]
     out += ["", "rules:"]
     if desktop:
@@ -383,8 +451,9 @@ def render_mihomo(cfg: dict, mode: str, manager: str, title: str, wg: dict | Non
         out.append(f"  - DOMAIN,{host},lolinet")
     if net.get("local_suffix"):
         out.append(f"  - DOMAIN-REGEX,^[a-z0-9-]+{re.escape(net['local_suffix'])}$,lolinet")
-    out += ["  - RULE-SET,lolinet-reject,REJECT", "  - RULE-SET,lolinet-direct,DIRECT", f"  - RULE-SET,lolinet-exit,{EXIT_GROUP}",
-            "  - MATCH,DIRECT", ""]
+    out += ["  - RULE-SET,lolinet-reject,REJECT", "  - RULE-SET,lolinet-direct,DIRECT"]
+    out += [f"  - RULE-SET,lolinet-{route_key(r['name'])},{route_group(r['name'])}" for r in routes or []]
+    out += [f"  - RULE-SET,lolinet-exit,{EXIT_GROUP}", "  - MATCH,DIRECT", ""]
     return "\n".join(out)
 
 
@@ -642,7 +711,7 @@ class Manager(agent.Handler):
             with self.store.lock:
                 self.store.write("mihomo.json", m)
             self.audit("mihomo " + json.dumps(m, ensure_ascii=False, separators=(",", ":")))
-            return self.send_json(200, {"mihomo": m})
+            return self.send_json(200, {"mihomo": m, "exits": self.store.read("exits.json", [])})
         if method == "GET" and what == "policy":
             return self.send_json(200, {"policy": self.policy(), "defaults": DEFAULT_POLICY, "kinds": list(KINDS)})
         if method == "POST" and what == "policy":
@@ -830,7 +899,8 @@ class Manager(agent.Handler):
             if self.cfg.get("wireguard_port"):
                 wg["port"] = int(self.cfg["wireguard_port"])
             title = self.cfg["network"].get("title") or "lolinet"
-            config = render_mihomo(self.cfg, "phone", self.manager_url() or "https://manager.invalid", f"{title} · {name}（{ip}）", wg)
+            config = render_mihomo(self.cfg, "phone", self.manager_url() or "https://manager.invalid", f"{title} · {name}（{ip}）", wg,
+                                   routes=self.mihomo_rules()["routes"])
             code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
             blob = encrypt(code, config.encode())
             put = self.worker.call("/v1/manager/pair", {"id": hashlib.sha256(code.encode()).hexdigest()[:32], "blob": blob,
@@ -873,7 +943,8 @@ class Manager(agent.Handler):
                 return self.send_json(400, {"message": "mode 是 tun 或 userspace"})
             who = self.member() or {}
             title = self.cfg["network"].get("title") or "lolinet"
-            body = render_mihomo(self.cfg, mode, self.manager_url() or "https://manager.invalid", f"{title} · {who.get('name') or who.get('ip')}")
+            body = render_mihomo(self.cfg, mode, self.manager_url() or "https://manager.invalid", f"{title} · {who.get('name') or who.get('ip')}",
+                                 routes=self.mihomo_rules()["routes"])
             return self.send(200, body.encode(), ctype, [("Cache-Control", "no-store")])
         if path == "proxies.yaml":
             via = q.get("via") if q.get("via") == "lolinet" else None
@@ -882,6 +953,16 @@ class Manager(agent.Handler):
         m = re.fullmatch(r"rules/(reject|direct|exit)\.yaml", path)
         if m:
             return self.send(200, rule_provider(self.mihomo_rules()[m.group(1)]).encode(), ctype, [("Cache-Control", "no-store")])
+        m = re.fullmatch(r"route/(r[0-9a-f]{8})/(rules|exit)\.yaml", path)
+        if m:
+            route = next((r for r in self.mihomo_rules()["routes"] if route_key(r["name"]) == m.group(1)), None)
+            if m.group(2) == "rules":
+                body = rule_provider(route["rules"] if route else [])
+            else:
+                via = q.get("via") if q.get("via") == "lolinet" else None
+                name = route_group(route["name"]) if route else m.group(1)
+                body = route_proxies(route, name, self.store.read("exits.json", []), via)
+            return self.send(200, body.encode(), ctype, [("Cache-Control", "no-store")])
         return self.send_json(404, {"message": "not found"})
 
     def exit_post(self):
