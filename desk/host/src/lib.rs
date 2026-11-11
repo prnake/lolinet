@@ -32,9 +32,10 @@ pub enum HostCmd {
         #[arg(long)]
         reset: bool,
     },
-    /// macOS：装成当前用户的 LaunchAgent 并启动（屏幕录制 / 辅助功能权限跟着这个二进制走）；再装一次就是重启
+    /// 装成服务并启动：macOS 是当前用户的 LaunchAgent（屏幕录制 / 辅助功能权限跟着这个二进制走），
+    /// Linux 是 systemd --user 单元 lolidesk.service。再装一次就是重启
     Install,
-    /// macOS：停掉并撤掉 LaunchAgent
+    /// 停掉并撤掉服务（LaunchAgent / systemd --user 单元）
     Uninstall,
     /// 开放什么：terminal、desktop（看远程桌面）、control（远程桌面里操作）、cua（agent 截图和键鼠）、
     /// pair（没配对的设备能请求配对）、share（配对过的设备能发分享链接）。
@@ -111,9 +112,9 @@ pub fn main(cmd: Option<HostCmd>) -> Result<()> {
             println!("目录       {}", cfg.dir.display());
             Ok(())
         }
-        HostCmd::Install => config::install_launch_agent(),
+        HostCmd::Install => config::install_service(),
         HostCmd::Allow { what, state } => allow(what, state),
-        HostCmd::Uninstall => config::uninstall_launch_agent(),
+        HostCmd::Uninstall => config::uninstall_service(),
         // 管配对的命令由 lolidesk 处理（要连上在跑的主机），走不到这里
         _ => anyhow::bail!("管配对的命令要用 lolidesk 跑"),
     }

@@ -159,6 +159,129 @@ pub fn hostname() -> String {
         .unwrap_or_else(|| "host".into())
 }
 
+/// 装成服务并启动：macOS 是当前用户的 LaunchAgent，Linux 是 systemd --user 单元。再装一次就是重启（换成这次跑的这个程序）
+pub fn install_service() -> Result<()> {
+    if cfg!(target_os = "macos") {
+        install_launch_agent()
+    } else if cfg!(target_os = "linux") {
+        install_systemd_user()
+    } else {
+        anyhow::bail!("这个系统上不会装服务：自己让它开机跑 lolidesk host run")
+    }
+}
+
+/// 停掉并撤掉服务
+pub fn uninstall_service() -> Result<()> {
+    if cfg!(target_os = "macos") {
+        uninstall_launch_agent()
+    } else if cfg!(target_os = "linux") {
+        uninstall_systemd_user()
+    } else {
+        anyhow::bail!("这个系统上没有装服务")
+    }
+}
+
+// ---------------------------------------------------------------- Linux：systemd --user
+
+const UNIT: &str = "lolidesk.service";
+
+/// `$XDG_CONFIG_HOME/systemd/user/lolidesk.service`（默认 ~/.config），systemd --user 从这里读
+fn unit_path() -> Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .context("没有配置目录（HOME 没设？）")?
+        .join("systemd/user")
+        .join(UNIT))
+}
+
+/// 单元里的一个参数：加双引号，`\` 和 `"` 转义；`%` 写成 `%%`、`$` 写成 `$$`，systemd 不拿它当说明符、变量
+fn systemd_quote(s: &str) -> Result<String> {
+    anyhow::ensure!(
+        !s.chars().any(char::is_control),
+        "路径里有控制字符，写不进 systemd 单元：{s:?}"
+    );
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '%' => out.push_str("%%"),
+            '$' => out.push_str("$$"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Ok(out)
+}
+
+/// systemd --user 单元：跑 `<这个程序> host run`，退出了就再起
+fn systemd_unit(exe: &Path) -> Result<String> {
+    let exe = exe.to_str().context("程序的路径不是 UTF-8")?;
+    Ok(format!(
+        "# lolidesk host install 写的；日志：journalctl --user -u lolidesk
+[Unit]
+Description=lolidesk 主机（让网里的设备连这台电脑）
+After=network-online.target
+
+[Service]
+ExecStart={} host run
+Restart=always
+RestartSec=3
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+",
+        systemd_quote(exe)?
+    ))
+}
+
+/// 装的几步：重读单元、开机自启、（重新）启动。再装一次就是换程序重启
+const SYSTEMCTL_INSTALL: [&[&str]; 3] = [
+    &["--user", "daemon-reload"],
+    &["--user", "enable", UNIT],
+    &["--user", "restart", UNIT],
+];
+/// 撤的几步（删单元文件之前、之后）
+const SYSTEMCTL_STOP: &[&str] = &["--user", "disable", "--now", UNIT];
+const SYSTEMCTL_RELOAD: &[&str] = &["--user", "daemon-reload"];
+
+fn systemctl(args: &[&str]) -> Result<()> {
+    let st = std::process::Command::new("systemctl")
+        .args(args)
+        .status()
+        .context("跑不了 systemctl：这台没有 systemd？自己让它开机跑 lolidesk host run")?;
+    anyhow::ensure!(st.success(), "systemctl {} 失败（{st}）", args.join(" "));
+    Ok(())
+}
+
+fn install_systemd_user() -> Result<()> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let unit = unit_path()?;
+    fs::create_dir_all(unit.parent().unwrap())?;
+    fs::write(&unit, systemd_unit(&exe)?)?;
+    for args in SYSTEMCTL_INSTALL {
+        systemctl(args)?;
+    }
+    println!("已装 systemd --user 单元 {UNIT}（{}）", unit.display());
+    println!("日志：journalctl --user -u lolidesk");
+    println!("退出登录后也要开着：loginctl enable-linger $USER");
+    Ok(())
+}
+
+fn uninstall_systemd_user() -> Result<()> {
+    let unit = unit_path()?;
+    // 没装过时 disable 会失败：不管它，照样删文件
+    let _ = systemctl(SYSTEMCTL_STOP);
+    if unit.exists() {
+        fs::remove_file(&unit)?;
+    }
+    let _ = systemctl(SYSTEMCTL_RELOAD);
+    println!("已撤掉 {UNIT}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------- macOS：LaunchAgent
+
 const AGENT_LABEL: &str = "co.lo-li.lolidesk";
 
 fn agent_plist() -> Result<PathBuf> {
@@ -194,8 +317,8 @@ pub fn install_launch_agent() -> Result<()> {
   <key>EnvironmentVariables</key><dict><key>RUST_LOG</key><string>info</string></dict>
 </dict></plist>
 "#,
-        exe = exe.display(),
-        logs = logs.display()
+        exe = xml_escape(&exe.display().to_string()),
+        logs = xml_escape(&logs.display().to_string())
     );
     fs::write(&plist, body)?;
     let uid = unsafe { libc_getuid() };
@@ -214,6 +337,14 @@ pub fn install_launch_agent() -> Result<()> {
         exe.display()
     );
     Ok(())
+}
+
+/// plist 里的文字：路径里可能有 `&`（「Apps & Tools」），不转义 launchd 就读不了这个 plist。
+/// lolidesk-core 的 local::service_program 按这个读回
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 pub fn uninstall_launch_agent() -> Result<()> {
@@ -285,10 +416,43 @@ extern "C" {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    #[test]
+    fn systemd_unit_text() {
+        let u = super::systemd_unit(Path::new("/usr/local/lib/lolidesk/lolidesk")).unwrap();
+        assert!(u.contains("\nExecStart=\"/usr/local/lib/lolidesk/lolidesk\" host run\n"));
+        assert!(u.contains("\nRestart=always\n"));
+        assert!(u.contains("\nWantedBy=default.target\n"));
+        assert!(u.starts_with("# lolidesk host install"));
+        // 空格、引号、反斜杠、% 和 $ 都转义了：systemd 读出来还是原来的路径
+        let odd =
+            super::systemd_unit(Path::new("/home/u/My Apps/a\"b\\c/100%/$HOME/lolidesk")).unwrap();
+        assert!(odd.contains(
+            "\nExecStart=\"/home/u/My Apps/a\\\"b\\\\c/100%%/$$HOME/lolidesk\" host run\n"
+        ));
+        // 换行写不进去（会多出一行设置）
+        assert!(super::systemd_unit(Path::new("/x\nExecStartPre=/bin/evil")).is_err());
+        // 装：重读、自启、（重新）启动；撤：停掉并取消自启
+        assert_eq!(
+            super::SYSTEMCTL_INSTALL,
+            [
+                &["--user", "daemon-reload"][..],
+                &["--user", "enable", "lolidesk.service"][..],
+                &["--user", "restart", "lolidesk.service"][..],
+            ]
+        );
+        assert_eq!(
+            super::SYSTEMCTL_STOP,
+            ["--user", "disable", "--now", "lolidesk.service"]
+        );
+    }
+
     #[test]
     fn launchctl_pid() {
         let text = "gui/501/co.lo-li.lolidesk = {\n\tactive count = 1\n\tpath = /x.plist\n\tstate = running\n\n\tpid = 4242\n\timmediate reason = speculative\n}";
         assert_eq!(super::launchctl_pid(text), Some(4242));
         assert_eq!(super::launchctl_pid("state = not running"), None);
+        assert_eq!(super::xml_escape("/A & B/<x>"), "/A &amp; B/&lt;x&gt;");
     }
 }
