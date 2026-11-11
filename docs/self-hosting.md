@@ -139,7 +139,8 @@ Once your admin machine is on the network, drop `--socks`. The [local console](c
 
 | Option | |
 | :-- | :-- |
-| `--ip` | The device's overlay address. The example plan: `10.188.1.0/24` for servers, `10.188.16.0/20` for computers with TUN, `10.188.32.0/20` for clients without TUN |
+| `--ip` | The device's overlay address. The example plan: `10.188.1.0/24` for servers, `10.188.16.0/20` for computers with TUN, `10.188.32.0/20` for clients without TUN. Optional: without it, a device paired before under the same name keeps its address, and a new one gets the first free address in `--pool` |
+| `--pool` | Where to take the address from when `--ip` is left out: `desktop` (`10.188.16.0/20`, the default), `userspace` (`10.188.32.0/20`) or `server` (`10.188.1.0/24`). The same pools as the manager's; `network.pools` in the node list overrides them. Addresses ending in `.0` or `.255` are skipped |
 | `--peers chen,saria` | Relays to connect to, instead of `network.device_peers` |
 | `--ttl-days 365` | Credential lifetime |
 | `--code-minutes 15` | How long the code works (1–1440) |
