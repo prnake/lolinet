@@ -31,9 +31,9 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet probe run` | The probe service's entry point |
 | `lolinet invite [--kind desktop\|userspace\|phone\|server] [--name N] [--manager URL[@IP]] [--json]` | Ask the network's manager for a pairing code for another machine or a phone; the address is assigned centrally. For a phone it prints a `<join>/m#CODE` link instead of a command. No root and no console account: the manager knows this node by its overlay address. `--manager` is needed only on devices paired before this existed; run as root, it is remembered |
 | `lolinet mihomo [--mode tun\|userspace] [-o FILE] [--manager URL[@IP]]` | This computer's mihomo config from the manager: overlay addresses through lolinet, the central reject / direct / exit rules and the exit nodes as providers that mihomo refreshes over the overlay every 10 minutes. The mode defaults to this node's |
-| `lolinet mihomo on [--bin PATH] [--mode tun\|userspace] [--manager URL[@IP]]` *root* | Fetch that config into `/etc/lolinet/mihomo/config.yaml`, check it with `mihomo -t`, and run mihomo as a service. In TUN mode it also turns on lolinet's SOCKS5 on `127.0.0.1:18080` (mihomo reaches the overlay through it) and restarts lolinet; `lolinet up --tun` keeps it while mihomo is installed. `lolinet` doesn't ship mihomo: `--bin`, else the copy in `Lolidesk.app`, else one on the system |
+| `lolinet mihomo on [--bin PATH] [--mode tun\|userspace] [--manager URL[@IP]]` *root* | Fetch that config into `/etc/lolinet/mihomo/config.yaml`, check it with `mihomo -t`, and run mihomo as a service. In TUN mode it also turns on lolinet's SOCKS5 on `127.0.0.1:18080` (mihomo reaches the overlay through it) and restarts lolinet; `lolinet up --tun` keeps it while mihomo is installed. `lolinet` doesn't ship mihomo: `--bin`, else the copy in `Lolidesk.app`, else one on the system. The service runs a root-owned copy of it (see below) |
 | `lolinet mihomo refresh` *root* | Fetch the config again and, if it changed (a route was added, an exit moved), switch to it and restart mihomo. The upgrade job does this every 6 hours; rules and which node a route uses update by themselves every 10 minutes |
-| `lolinet mihomo off` *root* | Stop and remove the mihomo service; `/etc/lolinet/mihomo/` (rule caches) stays |
+| `lolinet mihomo off` *root* | Stop and remove the mihomo service and its copy of mihomo; the rule caches in `/etc/lolinet/mihomo/` stay |
 | `lolinet exit` | Whether this node is an exit node, its address and service state |
 | `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node. Also registers it with the manager, if it can, so mihomo lists it |
 | `lolinet exit off` *root* | Stop and remove it, and take it off the manager's list |
@@ -88,12 +88,13 @@ The exit node, when turned on. It runs `/usr/local/bin/lolinet exit run`, starts
 | Service | `/Library/LaunchDaemons/co.lo-li.lolinet-exit.plist` | `/etc/systemd/system/lolinet-exit.service` |
 | Log | `/var/log/lolinet/exit.log`, errors only | journald |
 
-mihomo, when turned on with `lolinet mihomo on`. It runs `<mihomo> -d /etc/lolinet/mihomo` as root (its TUN needs it):
+mihomo, when turned on with `lolinet mihomo on`. It runs `/etc/lolinet/mihomo/mihomo -d /etc/lolinet/mihomo` as root (its TUN needs it). That binary is a root-owned copy (755) of the one `on` found: the copy in `Lolidesk.app` or Homebrew's are writable by the user, and a root service must not run a file any process of the user could replace. `on` copies it first and runs nothing as root before that, not even `-v`; it refuses if `/etc/lolinet/mihomo` or a directory above it is writable by anyone but root. Run `on` again after updating mihomo:
 
 | Path | macOS | Linux |
 | :-- | :-- | :-- |
 | Config and mihomo's own caches | `/etc/lolinet/mihomo/` | `/etc/lolinet/mihomo/` |
-| Which binary and mode | `/etc/lolinet/mihomo.json` | `/etc/lolinet/mihomo.json` |
+| The binary the service runs | `/etc/lolinet/mihomo/mihomo` | `/etc/lolinet/mihomo/mihomo` |
+| Which binary (and where it was copied from) and mode | `/etc/lolinet/mihomo.json` | `/etc/lolinet/mihomo.json` |
 | Service | `/Library/LaunchDaemons/co.lo-li.lolinet-mihomo.plist` | `/etc/systemd/system/lolinet-mihomo.service` |
 | Log | `/var/log/lolinet/mihomo.log` | journald |
 

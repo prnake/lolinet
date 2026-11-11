@@ -9,9 +9,14 @@
 //! `sudo lolinet mihomo on`：把 mihomo 跑成系统服务（TUN 要 root）：co.lo-li.lolinet-mihomo / lolinet-mihomo.service，
 //! 工作目录 /etc/lolinet/mihomo（config.yaml + mihomo 自己下载的规则、地理库）。lolinet 不带 mihomo（体积）：
 //! 用 --bin 给，或者用 Lolidesk.app 里带的那份、系统里装的那份。
+//!
+//! 服务跑的是拷到 /etc/lolinet/mihomo/mihomo 的那份（root 的，755），不是找到的那个文件：拖进「应用程序」的 app、
+//! Homebrew 的目录都是用户自己能写的，root 服务直接跑那里的程序，用户身份的任何进程换掉它就拿到 root。
+//! 拷之前不以 root 跑原来那个文件（连 -v 都不跑），检查、试配置都用拷过来的。
 
 use std::{
     fs,
+    os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -23,6 +28,35 @@ use crate::{CONFIG, manager, netcfg, service, write_file};
 
 pub const DIR: &str = "/etc/lolinet/mihomo";
 pub const SETTINGS: &str = "/etc/lolinet/mihomo.json";
+/// 服务跑的那份 mihomo（root 的拷贝）
+pub const BIN: &str = "/etc/lolinet/mihomo/mihomo";
+
+/// 把找到的 mihomo 拷成 root 的 [`BIN`]（755）：先拷到旁边、跑拷贝的 -v 确认是 mihomo，才换上（不是 mihomo 的话
+/// 原来装着的那份不动）。目录一路往上都得是 root 的、别人写不了，不然拷了也白拷。返回 -v 的第一行
+fn install_bin(src: &Path) -> Result<String> {
+    fs::create_dir_all(DIR)?;
+    fs::set_permissions(DIR, fs::Permissions::from_mode(0o755))?;
+    for dir in Path::new(DIR).ancestors() {
+        let m = fs::metadata(dir).with_context(|| format!("看 {}", dir.display()))?;
+        if m.uid() != 0 || m.mode() & 0o022 != 0 {
+            bail!("{} 不是只有 root 能写（owner {}，权限 {:o}）：mihomo 不能放这里跑成 root 服务", dir.display(), m.uid(), m.mode() & 0o777);
+        }
+    }
+    let data = fs::read(src).with_context(|| format!("读 {}", src.display()))?;
+    let staging = format!("{BIN}.new");
+    write_file(&staging, &data, 0o755)?;
+    // write_file 按 umask 建文件：权限再明确设一次；root 建的文件 owner 就是 root
+    fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
+    let ver = match version(Path::new(&staging)) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = fs::remove_file(&staging);
+            bail!("{} 不像是 mihomo（拷过来跑 -v 不对）", src.display());
+        }
+    };
+    fs::rename(&staging, BIN)?;
+    Ok(ver)
+}
 
 fn fetch(mode: &str, manager_flag: Option<&str>) -> Result<String> {
     let m = manager::Manager::locate(manager_flag)?;
@@ -99,19 +133,22 @@ fn version(bin: &Path) -> Result<String> {
 
 pub fn on(bin: Option<PathBuf>, mode: Option<String>, manager_flag: Option<String>) -> Result<()> {
     crate::need_root()?;
-    let bin = find_bin(bin)?;
-    let ver = version(&bin)?;
+    let src = find_bin(bin)?;
     let mode = mode.unwrap_or_else(|| manager::mode().to_owned());
     let body = fetch(&mode, manager_flag.as_deref())?;
+    // 先拷成 root 的再跑（-v、-t、服务都用拷贝）：原来那个文件可能是用户写得了的
+    let ver = install_bin(&src)?;
+    let bin = PathBuf::from(BIN);
     if ensure_socks()? {
         service::restart()?;
         println!("lolinet 打开了 127.0.0.1:18080（mihomo 经它进网），已重启 lolinet");
     }
     put_config(&bin, &body)?;
-    let st = json!({"bin": bin, "mode": mode});
+    let st = json!({"bin": bin, "from": src, "mode": mode});
     write_file(SETTINGS, format!("{}\n", serde_json::to_string_pretty(&st)?).as_bytes(), 0o644)?;
     service::install_mihomo(&bin)?;
     println!("mihomo 已作为系统服务启动（{ver}，{mode} 模式，配置 {DIR}/config.yaml）");
+    println!("  跑的是拷到 {BIN} 的那份（root 的），拷自 {}；换了版本再 sudo lolinet mihomo on", src.display());
     println!("  规则、线路绑哪台出口由管理面集中下发，mihomo 每 10 分钟自己取；");
     println!("  管理面加了线路要换配置：自动升级的定时任务（每 6 小时）会做，马上要就 sudo lolinet mihomo refresh");
     Ok(())
@@ -139,6 +176,10 @@ pub fn refresh() -> Result<bool> {
     };
     let v: Value = serde_json::from_slice(&raw).with_context(|| format!("{SETTINGS} 不是 JSON"))?;
     let bin = PathBuf::from(v.get("bin").and_then(Value::as_str).context("mihomo.json 里没有 bin")?);
+    // 只跑 root 的那份拷贝：别的路径（手改的、旧格式）不以 root 跑
+    if bin != Path::new(BIN) {
+        bail!("mihomo.json 里的程序是 {}，不是 {BIN}：重新 sudo lolinet mihomo on", bin.display());
+    }
     let mode = v.get("mode").and_then(Value::as_str).unwrap_or("tun").to_owned();
     let body = fetch(&mode, None)?;
     if fs::read_to_string(format!("{DIR}/config.yaml")).is_ok_and(|now| now == body) {
@@ -169,15 +210,17 @@ pub fn off() -> Result<()> {
     if Path::new(SETTINGS).exists() {
         fs::remove_file(SETTINGS)?;
     }
-    println!("mihomo 服务已停止并卸载；{DIR} 留着（规则缓存）");
+    let _ = fs::remove_file(BIN);
+    println!("mihomo 服务已停止并卸载；{DIR} 里的规则缓存留着");
     Ok(())
 }
 
 /// 装着的话是哪个 mihomo（给 lolinet status）
 pub fn installed() -> Option<String> {
     let v: Value = serde_json::from_slice(&fs::read(SETTINGS).ok()?).ok()?;
+    let from = v.get("from").and_then(Value::as_str).map(|f| format!("（拷自 {f}）")).unwrap_or_default();
     Some(format!(
-        "{} · {} 模式",
+        "{}{from} · {} 模式",
         v.get("bin").and_then(Value::as_str).unwrap_or("?"),
         v.get("mode").and_then(Value::as_str).unwrap_or("?")
     ))

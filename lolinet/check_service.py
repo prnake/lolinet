@@ -156,8 +156,16 @@ def main() -> None:
         cfg = ETC / "mihomo" / "config.yaml"
         check(cfg.is_file() and "# check_service userspace" in cfg.read_text(), "配置从管理面取来、写进 /etc/lolinet/mihomo/config.yaml")
         check(wait(lambda: service_running("co.lo-li.lolinet-mihomo", "lolinet-mihomo")), "mihomo 服务在跑")
-        ps = run("ps", "ax", "-o", "command=").stdout
-        check(f"{fake} -d /etc/lolinet/mihomo" in ps or "sleep 3600" in ps, "服务跑的是 <mihomo> -d /etc/lolinet/mihomo")
+        # 服务跑的是拷到 /etc/lolinet/mihomo/mihomo 的那份（root 的、755），不是 --bin 给的那个（可能是用户写得了的）
+        copy = ETC / "mihomo" / "mihomo"
+        unit = Path("/Library/LaunchDaemons/co.lo-li.lolinet-mihomo.plist" if MACOS else "/etc/systemd/system/lolinet-mihomo.service")
+        utext = unit.read_text() if unit.exists() else ""
+        st = copy.stat() if copy.exists() else None
+        check(st is not None and st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o755 and str(copy) in utext and str(fake) not in utext,
+              f"服务跑的是 root 的拷贝 {copy}（755），不是 --bin 给的文件")
+        before = copy.read_bytes() if st else b""
+        fake.write_text(fake.read_text() + "# 用户身份的进程改了它\n")
+        check(st is not None and copy.read_bytes() == before, "之后改 --bin 给的那个文件，服务跑的那份不变")
         Manager.rev = 2
         r = run(binary, "mihomo", "refresh")
         check(r.returncode == 0 and "换成了" in r.stdout and "rev 2" in cfg.read_text(), f"管理面的配置变了：mihomo refresh 换上（{r.stdout.strip()}）")
@@ -167,7 +175,8 @@ def main() -> None:
         r = run(binary, "status")
         check("mihomo" in r.stdout and "运行中" in r.stdout.split("mihomo", 1)[-1][:200], "lolinet status 里有 mihomo 一行")
         r = run(binary, "mihomo", "off")
-        check(r.returncode == 0 and not service_exists("co.lo-li.lolinet-mihomo", "lolinet-mihomo"), "lolinet mihomo off：服务撤了")
+        check(r.returncode == 0 and not service_exists("co.lo-li.lolinet-mihomo", "lolinet-mihomo") and not copy.exists(),
+              "lolinet mihomo off：服务撤了，拷贝删了")
         bad = tmp / "notmihomo"
         bad.write_text("#!/bin/sh\necho hello\n")
         bad.chmod(0o755)
