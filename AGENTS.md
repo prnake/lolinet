@@ -49,5 +49,5 @@ Bump `EASYTIER_REF` and `EASYTIER_SHA` in `easytier/build.env`, rebase every pat
 
 - **Language.** Code comments, CLI output, UI text and commit messages are Chinese, in short plain sentences; keep it that way. User docs (`README.md`, `docs/`, component READMEs) are English. `README.zh-CN.md` mirrors `README.md`: change both together. `web/DESIGN.md` is Chinese.
 - **Docs follow code.** A change to a command, flag, file, setting or endpoint updates [docs/reference.md](docs/reference.md); a change to how something works updates [docs/architecture.md](docs/architecture.md).
-- **Pull requests only.** Nothing is pushed to `main` directly; `build`, `desk` and `web` must pass.
+- **Pull requests only.** Nothing is pushed to `main` directly; `build`, `desk`, `web` and `windows` must pass.
 - **Python** scripts are run with `uv run` and declare their dependencies inline (PEP 723). `probe/reporter.py`, `easytier/check_sni.py`, `lolinet/release.py` and `web/agent/` use only the standard library; the reporter and the agent must keep running on macOS's Python 3.9.
