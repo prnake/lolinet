@@ -296,7 +296,7 @@ On the join site these sit in `dl/` next to `lolinet.json`. See [lolidesk](lolid
 | `10180` | Exit node SOCKS5 (`lolinet exit on`), on the node's overlay address |
 | `127.0.0.1:10188` | The local console's agent |
 | `127.0.0.1:11211` | easytier-web's API on the issuer relay |
-| `10190` | `lolidesk host`, on the host's overlay address |
+| `10190` | `lolidesk host` (terminal, desktop and computer use on one QUIC port), on the host's overlay address |
 | `5188`, `5189` | Dev servers for the console and the probe page |
 
 ### Address plan

@@ -246,6 +246,7 @@ mod mac {
                     version: "0.2.0".into(),
                     desktop: true,
                     persistent: true,
+                    allow: Default::default(),
                 },
                 3.2,
                 vec![
@@ -289,6 +290,7 @@ mod mac {
                     version: "0.2.0".into(),
                     desktop: true,
                     persistent: false,
+                    allow: Default::default(),
                 },
                 11.0,
                 vec![session(2, "", "", "htop", "/")],

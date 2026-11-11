@@ -4269,12 +4269,15 @@ name = "lolidesk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "crossterm",
  "hex",
  "lolidesk-core",
  "lolidesk-host",
  "lolidesk-proto",
+ "quinn",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

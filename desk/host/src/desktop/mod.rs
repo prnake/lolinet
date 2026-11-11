@@ -29,8 +29,22 @@ pub fn supported() -> bool {
     cfg!(target_os = "macos")
 }
 
+/// 给 agent 的一张截图（JPEG）
+pub struct Shot {
+    pub jpeg: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub native_width: u32,
+    pub native_height: u32,
+}
+
 #[cfg(target_os = "macos")]
-pub use mac::{list_displays, Capture};
+pub use mac::{list_displays, screenshot, Capture};
+
+#[cfg(not(target_os = "macos"))]
+pub fn screenshot(_display: u32, _max_edge: u32, _quality: u8) -> anyhow::Result<Shot> {
+    anyhow::bail!("这个平台还不支持截图")
+}
 
 #[cfg(not(target_os = "macos"))]
 pub struct Capture;

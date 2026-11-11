@@ -87,6 +87,7 @@ pub struct Welcome {
     pub version: String,
     pub desktop: bool,
     pub persistent: bool,
+    pub allow: lolidesk_proto::Allow,
 }
 
 pub struct Client {
@@ -208,12 +209,14 @@ pub async fn connect(
             version,
             desktop,
             persistent,
+            allow,
         }) => Welcome {
             host,
             os,
             version,
             desktop,
             persistent,
+            allow,
         },
         Some(ControlResp::Denied(why)) => bail!("主机拒绝：{why}"),
         other => bail!("Hello 回应不对：{other:?}"),

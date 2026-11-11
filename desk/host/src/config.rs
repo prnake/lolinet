@@ -1,5 +1,5 @@
 //! 主机配置目录：`~/.config/lolidesk/host/`（macOS 是 `~/Library/Application Support/lolidesk/host/`）。
-//! 里面是自签证书（cert.der / key.der）和 token，权限 600。
+//! 里面是自签证书（cert.der / key.der）、token 和开放的能力（allow.json，没有就全开），权限 600。
 
 use std::{
     fs,
@@ -41,6 +41,55 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     f.sync_all()?;
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// 开放的能力。每条连接、每条流开的时候现读，改了不用重启主机
+pub fn allow() -> lolidesk_proto::Allow {
+    fs::read(config_dir().join("allow.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<AllowFile>(&b).ok())
+        .map(Into::into)
+        .unwrap_or_default()
+}
+
+pub fn set_allow(a: lolidesk_proto::Allow) -> Result<()> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    let f = AllowFile {
+        terminal: a.terminal,
+        desktop: a.desktop,
+        control: a.control,
+        cua: a.cua,
+    };
+    write_private(&dir.join("allow.json"), &serde_json::to_vec_pretty(&f)?)
+}
+
+/// allow.json：少写的键按开算
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AllowFile {
+    #[serde(default = "on")]
+    terminal: bool,
+    #[serde(default = "on")]
+    desktop: bool,
+    #[serde(default = "on")]
+    control: bool,
+    #[serde(default = "on")]
+    cua: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl From<AllowFile> for lolidesk_proto::Allow {
+    fn from(f: AllowFile) -> Self {
+        Self {
+            terminal: f.terminal,
+            desktop: f.desktop,
+            control: f.control,
+            cua: f.cua,
+        }
+    }
 }
 
 impl HostConfig {

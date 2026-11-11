@@ -8,6 +8,7 @@
 //! 因为设备已经在 lolinet 的 overlay 上，彼此可直达。
 //!
 //! 版本 2：远程桌面可选分辨率、帧率和画质，键盘按物理键位（W3C `code`）收发。
+//! computer use 流（[`StreamKind::Cua`]）：给 agent 用的截图和输入，和远程桌面共用主机的屏幕录制、辅助功能授权。
 //! 终端两端都是 libghostty-vt：主机的终端是会话的唯一真相，客户端收它的 Mirror 帧（转义序列）照着画，
 //! 自己按当前模式给按键编码，把字节发回来。
 //! ALPN 不变：版本不一致时由 Hello 回一个看得懂的 Denied，而不是 TLS 握手失败。
@@ -34,6 +35,8 @@ pub enum StreamKind {
     Control,
     Terminal,
     Desktop,
+    /// computer use：agent 一问一答（[`CuaReq`] / [`CuaResp`]）
+    Cua,
 }
 
 impl StreamKind {
@@ -42,6 +45,7 @@ impl StreamKind {
             Self::Control => 0,
             Self::Terminal => 1,
             Self::Desktop => 2,
+            Self::Cua => 3,
         }
     }
     pub fn from_u8(b: u8) -> Option<Self> {
@@ -49,6 +53,7 @@ impl StreamKind {
             0 => Self::Control,
             1 => Self::Terminal,
             2 => Self::Desktop,
+            3 => Self::Cua,
             _ => return None,
         })
     }
@@ -79,12 +84,38 @@ pub enum ControlResp {
         desktop: bool,
         /// 主机存会话的历史和目录：重启后会话带着历史回来（程序重新起）。
         persistent: bool,
+        /// 这台主机开放了什么（`lolidesk host allow`）
+        allow: Allow,
     },
     Denied(String),
     Displays(Vec<DisplayInfo>),
     Sessions(Vec<SessionInfo>),
     Error(String),
     Launchers(Vec<Launcher>),
+}
+
+/// 主机开放的能力。远程桌面和 computer use 用的是同一份屏幕录制、辅助功能授权，这里只是主机愿不愿意给。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Allow {
+    /// 终端会话
+    pub terminal: bool,
+    /// 看远程桌面
+    pub desktop: bool,
+    /// 远程桌面里操作键鼠（关了就是只看）
+    pub control: bool,
+    /// agent 的 computer use（截图、键鼠）
+    pub cua: bool,
+}
+
+impl Default for Allow {
+    fn default() -> Self {
+        Self {
+            terminal: true,
+            desktop: true,
+            control: true,
+            cua: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +476,56 @@ impl VideoFrame {
             avcc: Bytes::copy_from_slice(b),
         })
     }
+}
+
+// ---------------------------------------------------------------- computer use
+
+/// agent 的请求，一问一答。坐标和远程桌面一样是 0..1 的归一化值（相对这块显示器）；
+/// 换成截图上的像素是客户端（`lolidesk mcp`）的事，它知道 agent 看的那张图多大。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CuaReq {
+    /// 截一张图：JPEG，长边不超过 `max_edge`（0 是原生像素），`quality` 1..=100
+    Screenshot {
+        display: u32,
+        max_edge: u32,
+        quality: u8,
+    },
+    /// 按顺序做这些输入，每两个之间停 `gap_ms`。一次点击 = Move、Button 按下、Button 抬起。
+    /// 做完会松开所有还按着的键和鼠标键。
+    Input {
+        display: u32,
+        events: Vec<DeskInput>,
+        gap_ms: u16,
+    },
+    /// 鼠标现在在哪
+    Cursor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CuaResp {
+    Screenshot {
+        jpeg: Vec<u8>,
+        /// 这张图的像素
+        width: u32,
+        height: u32,
+        /// 显示器的原生像素
+        native_width: u32,
+        native_height: u32,
+    },
+    Done,
+    /// 归一化坐标，在哪块显示器上
+    Cursor {
+        display: u32,
+        x: f32,
+        y: f32,
+    },
+    /// 这台电脑前的人（或者远程桌面里的人）刚动过键鼠：agent 别抢，等 `idle_ms` 够了再试
+    UserActive {
+        idle_ms: u64,
+    },
+    /// 主机不给（`lolidesk host allow cua off`）
+    Denied(String),
+    Error(String),
 }
 
 // ---------------------------------------------------------------- 流上的消息收发

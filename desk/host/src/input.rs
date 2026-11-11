@@ -8,22 +8,77 @@
 //! - 修饰键变化后停 8 ms，让 WindowServer 先看到它，再发后面的键。
 //!
 //! 注入跑在自己的线程上：上面那 8 ms 不能卡住网络任务。
+//!
+//! 人优先（照 Cindy 的 USER_INPUT_ACTIVE）：agent 的输入在「有人刚用过」时不做。人是这台电脑前的人
+//! （系统的 HID 空闲时间，减掉我们自己注入的那些），或者远程桌面里正在操作的人。
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use lolidesk_proto::DeskInput;
 
+/// 最近一次远程桌面里的人注入输入的时刻（Unix 毫秒）
+pub static VIEWER_LAST: AtomicU64 = AtomicU64::new(0);
+/// 最近一次 agent（computer use）注入输入的时刻
+pub static AGENT_LAST: AtomicU64 = AtomicU64::new(0);
+/// 人动过之后这么久之内，agent 的输入先不做
+pub const HOLD_MS: u64 = 3000;
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 有人在用这台电脑：返回人上一次输入距今的毫秒；没人在用是 None
+pub fn person_active() -> Option<u64> {
+    decide(
+        now_ms(),
+        VIEWER_LAST.load(Ordering::Relaxed),
+        AGENT_LAST.load(Ordering::Relaxed),
+        imp::last_hid_ms(),
+    )
+}
+
+/// `hid_last`：系统最后一次键鼠事件的时刻（含我们注入的）。它晚于我们自己最后一次注入 500 ms 以上，才算人
+fn decide(now: u64, viewer: u64, agent: u64, hid_last: Option<u64>) -> Option<u64> {
+    if viewer > 0 && now.saturating_sub(viewer) < HOLD_MS {
+        return Some(now.saturating_sub(viewer));
+    }
+    let hid = hid_last?;
+    let ours = viewer.max(agent);
+    (now.saturating_sub(hid) < HOLD_MS && hid > ours + 500).then(|| now.saturating_sub(hid))
+}
+
+/// 鼠标在哪：(显示器, x, y)，x / y 是 0..1
+pub fn cursor() -> Option<(u32, f32, f32)> {
+    imp::cursor()
+}
+
+enum Msg {
+    Input(DeskInput),
+    /// 前面的都做完了就回一声
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
 pub struct Injector {
-    tx: std::sync::mpsc::Sender<DeskInput>,
+    tx: std::sync::mpsc::Sender<Msg>,
 }
 
 impl Injector {
     pub fn new(display: u32) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<DeskInput>();
+        let (tx, rx) = std::sync::mpsc::channel::<Msg>();
         let _ = std::thread::Builder::new()
             .name("input".into())
             .spawn(move || {
                 let mut inj = imp::Injector::new(display);
-                while let Ok(i) = rx.recv() {
-                    inj.apply(&i);
+                while let Ok(m) = rx.recv() {
+                    match m {
+                        Msg::Input(i) => inj.apply(&i),
+                        Msg::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
                 }
                 inj.apply(&DeskInput::ReleaseAll);
             });
@@ -31,13 +86,29 @@ impl Injector {
     }
 
     pub fn apply(&self, i: DeskInput) {
-        let _ = self.tx.send(i);
+        let _ = self.tx.send(Msg::Input(i));
+    }
+
+    /// 等前面排着的输入都做完（agent 做完马上截图，要看到结果）
+    pub async fn flush(&self) {
+        let (done, wait) = tokio::sync::oneshot::channel();
+        if self.tx.send(Msg::Flush(done)).is_ok() {
+            let _ = wait.await;
+        }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
     use lolidesk_proto::DeskInput;
+
+    pub fn last_hid_ms() -> Option<u64> {
+        None
+    }
+
+    pub fn cursor() -> Option<(u32, f32, f32)> {
+        None
+    }
 
     pub struct Injector;
 
@@ -205,6 +276,39 @@ mod imp {
     };
 
     use super::{mac_keycode, modifier_bit};
+
+    /// 系统最后一次键鼠事件（HID 层，含注入的）的时刻
+    pub fn last_hid_ms() -> Option<u64> {
+        // kCGAnyInputEventType
+        let any = CGEventType(u32::MAX);
+        let idle =
+            CGEventSource::seconds_since_last_event_type(CGEventSourceStateID::HIDSystemState, any);
+        (idle.is_finite() && idle >= 0.0)
+            .then(|| super::now_ms().saturating_sub((idle * 1000.0) as u64))
+    }
+
+    pub fn cursor() -> Option<(u32, f32, f32)> {
+        let ev = CGEvent::new(None)?;
+        let p = CGEvent::location(Some(&ev));
+        let mut ids = [0u32; 4];
+        let mut n = 0u32;
+        let err = unsafe {
+            objc2_core_graphics::CGGetDisplaysWithPoint(
+                p,
+                ids.len() as u32,
+                ids.as_mut_ptr(),
+                &mut n,
+            )
+        };
+        if err != objc2_core_graphics::CGError::Success || n == 0 {
+            return None;
+        }
+        let id = ids[0];
+        let b = unsafe { CGDisplayBounds(id) };
+        let x = ((p.x - b.origin.x) / b.size.width.max(1.0)) as f32;
+        let y = ((p.y - b.origin.y) / b.size.height.max(1.0)) as f32;
+        Some((id, x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
+    }
 
     /// 修饰键变化后等 WindowServer 看到它。
     const SETTLE: Duration = Duration::from_millis(8);
@@ -544,6 +648,24 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn person_first() {
+        let now = 1_000_000;
+        // 没人动过
+        assert_eq!(decide(now, 0, 0, Some(now - 60_000)), None);
+        assert_eq!(decide(now, 0, 0, None), None);
+        // 这台电脑前的人 1 秒前动过
+        assert_eq!(decide(now, 0, 0, Some(now - 1000)), Some(1000));
+        // 那是 agent 自己刚注入的（HID 时刻和注入时刻挨着）
+        assert_eq!(decide(now, 0, now - 1000, Some(now - 990)), None);
+        // agent 注入之后人又动了
+        assert_eq!(decide(now, 0, now - 2000, Some(now - 500)), Some(500));
+        // 远程桌面里的人 2 秒前在操作
+        assert_eq!(decide(now, now - 2000, 0, Some(now - 2000)), Some(2000));
+        // 远程桌面的人 4 秒前操作过，之后没人
+        assert_eq!(decide(now, now - 4000, 0, Some(now - 4000)), None);
+    }
 
     #[test]
     fn keycodes() {

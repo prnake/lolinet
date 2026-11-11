@@ -45,7 +45,8 @@ lolidesk host uninstall   # macOS: stop and remove it
 | **Terminal core** | `lolidesk` loads `libghostty-vt.dylib` (`.so` on Linux) from beside itself, as the package puts it, or from `../Frameworks` inside the app; `LOLIDESK_GHOSTTY_VT` names another file. Without it the host still serves the desktop, and terminal requests get an error saying so. Programs in a session see `TERM=xterm-256color`, `TERM_PROGRAM=lolidesk` and `LOLIDESK_SESSION=<id>` |
 | **Service** | `host install` / `host uninstall`, macOS only. The LaunchAgent runs `<this binary> host run`; installing again restarts it, and moves it to the binary you ran `install` from. Logs go to `~/Library/Logs/lolidesk/host.log`. On Linux, write your own `systemd --user` unit that runs `lolidesk host run` |
 | **From `lolidesk-host`** | Earlier packages had a separate `lolidesk-host`. Called by that name, `lolidesk` behaves as `lolidesk host`, and `install.sh` and `lolinet upgrade` turn an installed `/usr/local/bin/lolidesk-host` into a link to it, so an existing LaunchAgent keeps starting. Run `lolidesk host install` once to point the LaunchAgent at `lolidesk` itself |
-| **Permissions** | The remote desktop needs two permissions for the `lolidesk` binary the service runs, in System Settings → Privacy & Security: **Screen Recording** (capture) and **Accessibility** (mouse and keyboard injection). Without Screen Recording, the app shows the error under the host; without Accessibility you can watch but not control |
+| **Permissions** | The remote desktop needs two permissions for the `lolidesk` binary the service runs, in System Settings → Privacy & Security: **Screen Recording** (capture) and **Accessibility** (mouse and keyboard injection). Without Screen Recording, the app shows the error under the host; without Accessibility you can watch but not control. Computer use for agents uses the same two grants |
+| **What it offers** | `lolidesk host allow` shows and `lolidesk host allow <what> on\|off` changes what the host offers: `terminal`, `desktop` (watch), `control` (input in the remote desktop; off means view-only) and `cua` (computer use for agents). All on by default. Stored in `allow.json` in the config directory and read for every new connection and stream, so a change applies without a restart. `Welcome` tells clients what is on |
 
 ### Desktop app
 
@@ -73,14 +74,40 @@ lolidesk --forget <host>:10190       # forget a host's fingerprint and token
 
 `<host>` is an overlay address or host name, with an optional port (default 10190). The host's frames go straight to your terminal, which encodes your keys itself. Ctrl-] detaches; the session stays on the host. `-y` trusts a new host's fingerprint without asking. Remembered hosts are kept in `lolidesk/hosts` under the system config directory (`~/Library/Application Support` on macOS, `~/.config` on Linux), mode 600, shared by the app and the command line.
 
+### Computer use for agents
+
+Any agent on any machine in the network can see and drive a host's screen, through the same host process and the same macOS permissions as the remote desktop: whoever granted Screen Recording and Accessibility for remote control has granted them for agents too.
+
+```sh
+claude mcp add desk-studio -- lolidesk mcp 10.188.16.10      # an MCP server over stdio, for Claude Code, Codex …
+lolidesk cua 10.188.16.10 screenshot                         # one call from a shell; the image goes to ./screenshot.jpg
+lolidesk cua 10.188.16.10 click '{"x": 640, "y": 412}'
+lolidesk cua 10.188.16.10 key '{"keys": "cmd+shift+t"}'
+```
+
+The host must be remembered first (`lolidesk <host> --token …` once), or pass `--token` and `-y`: the MCP server never prompts.
+
+| Tool | |
+| :-- | :-- |
+| `screenshot` | JPEG of a display, longest side 1440 px by default (`max_edge`, `0` for native), quality 70. The cursor is in the picture |
+| `click`, `move`, `drag`, `scroll` | At pixel coordinates of the last screenshot of that display (native pixels before the first). `click` takes `button`, `count` (double-click is 2) and `modifiers`; `drag` moves in eight steps so apps see the motion; `scroll` takes a direction and a number of wheel notches |
+| `type_text` | Unicode text, independent of the keyboard layout and input method |
+| `key` | A key or shortcut: `enter`, `tab`, `cmd+c`, `cmd+shift+t`, `pagedown`, `f5`, or any W3C `KeyboardEvent.code` |
+| `cursor`, `displays` | Where the pointer is; the displays with their native size |
+
+**A person comes first.** Input from an agent is refused with `USER_ACTIVE` while someone has used the computer in the last 3 seconds: the person at it (from the system's HID idle time, minus the input lolidesk injected itself) or a person in a remote desktop session. Screenshots are always allowed. This follows Cindy's computer-use driver, and keeps an agent from fighting whoever is at the keyboard.
+
+Every tool call is one `CuaReq` on a computer-use stream; an input call is a list of the same `DeskInput` events the remote desktop sends, and the host waits until the injection thread has done them all before answering, so a screenshot taken right after shows the result. Tool names and descriptions are in English, since models read them; the host's own error messages pass through unchanged.
+
 ## Protocol
 
 Defined in `desk/proto/src/lib.rs`. Protocol version 2, ALPN `lolidesk/1`, TLS server name `lolidesk`. The ALPN stays the same across versions and `Hello` / `Denied` never change their encoding, so a client and host of different versions get a readable "protocol version mismatch" instead of a failed handshake.
 
-- **Streams.** The first byte of every bidirectional stream is its kind: `0` control, `1` terminal, `2` desktop. After that come messages framed as `u32 LE length + postcard`, at most 16 MiB each.
-- **Control.** `Hello{version, token, client}` → `Welcome{host, os, version, desktop, persistent}` or `Denied`. Then `ListDisplays` (id, pixels, refresh rate), `ListSessions` (id, title, command, foreground program, working directory, size, viewers, start time, restored, exit status) and `ListLaunchers` (id, name, command).
+- **Streams.** The first byte of every bidirectional stream is its kind: `0` control, `1` terminal, `2` desktop, `3` computer use. After that come messages framed as `u32 LE length + postcard`, at most 16 MiB each.
+- **Control.** `Hello{version, token, client}` → `Welcome{host, os, version, desktop, persistent, allow{terminal, desktop, control, cua}}` or `Denied`. Then `ListDisplays` (id, pixels, refresh rate), `ListSessions` (id, title, command, foreground program, working directory, size, viewers, start time, restored, exit status) and `ListLaunchers` (id, name, command).
 - **Terminal.** The first message is `Open{size, command?, cwd?}` or `Attach{id, size}`, where a size is columns, rows and a cell's width and height in pixels. The host answers `Opened{id}`, `Resized{cols, rows}` (the session's size) and a first `Frame` that starts the client's terminal over. Then come `Frame`s (Mirror output), `Resized` between the frames of the old size and those of the new, `Bell`, `Notify{title, body}` and `Exited(code)`. The client sends `Input(bytes)` (already encoded for the terminal's modes), `Resize(size)` (what its view fits), `Claim` (the user is here: take my size), `Clear(Screen|Scrollback)` and `Kill`. Typing also claims. A client whose queue backs up is dropped; reattaching starts it over. `cwd` may start with `~/` or be relative to the home directory.
 - **Desktop.** `Start{display, video{long_edge, fps, quality}}` → `Ready{width, height, fps, bitrate}`, the settings the host actually used (no upscaling, frame rate capped at the refresh rate). `Configure(video)` restarts capture with new settings and answers with a new `Ready`. Then `Keyframe`, `Input` and `Stop`. Input coordinates are normalised to 0..1 of the picture. `Key{code, down, mods}` carries a physical key by its W3C `KeyboardEvent.code` name; modifiers are pressed and released as keys of their own, and `mods` lets the host correct what it thinks is held. `Scroll{dx, dy}` is a fraction of the picture's height, positive when the content moves down or right. `Text` injects composed text as Unicode; `ReleaseAll` lets go of everything when the client loses focus.
+- **Computer use.** One request, one answer. `Screenshot{display, max_edge, quality}` → `Screenshot{jpeg, width, height, native_width, native_height}`. `Input{display, events, gap_ms}` (the remote desktop's `DeskInput`s, coordinates 0..1, at most 256) → `Done` once they are injected, everything held is released, or `UserActive{idle_ms}`. `Cursor` → `Cursor{display, x, y}`. Any of them can get `Denied` (the host has `cua` off) or `Error`.
 - **Datagrams.** `D5 | frame u32 | index u16 | count u16 | flags u8` (little-endian) followed by a fragment. Joined, the fragments are a `VideoFrame`: `key u8 [sps_len u16 sps pps_len u16 pps] avcc`. AVCC is NAL units with 4-byte big-endian length prefixes. A frame that doesn't fit the host's datagram send buffer is dropped whole, the next ones are skipped until a keyframe, and the encoder is asked for one.
 
 ## Distribution

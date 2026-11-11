@@ -12,7 +12,7 @@ use lolidesk_proto::{
 };
 use quinn::{Connection, RecvStream, SendStream};
 
-use crate::{config, desktop, input, launchers, terminal::Sessions};
+use crate::{config, cua, desktop, input, launchers, terminal::Sessions};
 
 pub struct Shared {
     token: String,
@@ -77,8 +77,24 @@ async fn handle_stream(
     }
     match kind {
         StreamKind::Control => control(&mut send, &mut recv, &conn, &shared, &authed).await,
+        // 开放了什么现读 allow.json：改了不用重启主机，新开的流就按新的来
+        StreamKind::Terminal if !config::allow().terminal => {
+            deny::<TermEvent>(
+                send,
+                TermEvent::Error("这台主机没开放终端（lolidesk host allow terminal on）".into()),
+            )
+            .await
+        }
+        StreamKind::Desktop if !config::allow().desktop => {
+            deny::<DeskEvent>(
+                send,
+                DeskEvent::Error("这台主机没开放远程桌面（lolidesk host allow desktop on）".into()),
+            )
+            .await
+        }
         StreamKind::Terminal => terminal(send, recv, &shared).await,
         StreamKind::Desktop => desktop_stream(send, recv, conn).await,
+        StreamKind::Cua => cua::serve(send, recv).await,
     }
 }
 
@@ -123,6 +139,7 @@ async fn control(
                         version: proto::BUILD.into(),
                         desktop: desktop::supported(),
                         persistent: shared.sessions.persistent(),
+                        allow: config::allow(),
                     },
                 )
                 .await?;
@@ -148,6 +165,13 @@ async fn control(
             }
         }
     }
+    Ok(())
+}
+
+/// 不开放的流：回一句为什么，然后关
+async fn deny<T: serde::Serialize>(mut send: SendStream, msg: T) -> Result<()> {
+    proto::send(&mut send, &msg).await?;
+    send.finish()?;
     Ok(())
 }
 
@@ -267,7 +291,12 @@ async fn desktop_stream(
                 DeskReq::Stop => break,
                 DeskReq::Keyframe => force_key.store(true, Ordering::Relaxed),
                 DeskReq::Input(i) => {
-                    if let Some(inj) = &injector {
+                    // 只看不控（allow.json 的 control 关了）：输入丢掉
+                    if let Some(inj) = injector.as_ref().filter(|_| config::allow().control) {
+                        // 远程桌面里有人在操作：agent 的 computer use 先让着（input::person_active）
+                        if !matches!(i, DeskInput::ReleaseAll) {
+                            input::VIEWER_LAST.store(input::now_ms(), Ordering::Relaxed);
+                        }
                         inj.apply(i);
                     }
                 }

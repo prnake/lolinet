@@ -58,12 +58,12 @@ The goal: **any member can invite**, and **the central server picks the address*
 
 ## Remote control and computer use, one permission
 
-A machine's lolidesk host already holds the two macOS permissions that remote control needs: Screen Recording to capture, Accessibility to inject input. An agent driving the machine needs exactly the same two. So the host exposes both through one grant (**planned**):
+A machine's lolidesk host already holds the two macOS permissions that remote control needs: Screen Recording to capture, Accessibility to inject input. An agent driving the machine needs exactly the same two. So the host exposes both through one grant (**built**):
 
-- **Computer-use tools** over the same QUIC connection as the desktop and the terminal, authenticated by the same token and pinned certificate: `screenshot` (JPEG, scaled to a size the agent asks for, with the coordinate scale it used), `click`, `double_click`, `right_click`, `move`, `drag`, `scroll`, `type_text`, `key` (W3C key codes with modifiers), `displays`, `cursor`.
+- **Computer-use tools** over the same QUIC connection as the desktop and the terminal, authenticated by the same token and pinned certificate: `screenshot` (JPEG, scaled to a size the agent asks for), `click` (with button, count and modifiers), `move`, `drag`, `scroll`, `type_text`, `key` (`cmd+shift+t` and the like), `displays`, `cursor`. Coordinates are the last screenshot's pixels.
 - **`lolidesk mcp <host>`** is a stdio MCP server that forwards these tools to a host, so any agent on any machine in the network can use any other machine: `claude mcp add desk-studio -- lolidesk mcp 10.188.16.10`. `lolidesk cua <host> <tool> [json]` calls one tool from a shell.
 - **Same permissions, no new prompt.** If the host can capture the screen for a viewer, it can take a screenshot for an agent. Nothing new to grant.
-- **Permission switches.** The host config has `allow = { terminal, desktop, control, cua }`, all on by default. A host can serve desktops view-only (`control = false`) or keep agents off (`cua = false`). Per-token scopes come next.
+- **Permission switches.** `lolidesk host allow` sets `terminal`, `desktop`, `control` and `cua`, all on by default. A host can serve desktops view-only (`control off`) or keep agents off (`cua off`). Per-token scopes come next (**planned**).
 - **Person first.** As in Cindy's computer-use driver, input from an agent is refused while a person has used this Mac's keyboard or mouse in the last few seconds (`user_active`), so an agent never fights the person in front of the screen. Remote desktop viewers are people and aren't held back.
 
 ## mihomo on phones and desktops

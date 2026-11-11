@@ -149,6 +149,16 @@ jobs:
           grep -q '恢复的' sessions.out || { cat host.log; echo "主机重启后会话没恢复"; exit 1; }
           ( sleep 3; printf '\035' ) | ./pkg/lolidesk 127.0.0.1 -s "$ID" > restored.out 2>&1 || true
           grep -a -q 'MARK-42' restored.out || { cat host.log; echo "恢复的会话里没有之前的输出"; exit 1; }
+          # computer use 的 MCP 服务（不截图、不注入：runner 没有屏幕录制权限，也不该往 runner 上敲键）：
+          # 握手、9 个工具；主机 allow cua off 之后工具调用要被拒
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./pkg/lolidesk mcp 127.0.0.1 > mcp.out
+          python3 -c 'import json,sys; m=[json.loads(l) for l in open("mcp.out")]; assert m[0]["result"]["serverInfo"]["name"]=="lolidesk"; assert len(m[1]["result"]["tools"])==9, m' \
+            || { cat mcp.out host.log; echo "MCP 握手或工具列表不对"; exit 1; }
+          ./pkg/lolidesk host allow cua off
+          printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cursor","arguments":{}}}' | ./pkg/lolidesk mcp 127.0.0.1 > mcp-off.out
+          grep -q '没开放 computer use' mcp-off.out || { cat mcp-off.out; echo "关掉 cua 之后工具没被拒"; exit 1; }
+          ./pkg/lolidesk host allow cua on
           kill $HOST
 
       - uses: actions/upload-artifact@v5

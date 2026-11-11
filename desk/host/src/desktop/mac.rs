@@ -105,6 +105,51 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
         .collect())
 }
 
+/// 截一张图给 agent：SCScreenshotManager 按要的尺寸出 CGImage（带光标，agent 要知道鼠标在哪），
+/// ImageIO 编 JPEG。ImageIO 只能写文件，所以写到一个 700 的临时目录里再读回来。
+pub fn screenshot(display: u32, max_edge: u32, quality: u8) -> Result<super::Shot> {
+    use screencapturekit::screenshot_manager::{CGImageExt, ImageFormat, SCScreenshotManager};
+    ensure_permission()?;
+    let content = SCShareableContent::get().context("SCShareableContent")?;
+    let d = content
+        .displays()
+        .into_iter()
+        .find(|d| d.display_id() == display)
+        .with_context(|| format!("没有显示器 {display}"))?;
+    let ((pw, ph), _) = display_mode(display, (d.width(), d.height()));
+    let (w, h) = target_size(max_edge, pw, ph);
+    let filter = SCContentFilter::create()
+        .with_display(&d)
+        .with_excluding_windows(&[])
+        .build()
+        .context("SCContentFilter")?;
+    let config = SCStreamConfiguration::new()
+        .with_width(w)
+        .with_height(h)
+        .with_shows_cursor(true);
+    let img = SCScreenshotManager::capture_image(&filter, &config).context("截图")?;
+    let dir = std::env::temp_dir().join(format!("lolidesk-shot-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let path = dir.join(format!("{}.jpg", rand::random::<u64>()));
+    let q = quality.clamp(1, 100) as f32 / 100.0;
+    let res = img
+        .save(&path.to_string_lossy(), ImageFormat::Jpeg(q))
+        .map_err(|e| anyhow::anyhow!("编 JPEG：{e}"))
+        .and_then(|()| std::fs::read(&path).context("读截图"));
+    let _ = std::fs::remove_file(&path);
+    Ok(super::Shot {
+        jpeg: res?,
+        width: w,
+        height: h,
+        native_width: pw,
+        native_height: ph,
+    })
+}
+
 fn builtin(id: u32) -> bool {
     unsafe { objc2_core_graphics::CGDisplayIsBuiltin(id) }
 }

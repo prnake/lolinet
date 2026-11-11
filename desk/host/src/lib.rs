@@ -3,6 +3,7 @@
 //! 和连别人的客户端是同一个程序 `lolidesk`（desk/client），这里是它的 `host` 子命令。
 
 mod config;
+mod cua;
 mod desktop;
 mod input;
 mod launchers;
@@ -32,6 +33,14 @@ pub enum HostCmd {
     Install,
     /// macOS：停掉并撤掉 LaunchAgent
     Uninstall,
+    /// 开放什么：terminal、desktop（看远程桌面）、control（远程桌面里操作）、cua（agent 截图和键鼠）。
+    /// 不带参数是看；`allow cua off` 关一项。马上生效，不用重启
+    Allow {
+        /// terminal / desktop / control / cua
+        what: Option<String>,
+        /// on / off
+        state: Option<String>,
+    },
 }
 
 /// 跑一个 `host` 子命令；不给子命令就是前台运行。日志由调用方初始化。
@@ -51,8 +60,37 @@ pub fn main(cmd: Option<HostCmd>) -> Result<()> {
             Ok(())
         }
         HostCmd::Install => config::install_launch_agent(),
+        HostCmd::Allow { what, state } => allow(what, state),
         HostCmd::Uninstall => config::uninstall_launch_agent(),
     }
+}
+
+fn allow(what: Option<String>, state: Option<String>) -> Result<()> {
+    let mut a = config::allow();
+    if let Some(w) = what {
+        let on = match state.as_deref() {
+            Some("on" | "true" | "yes") => true,
+            Some("off" | "false" | "no") => false,
+            _ => anyhow::bail!("要写 on 或 off：lolidesk host allow {w} on|off"),
+        };
+        match w.as_str() {
+            "terminal" => a.terminal = on,
+            "desktop" => a.desktop = on,
+            "control" => a.control = on,
+            "cua" => a.cua = on,
+            _ => anyhow::bail!("没有 {w}：terminal、desktop、control、cua"),
+        }
+        config::set_allow(a)?;
+    }
+    let s = |b: bool| if b { "开" } else { "关" };
+    println!("终端          {}", s(a.terminal));
+    println!("看远程桌面    {}", s(a.desktop));
+    println!("远程桌面操作  {}", s(a.control));
+    println!(
+        "computer use  {}（agent 截图、键鼠；和远程桌面用同一份屏幕录制、辅助功能授权）",
+        s(a.cua)
+    );
+    Ok(())
 }
 
 async fn run(listen: Option<SocketAddr>) -> Result<()> {
