@@ -142,7 +142,9 @@ def socks_over(s: socket.socket, host: str, dport: int) -> int:
 
 
 def mesh(binary: str) -> None:
-    """两个 userspace 节点：B 的本机 SOCKS5 -> A 的 overlay 地址:出口端口 -> A 的出口 -> example.com"""
+    """两个 userspace 节点：B 的本机 SOCKS5 -> A 的 overlay 地址:出口端口 -> A 的出口 -> example.com。
+    B 设 bind_device = false：Linux 上 EasyTier 默认把出站 socket 绑到默认网卡，连不到回环上的 A（同 easytier/check_udp_pref.py）。
+    A 不设：它只开监听，把 overlay 地址上的连接转给本机回环的是它，要按默认设置测"""
     tmp = tempfile.mkdtemp(prefix="lolinet-exit-")
     core = os.path.join(tmp, "easytier-core")
     os.symlink(os.path.abspath(binary), core)
@@ -178,6 +180,7 @@ uri = "tcp://127.0.0.1:{pa}"
 
 [flags]
 no_tun = true
+bind_device = false
 ''',
     }
     procs = []

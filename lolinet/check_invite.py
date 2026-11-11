@@ -287,6 +287,7 @@ uri = "tcp://127.0.0.1:{pa}"
 [flags]
 no_tun = true
 private_mode = true
+bind_device = false
 ''', rm)
         peers_have = lambda ip: any(str(p.get("ipv4", "")).split("/")[0] == ip for p in cli_json(str(cli), ra, "peer"))  # noqa: E731
         check(bool(wait_for(lambda: peers_have("10.188.16.10"))), "成员 laptop 用 issuer 签的凭据入网")
@@ -343,7 +344,8 @@ private_mode = true
               and "# lolinet = " in conf and '"manager":"https://manager.test"' in conf,
               "配对包能用配对码解开，带 no_tun、socks5_proxy、探针和管理面地址")
         new_ip = out.get("ip", "")
-        start("newbie", conf.replace("127.0.0.1:18080", f"127.0.0.1:{sn}"), rn)
+        # bind_device = false：Linux 上 EasyTier 默认把出站 socket 绑到默认网卡，连不到回环上的 issuer（测试才要）
+        start("newbie", conf.replace("127.0.0.1:18080", f"127.0.0.1:{sn}").replace("[flags]\n", "[flags]\nbind_device = false\n", 1), rn)
         check(bool(wait_for(lambda: peers_have(new_ip), 40)), f"新机器用邀请来的凭据入网：issuer 的节点表里有 {new_ip}")
         creds = json.loads((tmp / "credentials.json").read_text())
         check(any(k.startswith(out.get("name", "?")) for k in creds), "邀请签的凭据写进了 issuer 的 credential_file")
