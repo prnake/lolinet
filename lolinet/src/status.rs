@@ -59,6 +59,15 @@ pub fn show() -> Result<()> {
         None if !id.is_empty() => println!("探针    配了{id}，服务没装（sudo lolinet up）"),
         None => println!("探针    没装（配对时带了探针才装）"),
     }
+    // mihomo 服务和内核无关：内核连不上时也要看得到它装着、跑没跑
+    if let Some(m) = crate::mihomo::installed() {
+        let st = match service::mihomo_state() {
+            Some(st) if st.running => "运行中",
+            Some(_) => "没在运行（sudo lolinet mihomo on）",
+            None => "服务没装（sudo lolinet mihomo on）",
+        };
+        println!("mihomo  {m} · {st}");
+    }
     let (Some(node), Some(Value::Array(peers))) = (node(), cli_json("peer")) else {
         println!("内核    管理口 {RPC} 连不上");
         return Ok(());
@@ -76,14 +85,6 @@ pub fn show() -> Result<()> {
         let ip = s(&node, "ipv4_addr");
         let ip = ip.split('/').next().unwrap_or("");
         println!("出口    socks5://{ip}:{} · {st}", e.port);
-    }
-    if let Some(m) = crate::mihomo::installed() {
-        let st = match service::mihomo_state() {
-            Some(st) if st.running => "运行中",
-            Some(_) => "没在运行（sudo lolinet mihomo on）",
-            None => "服务没装（sudo lolinet mihomo on）",
-        };
-        println!("mihomo  {m} · {st}");
     }
     // 没有地址的是控制台（network.issuer 那台 relay）的 Gateway 实例，不算节点
     let (relays, devices): (Vec<&Value>, Vec<&Value>) = peers
