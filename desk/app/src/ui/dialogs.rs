@@ -23,10 +23,10 @@ use crate::{
     ui::widgets::{caption, pill, pill_busy},
 };
 
-/// 对话框的外壳：440 宽、圆角 16、深一层的底。
-fn shell(dialog: Dialog) -> Dialog {
+/// 对话框的外壳：默认 440 宽、圆角 16、深一层的底。
+fn shell(dialog: Dialog, width: f32) -> Dialog {
     dialog
-        .w(px(440.))
+        .w(px(width))
         .p(px(24.))
         .bg(ink2())
         .border_color(line2())
@@ -35,7 +35,7 @@ fn shell(dialog: Dialog) -> Dialog {
         .centered()
 }
 
-fn header(title: &'static str, sub: impl Into<SharedString>) -> impl IntoElement {
+pub(crate) fn header(title: &'static str, sub: impl Into<SharedString>) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -49,7 +49,7 @@ fn header(title: &'static str, sub: impl Into<SharedString>) -> impl IntoElement
         .child(div().text_size(T_XS).text_color(fg2()).child(sub.into()))
 }
 
-fn field(label: &'static str, input: &Entity<InputState>) -> impl IntoElement {
+pub(crate) fn field(label: &'static str, input: &Entity<InputState>) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
@@ -66,7 +66,7 @@ fn field(label: &'static str, input: &Entity<InputState>) -> impl IntoElement {
         )
 }
 
-fn error_line(e: &Option<String>) -> Option<impl IntoElement> {
+pub(crate) fn error_line(e: &Option<String>) -> Option<impl IntoElement> {
     e.as_ref()
         .map(|e| div().text_size(T_XS).text_color(bad()).child(e.clone()))
 }
@@ -288,9 +288,14 @@ impl Form for CommandForm {
 
 /// 把一个表单放进对话框外壳里打开。
 pub fn open_form<V: Form>(view: Entity<V>, window: &mut Window, cx: &mut App) {
+    open_form_sized(view, 440., window, cx)
+}
+
+/// 同 [`open_form`]，自己定宽度。
+pub fn open_form_sized<V: Form>(view: Entity<V>, width: f32, window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _, _| {
         let form = view.clone();
-        shell(dialog)
+        shell(dialog, width)
             .on_ok(move |_, window, cx| {
                 form.update(cx, |f, cx| f.submit(window, cx));
                 false

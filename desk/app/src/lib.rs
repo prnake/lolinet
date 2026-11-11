@@ -1,7 +1,8 @@
 //! Lolidesk.app：lolidesk 的图形客户端，GPUI + gpui-kit 画。
 //!
 //! 结构：
-//! - 纯逻辑（各平台都编、都测）：[`keys`] 物理键位表，[`labels`] 文字和几何，[`video`] 拼帧和统计，[`prefs`] 偏好。
+//! - 纯逻辑（各平台都编、都测）：[`keys`] 物理键位表，[`labels`] 文字和几何，[`video`] 拼帧和统计，[`prefs`] 偏好，
+//!   [`lolinet`] 本机 lolinet 命令行（网络页的数据，入网命令的校验）。
 //! - 网络（macOS）：[`runtime`] 一个 tokio 运行时；[`desk`] 远程桌面的流、拼帧、解码线程；[`term`] 终端会话的流。
 //! - 界面（macOS）：[`model`] 主机、会话、选中项（一个 GPUI 实体，所有视图都看它）；[`ui`] 各个视图。
 //!
@@ -12,6 +13,7 @@
 pub mod backoff;
 pub mod keys;
 pub mod labels;
+pub mod lolinet;
 pub mod prefs;
 pub mod termtext;
 pub mod video;

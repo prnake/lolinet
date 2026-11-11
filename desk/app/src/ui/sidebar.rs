@@ -1,4 +1,4 @@
-//! 侧栏：字标和添加按钮、主机树（会话、新建、显示器）、底部的在线数和版本。
+//! 侧栏：字标和添加按钮、最上面固定的「网络」、主机树（权限引导、会话、新建、显示器）、底部的在线数和版本。
 //! 缓存的视图：只在模型变了（`observe`）时重画，画面一帧一帧来时不动。
 
 use std::net::SocketAddr;
@@ -114,6 +114,29 @@ impl Render for Sidebar {
             .map(|(i, h)| host_tree(i, h, &ctx))
             .collect();
         let (online, total) = (m.online_count(), m.hosts.len());
+        let net_row = {
+            let model = model.clone();
+            let selected = m.selection == Selection::Network;
+            let (text, color) = crate::ui::network::summary(m.net.status.as_ref());
+            side_row("side-net", selected)
+                .h(px(34.))
+                .child(icon(ic::NETWORK, 15., if selected { fg() } else { fg2() }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(T_SM)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("网络"),
+                )
+                .when(!text.is_empty(), |r| {
+                    r.child(mono(text, T_CAP, fg3()).flex_none())
+                })
+                .child(dot(color, 6.))
+                .on_click(move |_, _, cx| {
+                    model.update(cx, |m, cx| m.select(Selection::Network, cx))
+                })
+        };
 
         let add = {
             let model = model.clone();
@@ -170,6 +193,7 @@ impl Render for Sidebar {
                             .pt(px(4.))
                             .pb(px(16.))
                             .gap(px(2.))
+                            .child(net_row)
                             .child(
                                 div()
                                     .px(px(8.))
@@ -283,6 +307,12 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
                 .when_some(note, |d, n| d.child(mono(n, T_CAP, warn()))),
         );
     }
+    // 远程桌面还缺权限：引导卡片放在最上面
+    let guide = online
+        .then(|| crate::ui::permissions::card(h, ctx.model, false))
+        .flatten();
+    let guiding = guide.is_some();
+    body = body.children(guide);
     // 重连时会话还列着（开着的终端在等），新建和显示器要连上才有
     if online || h.reconnecting() {
         let name = h.title();
@@ -302,7 +332,8 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
             for d in &h.displays {
                 body = body.child(display_row(addr, d, ctx));
             }
-            if let Some(e) = &h.displays_error {
+            // 卡片已经在说缺屏幕录制了，列不出显示器的那条就不重复
+            if let Some(e) = h.displays_error.as_ref().filter(|_| !guiding) {
                 body = body.child(
                     div()
                         .flex()

@@ -40,7 +40,7 @@ Today pairing codes come from an admin with the console password (`scripts/pair.
 
 The goal: **any member can invite**, and **the central server picks the address** (**built**).
 
-- **`lolinet invite [--name N] [--kind desktop|userspace|phone|server]`** asks the manager on the issuer relay, over the overlay, for a pairing code, and prints the `curl … | sudo sh -s CODE` line, or for a phone the `<join>/m#CODE` link. The app's *Invite* button (**planned**) does the same.
+- **`lolinet invite [--name N] [--kind desktop|userspace|phone|server]`** asks the manager on the issuer relay, over the overlay, for a pairing code, and prints the `curl … | sudo sh -s CODE` line, or for a phone the `<join>/m#CODE` link. The app's *Invite* button (**built**) does the same, with a QR code for the phone link.
 - **Addresses** come from the pool for the kind, from the same address plan as the node list (`10.188.1.0/24` servers, `10.188.16.0/20` desktops, `10.188.32.0/20` userspace, `10.188.48.0/20` phones). The manager skips every address in its device registry and in the live route table.
 - **Credentials** for member invitations are signed by the issuer relay itself, through its local EasyTier RPC, so no console session is needed. They are single-use and expire like admin-issued ones.
 - **Who is asking.** The request arrives over the overlay; its source address is the member's overlay address, and the manager checks that the route table has a peer with that address. Overlay addresses aren't cryptographically bound to credentials yet, so this is a convenience check, not a security boundary. Signing requests with the node's credential key is planned.
@@ -50,11 +50,11 @@ The goal: **any member can invite**, and **the central server picks the address*
 
 `Lolidesk.app` (macOS first, then Linux; Windows later) is the desktop side of everything:
 
-- **Join** (**planned**): enter a pairing code, the app runs the join script with an administrator prompt and shows progress. **Invite**: make a code for another machine.
-- **Network** (**planned**): this node, its peers and their latency, exit nodes, and switches for TUN or userspace, exit node and mihomo.
+- **Join** (**built**): paste the pairing command or enter the join site and code; the app checks both, runs the join script with an administrator prompt and shows its output. **Invite** (**built**): make a code for another machine or a phone (with a QR code).
+- **Network**: this node, its peers and their latency, and the exit node switch (**built**); a list of the network's exit nodes and switches for TUN or userspace and mihomo (**planned**).
 - **Hosts**: remote terminals and desktops, as today.
-- **Shell**: on first run the app links `lolinet` and `lolidesk` into `/usr/local/bin`, so everything the app does is also a command.
-- **Permissions guide** (**planned**): Screen Recording and Accessibility, checked live, each with a button that opens the right settings page.
+- **Shell**: `lolinet` comes with joining; the app shows whether `lolinet` and `lolidesk` are in `/usr/local/bin` and links its own `lolidesk` there with one button (**built**), so everything the app does is also a command. Doing it on first run is **planned**.
+- **Permissions guide** (**built**): Screen Recording and Accessibility, checked live, each with a button that opens the right settings page on the host, and a button that restarts the host service once Screen Recording is on.
 
 ## Remote control and computer use, one permission
 

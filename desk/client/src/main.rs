@@ -60,6 +60,9 @@ struct Args {
     /// 只列出主机上找得到的 agent
     #[arg(long)]
     launchers: bool,
+    /// 看主机的屏幕录制、辅助功能权限开了没有（远程桌面和 computer use 要这两个）
+    #[arg(long)]
+    permissions: bool,
     /// 旧版本的参数：现在默认就是在当前终端里接会话
     #[arg(long, hide = true)]
     tui: bool,
@@ -248,7 +251,7 @@ fn main() -> Result<()> {
         }
     );
 
-    if args.sessions || args.displays || args.launchers {
+    if args.sessions || args.displays || args.launchers || args.permissions {
         use lolidesk_proto::{ControlReq, ControlResp};
         if args.sessions {
             match rt.block_on(client.control(ControlReq::ListSessions))? {
@@ -300,6 +303,25 @@ fn main() -> Result<()> {
                         println!("{}\t{}", l.name, l.command);
                     }
                 }
+                other => println!("{other:?}"),
+            }
+        }
+        if args.permissions {
+            match rt.block_on(client.control(ControlReq::Permissions))? {
+                ControlResp::Permissions {
+                    screen_recording,
+                    accessibility,
+                } => {
+                    let s = |on: bool| if on { "开了" } else { "没开" };
+                    println!("屏幕录制\t{}\t看远程桌面、截图", s(screen_recording));
+                    println!("辅助功能\t{}\t远程操作键鼠", s(accessibility));
+                    if !(screen_recording && accessibility) {
+                        println!(
+                            "在主机上：系统设置 → 隐私与安全性，给跑主机服务的 lolidesk 打开；屏幕录制开了要重启服务（lolidesk host install）"
+                        );
+                    }
+                }
+                ControlResp::Error(e) => println!("主机：{e}"),
                 other => println!("{other:?}"),
             }
         }

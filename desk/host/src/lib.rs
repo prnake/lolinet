@@ -8,6 +8,7 @@ mod desktop;
 mod input;
 mod launchers;
 mod net;
+mod permissions;
 mod procinfo;
 mod terminal;
 

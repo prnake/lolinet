@@ -106,6 +106,73 @@ pub fn pill_busy(
     }
 }
 
+/// 小号胶囊按钮（卡片里的行内操作）：26 高、12 号字。
+pub fn pill_sm(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    primary: bool,
+) -> Stateful<Div> {
+    pill(id, label, primary)
+        .h(px(26.))
+        .px(px(12.))
+        .text_size(T_XS)
+}
+
+/// 开关：开是猫眼绿底、黑钮，关是深底、灰钮。`busy` 时半透明、不能点。
+pub fn switch(id: impl Into<ElementId>, on: bool, busy: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .w(px(36.))
+        .h(px(20.))
+        .p(px(2.))
+        .rounded(R_PILL)
+        .border_1()
+        .when(on, |d| d.justify_end().bg(eye()).border_color(eye()))
+        .when(!on, |d| d.bg(ink4()).border_color(line2()))
+        .when(busy, |d| d.opacity(0.5))
+        .when(!busy, |d| d.cursor_pointer())
+        .child(
+            div()
+                .size(px(14.))
+                .rounded_full()
+                .bg(if on { eye_ink() } else { fg2() }),
+        )
+}
+
+/// 勾选框 + 文字。
+pub fn checkbox(
+    id: impl Into<ElementId>,
+    on: bool,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .cursor_pointer()
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(16.))
+                .rounded(px(4.))
+                .border_1()
+                .when(on, |d| d.bg(eye()).border_color(eye()))
+                .when(!on, |d| d.bg(ink1()).border_color(line3()))
+                .when(on, |d| {
+                    d.child(icon(crate::assets::ic::CHECK, 12., eye_ink()))
+                }),
+        )
+        .child(div().text_size(T_SM).child(label.into()))
+}
+
 /// 28×28 的方形图标按钮，带提示。
 pub fn icon_button(
     id: impl Into<ElementId>,

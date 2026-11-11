@@ -257,7 +257,66 @@ pub fn uninstall_launch_agent() -> Result<()> {
     Ok(())
 }
 
+/// 这个进程是不是 LaunchAgent co.lo-li.lolidesk 起的。launchd 给它起的进程设 XPC_SERVICE_NAME = 标签；
+/// 没有的话再问 launchctl 这个服务的 pid 是不是自己。
+pub fn under_launch_agent() -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    if std::env::var("XPC_SERVICE_NAME").is_ok_and(|v| v == AGENT_LABEL) {
+        return true;
+    }
+    let uid = unsafe { libc_getuid() };
+    std::process::Command::new("launchctl")
+        .args(["print", &format!("gui/{uid}/{AGENT_LABEL}")])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| {
+            launchctl_pid(&String::from_utf8_lossy(&o.stdout)) == Some(std::process::id())
+        })
+}
+
+/// `launchctl print` 输出里的 `pid = 123`
+fn launchctl_pid(text: &str) -> Option<u32> {
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("pid = "))
+        .and_then(|p| p.trim().parse().ok())
+}
+
+/// 重启主机服务（app 里「重启主机服务」）：交给一个脱离出去的子进程，等一秒让回应先发出去，
+/// 再 `launchctl kickstart -k`。launchd 先发 SIGTERM，会话照常存盘，客户端会自己重连。
+pub fn restart_launch_agent() -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    anyhow::ensure!(under_launch_agent(), "主机不是服务方式运行，手动重启");
+    let uid = unsafe { libc_getuid() };
+    std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "sleep 1; exec launchctl kickstart -k \"$0\"",
+            &format!("gui/{uid}/{AGENT_LABEL}"),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        // 自己一个进程组：launchd 停服务时会连同服务的进程组一起杀
+        .process_group(0)
+        .spawn()
+        .context("起 launchctl")?;
+    Ok(())
+}
+
 extern "C" {
     #[link_name = "getuid"]
     fn libc_getuid() -> u32;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn launchctl_pid() {
+        let text = "gui/501/co.lo-li.lolidesk = {\n\tactive count = 1\n\tpath = /x.plist\n\tstate = running\n\n\tpid = 4242\n\timmediate reason = speculative\n}";
+        assert_eq!(super::launchctl_pid(text), Some(4242));
+        assert_eq!(super::launchctl_pid("state = not running"), None);
+    }
 }

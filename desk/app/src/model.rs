@@ -5,13 +5,15 @@
 //! 断开、重连之后旧连接的结果对不上就丢掉。
 //!
 //! 定时：每 2 秒看一次连接还在不在（`close_reason`）、更新延迟，每 4 秒刷一次会话列表。
+//! 权限引导卡片显示着时每 2 秒问一次主机的权限；网络页开着时每 3 秒读一次本机 lolinet（在后台线程上），
+//! 没开着时 30 秒一次。
 //!
 //! 重连：连不上、连接断了都按 1、2、4……60 秒退避重试（连上了从头算；窗口回到前台马上试）。
 //! 断的时候开着的终端不关：变暗、等着，重连后用同一个会话编号重新 Attach；远程桌面重新 Start。
 //! 用户自己点「断开」的不重连；主机拒绝、证书指纹变了也不重连（重试也没用）。
 
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -23,11 +25,14 @@ use lolidesk_core::{
     hosts::Hosts,
     net::{self, Client, Welcome},
 };
-use lolidesk_proto::{ControlReq, ControlResp, DisplayInfo, Launcher, SessionInfo, VideoSettings};
+use lolidesk_proto::{
+    ControlReq, ControlResp, DisplayInfo, Launcher, PermissionKind, SessionInfo, VideoSettings,
+};
 
 use crate::{
     backoff::Retry,
     labels::{self, cap_fps, host_title},
+    lolinet::{self, JoinTarget, Lolinet, Status as NetStatus},
     prefs::Prefs,
     runtime::{self, error_text},
     term::{ClientLink, TermLink, TermPhase, TermSession, TermSessionEvent, TermStart, TermStream},
@@ -68,6 +73,30 @@ pub struct HostState {
     /// 要不要保持连着（用户点了「断开」就不要）
     pub wanted: bool,
     pub retry: Retry,
+    /// 远程桌面要的两个权限（主机说的）；还没问到、或者主机没有远程桌面是 None
+    pub perms: Option<Perms>,
+    /// 权限引导卡片的进度（这次连接里）
+    pub guide: Guide,
+}
+
+/// 主机的屏幕录制、辅助功能权限。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Perms {
+    pub screen: bool,
+    pub access: bool,
+}
+
+/// 权限引导卡片：哪些行出现过（开了也留着，变绿）、要不要重启主机服务。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Guide {
+    pub screen: bool,
+    pub access: bool,
+    /// 屏幕录制这次连接里从没开变成开了：要重启主机服务才生效
+    pub restart: bool,
+    /// 点过屏幕录制的「在主机上打开设置」（系统可能要重启服务后才认）
+    pub opened_screen: bool,
+    /// 点了「重启主机服务」，等它断开重连
+    pub restarting: bool,
 }
 
 impl HostState {
@@ -90,7 +119,62 @@ impl HostState {
             expanded: true,
             wanted: true,
             retry: Retry::default(),
+            perms: None,
+            guide: Guide::default(),
         }
+    }
+
+    /// 主机给远程桌面或 computer use（这两样要权限）
+    pub fn wants_desktop(&self) -> bool {
+        self.welcome
+            .as_ref()
+            .is_some_and(|w| w.desktop && (w.allow.desktop || w.allow.cua))
+    }
+
+    /// 辅助功能有用：主机允许远程操作或 computer use
+    pub fn needs_access(&self) -> bool {
+        self.welcome
+            .as_ref()
+            .is_some_and(|w| w.allow.control || w.allow.cua)
+    }
+
+    /// 权限引导还差几步（0 就不显示卡片）：没开的权限，加上要不要重启服务。
+    pub fn guide_steps(&self) -> usize {
+        let Some(p) = self.perms.filter(|_| self.online() && self.wants_desktop()) else {
+            return 0;
+        };
+        usize::from(!p.screen)
+            + usize::from(self.needs_access() && !p.access)
+            + usize::from(self.guide.restart)
+    }
+
+    /// 卡片上要不要「重启主机服务」：屏幕录制刚开了，或者点过打开设置（系统可能要重启才认）
+    pub fn guide_offers_restart(&self) -> bool {
+        self.guide.restart || (self.guide.opened_screen && self.perms.is_some_and(|p| !p.screen))
+    }
+
+    /// 主机答了权限：记下哪些没开（卡片上留一行），屏幕录制从没开变成开了就要重启服务。
+    /// 返回屏幕录制是不是刚开。
+    pub fn set_perms(&mut self, p: Perms) -> bool {
+        let was = self.perms;
+        if !p.screen {
+            self.guide.screen = true;
+        }
+        if !p.access && self.needs_access() {
+            self.guide.access = true;
+        }
+        let turned_on = was.is_some_and(|w| !w.screen) && p.screen;
+        if turned_on {
+            self.guide.restart = true;
+        }
+        self.perms = Some(p);
+        turned_on
+    }
+
+    /// 新连接：权限重新问
+    fn reset_perms(&mut self) {
+        self.perms = None;
+        self.guide = Guide::default();
     }
 
     pub fn title(&self) -> String {
@@ -166,6 +250,30 @@ pub enum Selection {
     /// 一个终端（TerminalView 的实体编号）
     Term(EntityId),
     Desk,
+    /// 网络页：本机入网、节点、邀请、出口节点、命令行
+    Network,
+}
+
+/// 网络页的状态（本机 lolinet）。
+#[derive(Default)]
+pub struct NetState {
+    /// 没有就什么都不跑（测试、快照没设假数据的时候）
+    backend: Option<Arc<dyn Lolinet>>,
+    /// 最近一次读到的；还没读过是 None
+    pub status: Option<NetStatus>,
+    loading: bool,
+    /// 正在做的事（要管理员密码的那些）
+    pub job: Option<NetJob>,
+    /// 上一件事的结果：成功没有、输出
+    pub output: Option<(NetJob, bool, String)>,
+}
+
+/// 网络页上要管理员权限的事。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetJob {
+    Join(JoinTarget),
+    Exit(bool),
+    InstallCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +298,7 @@ pub struct Model {
     pub terms: Vec<Entity<TerminalView>>,
     pub desk: Option<Entity<DeskPane>>,
     pub prefs: Prefs,
+    pub net: NetState,
     /// 记住的主机文件；测试里没有
     store: Option<Hosts>,
     ticker: Option<Task<()>>,
@@ -215,6 +324,7 @@ impl Model {
             }
         }
         m.store = store;
+        m.net.backend = Some(Arc::new(lolinet::System));
         m.sort();
         m
     }
@@ -227,6 +337,7 @@ impl Model {
             terms: Vec::new(),
             desk: None,
             prefs,
+            net: NetState::default(),
             store: None,
             ticker: None,
             background: Vec::new(),
@@ -243,6 +354,7 @@ impl Model {
         for a in addrs {
             self.connect(a, cx);
         }
+        self.refresh_net(cx);
         self.ticker = Some(cx.spawn(async move |this, cx| {
             let mut n: u64 = 0;
             loop {
@@ -337,6 +449,7 @@ impl Model {
                 h.link = Link::Online;
                 h.retry.reset();
                 h.error.clear();
+                h.reset_perms();
                 h.rtt_ms = client.rtt().as_secs_f64() * 1000.0;
                 h.welcome = Some(client.welcome.clone());
                 h.expanded = true;
@@ -371,6 +484,7 @@ impl Model {
             c.conn.close(0u32.into(), b"lost");
         }
         h.error = format!("连接断了：{why}");
+        h.reset_perms();
         if h.wanted {
             h.link = Link::Reconnecting;
             h.retry.schedule(Instant::now());
@@ -489,6 +603,7 @@ impl Model {
             h.wanted = true;
             h.retry.reset();
             h.error.clear();
+            h.reset_perms();
             h.rtt_ms = client.rtt().as_secs_f64() * 1000.0;
             h.welcome = Some(welcome.clone());
             h.client = Some(client);
@@ -545,6 +660,7 @@ impl Model {
             h.displays.clear();
             h.displays_error = None;
             h.launchers.clear();
+            h.reset_perms();
         }
         cx.notify();
     }
@@ -579,6 +695,9 @@ impl Model {
         };
         let epoch = h.epoch;
         let desktop = h.has_desktop();
+        if all && desktop {
+            self.refresh_perms(addr, cx);
+        }
         cx.spawn(async move |this, cx| {
             let c = client.clone();
             let sessions = runtime::run(async move {
@@ -664,8 +783,27 @@ impl Model {
             // 侧栏上的「N 秒后」跟着走
             cx.notify();
         }
+        // 网络页开着时每 3 秒读一次本机 lolinet；没开着时 30 秒一次（侧栏上的在线数）
+        let net_every = if self.selection == Selection::Network {
+            3
+        } else {
+            30
+        };
+        if n.is_multiple_of(net_every) {
+            self.refresh_net(cx);
+        }
         if !n.is_multiple_of(2) {
             return;
+        }
+        // 权限引导卡片显示着：每 2 秒问一次，开了就变绿
+        let guiding: Vec<SocketAddr> = self
+            .hosts
+            .iter()
+            .filter(|h| h.guide_steps() > 0 && !h.guide.restarting)
+            .map(|h| h.addr)
+            .collect();
+        for a in guiding {
+            self.refresh_perms(a, cx);
         }
         let mut dead = Vec::new();
         let mut changed = false;
@@ -708,9 +846,257 @@ impl Model {
             self.selection = sel;
             cx.notify();
         }
-        if let Selection::Term(id) = sel {
-            cx.emit(ModelEvent::FocusTerm(id));
+        match sel {
+            Selection::Term(id) => cx.emit(ModelEvent::FocusTerm(id)),
+            Selection::Network => self.refresh_net(cx),
+            _ => {}
         }
+    }
+
+    // ------------------------------------------------------------ 权限
+
+    /// 问主机两个权限开了没有（主机没有远程桌面会回 Error：不再问，卡片不出现）。
+    pub fn refresh_perms(&mut self, addr: SocketAddr, cx: &mut Context<Self>) {
+        let Some(h) = self.host(addr) else { return };
+        let (Some(client), true) = (h.client.clone(), h.online()) else {
+            return;
+        };
+        let epoch = h.epoch;
+        cx.spawn(async move |this, cx| {
+            let r = runtime::run(async move {
+                match client.control(ControlReq::Permissions).await? {
+                    ControlResp::Permissions {
+                        screen_recording,
+                        accessibility,
+                    } => Ok(Perms {
+                        screen: screen_recording,
+                        access: accessibility,
+                    }),
+                    ControlResp::Error(e) => bail!(e),
+                    other => bail!("回应不对：{other:?}"),
+                }
+            })
+            .await;
+            let _ = this.update(cx, |m, cx| {
+                let Some(h) = m.host_gen_mut(addr, epoch) else {
+                    return;
+                };
+                let Ok(p) = r else { return };
+                if h.perms == Some(p) {
+                    return;
+                }
+                let turned_on = h.set_perms(p);
+                cx.notify();
+                // 屏幕录制刚开：显示器可能列得出来了
+                if turned_on {
+                    m.refresh(addr, false, cx);
+                    m.refresh_displays(addr, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 只重新列显示器（权限刚开时）。
+    fn refresh_displays(&mut self, addr: SocketAddr, cx: &mut Context<Self>) {
+        let Some(h) = self.host(addr) else { return };
+        let Some(client) = h.client.clone() else {
+            return;
+        };
+        let epoch = h.epoch;
+        cx.spawn(async move |this, cx| {
+            let r = runtime::run(async move {
+                match client.control(ControlReq::ListDisplays).await? {
+                    ControlResp::Displays(d) => Ok(d),
+                    ControlResp::Error(e) => bail!(e),
+                    other => bail!("回应不对：{other:?}"),
+                }
+            })
+            .await;
+            let _ = this.update(cx, |m, cx| {
+                if let (Some(h), Ok(d)) = (m.host_gen_mut(addr, epoch), r) {
+                    h.displays = d;
+                    h.displays_error = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 「在主机上打开设置」：主机弹授权框、打开设置页；主机就是这台 Mac 的话，这边也打开。
+    pub fn open_permission(
+        &mut self,
+        addr: SocketAddr,
+        kind: PermissionKind,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(h) = self.host_mut(addr) else { return };
+        let Some(client) = h.client.clone() else {
+            return;
+        };
+        if kind == PermissionKind::ScreenRecording {
+            h.guide.opened_screen = true;
+        }
+        let title = h.title();
+        if is_this_mac(client.addr.ip()) {
+            let _ = std::process::Command::new("/usr/bin/open")
+                .arg(kind.settings_url())
+                .spawn();
+        }
+        cx.spawn(async move |this, cx| {
+            let r = runtime::run(async move {
+                match client.control(ControlReq::OpenPermission(kind)).await? {
+                    ControlResp::Ok => Ok(()),
+                    ControlResp::Error(e) => bail!(e),
+                    other => bail!("回应不对：{other:?}"),
+                }
+            })
+            .await;
+            let _ = this.update(cx, |m, cx| match r {
+                Ok(()) => m.toast(
+                    ToastKind::Info,
+                    format!("已在 {title} 上打开系统设置：给 lolidesk 打开"),
+                    cx,
+                ),
+                Err(e) => m.toast(ToastKind::Error, error_text(&e), cx),
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// 「重启主机服务」：主机回了话就自己重启，连接会断，之后自动重连。
+    pub fn restart_host(&mut self, addr: SocketAddr, cx: &mut Context<Self>) {
+        let Some(h) = self.host_mut(addr) else { return };
+        let Some(client) = h.client.clone() else {
+            return;
+        };
+        h.guide.restarting = true;
+        let epoch = h.epoch;
+        cx.spawn(async move |this, cx| {
+            let r = runtime::run(async move {
+                match client.control(ControlReq::RestartHost).await? {
+                    ControlResp::Ok => Ok(()),
+                    ControlResp::Error(e) => bail!(e),
+                    other => bail!("回应不对：{other:?}"),
+                }
+            })
+            .await;
+            let failed = r.is_err();
+            let _ = this.update(cx, |m, cx| {
+                if let Err(e) = r {
+                    if let Some(h) = m.host_gen_mut(addr, epoch) {
+                        h.guide.restarting = false;
+                    }
+                    m.toast(ToastKind::Error, error_text(&e), cx);
+                }
+                cx.notify();
+            });
+            if failed {
+                return;
+            }
+            // 主机说好了，但 20 秒后还是这条连接：没重启成，按钮还给用户
+            cx.background_executor()
+                .timer(Duration::from_secs(20))
+                .await;
+            let _ = this.update(cx, |m, cx| {
+                if let Some(h) = m.host_gen_mut(addr, epoch)
+                    && h.guide.restarting
+                {
+                    h.guide.restarting = false;
+                    m.toast(
+                        ToastKind::Error,
+                        "主机服务没有重启：在主机上跑 lolidesk host install",
+                        cx,
+                    );
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    // ------------------------------------------------------------ 网络（本机 lolinet）
+
+    /// 换掉读本机 lolinet 的那一层（测试用假的）。
+    pub fn set_lolinet(&mut self, backend: Arc<dyn Lolinet>) {
+        self.net.backend = Some(backend);
+    }
+
+    pub fn lolinet(&self) -> Option<Arc<dyn Lolinet>> {
+        self.net.backend.clone()
+    }
+
+    /// 在后台读一次本机的入网情况、节点、出口节点、命令行。
+    pub fn refresh_net(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.net.backend.clone() else {
+            return;
+        };
+        if self.net.loading {
+            return;
+        }
+        self.net.loading = true;
+        let task = cx.background_spawn(async move { backend.status() });
+        cx.spawn(async move |this, cx| {
+            let status = task.await;
+            let _ = this.update(cx, |m, cx| {
+                m.net.loading = false;
+                if m.net.status.as_ref() != Some(&status) {
+                    m.net.status = Some(status);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 要管理员密码的事（入网、出口节点、装命令行）：在后台跑，跑完记下输出、再读一次状态。
+    pub fn run_net_job(&mut self, job: NetJob, cx: &mut Context<Self>) {
+        let Some(backend) = self.net.backend.clone() else {
+            return;
+        };
+        if self.net.job.is_some() {
+            return;
+        }
+        self.net.job = Some(job.clone());
+        self.net.output = None;
+        let j = job.clone();
+        let task = cx.background_spawn(async move {
+            match &j {
+                NetJob::Join(t) => backend.join(t),
+                NetJob::Exit(on) => backend.set_exit(*on),
+                NetJob::InstallCli => backend.install_cli(),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |m, cx| {
+                m.net.job = None;
+                let (ok, text) = match r {
+                    Ok(out) => (true, out),
+                    Err(e) => (false, error_text(&e)),
+                };
+                let note = match (&job, ok) {
+                    (NetJob::Join(_), true) => Some((ToastKind::Success, "已加入网络".to_string())),
+                    (NetJob::Exit(true), true) => Some((ToastKind::Success, "出口节点开了".into())),
+                    (NetJob::Exit(false), true) => Some((ToastKind::Info, "出口节点关了".into())),
+                    (NetJob::InstallCli, true) => {
+                        Some((ToastKind::Success, "lolidesk 装到命令行了".into()))
+                    }
+                    (_, false) => Some((ToastKind::Error, first_line(&text))),
+                };
+                m.net.output = Some((job, ok, text));
+                if let Some((k, t)) = note {
+                    m.toast(k, t, cx);
+                }
+                cx.notify();
+                m.refresh_net(cx);
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     // ------------------------------------------------------------ 终端
@@ -1018,6 +1404,27 @@ impl Model {
             .await
         })
     }
+}
+
+/// 通知里只放一行（整段输出在网络页上）。
+fn first_line(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("失败了");
+    let mut s: String = line.chars().take(80).collect();
+    if line.chars().count() > 80 {
+        s.push('…');
+    }
+    s
+}
+
+/// 这个地址是不是这台 Mac 自己（回环，或者本机网卡上的地址）。
+pub fn is_this_mac(ip: IpAddr) -> bool {
+    ip.is_loopback()
+        || if_addrs::get_if_addrs()
+            .map(|list| list.iter().any(|i| i.ip() == ip))
+            .unwrap_or(false)
 }
 
 /// 会话列表的一项变了没有（变了才重画侧栏）。

@@ -35,12 +35,16 @@ mod mac {
     use lolidesk_app::{
         assets::AppAssets,
         desk::DeskSender,
-        model::{HostState, Model, Selection},
+        lolinet::{
+            Invite, InviteKind, JoinTarget, Kernel, Lolinet, Node, Peer, Shell, Status as NetStatus,
+        },
+        model::{HostState, Model, Perms, Selection},
         prefs::Prefs,
         ui::{
             app::{Workspace, init},
             desktop::{DeskPane, Encoding},
             dialogs::{AddHostForm, open_form},
+            network::InviteState,
         },
         video::StatsSnapshot,
     };
@@ -91,6 +95,13 @@ mod mac {
             ("desktop_menu", desktop_menu),
             ("desktop_states", desktop_states),
             ("new_menu", new_menu),
+            ("permissions", permissions),
+            ("desktop_permissions", desktop_permissions),
+            ("network_not_joined", network_not_joined),
+            ("network_joined", network_joined),
+            ("network_down", network_down),
+            ("invite_phone", invite_phone),
+            ("invite_desktop", invite_desktop),
             ("keyboard_back", keyboard_back),
             ("stage_keys", stage_keys),
             ("stage_pointer", stage_pointer),
@@ -591,6 +602,264 @@ mod mac {
         });
         cx.advance_clock(std::time::Duration::from_secs(1));
         shot(&mut cx, handle, out, "new-menu");
+    }
+
+    // ------------------------------------------------------------ 权限引导
+
+    /// 侧栏里 mini 下面的卡片：两个都没开；屏幕录制开了（变绿，要重启服务）、辅助功能还没开。
+    fn permissions(out: &Option<PathBuf>) {
+        let mut cx = context();
+        let model = fake_model(&mut cx);
+        let (handle, _) = open(&mut cx, model.clone());
+        let mini = addr("10.188.1.7:10190");
+        with_window(&mut cx, handle, |_, cx| {
+            model.update(cx, |m, cx| {
+                let h = m.host_mut(mini).unwrap();
+                h.set_perms(Perms {
+                    screen: false,
+                    access: false,
+                });
+                assert_eq!(h.guide_steps(), 2);
+                cx.notify();
+            })
+        });
+        shot(&mut cx, handle, out, "perm-missing");
+        with_window(&mut cx, handle, |_, cx| {
+            model.update(cx, |m, cx| {
+                let h = m.host_mut(mini).unwrap();
+                assert!(h.set_perms(Perms {
+                    screen: true,
+                    access: false,
+                }));
+                // 屏幕录制开了还差重启，辅助功能还没开
+                assert_eq!(h.guide_steps(), 2);
+                assert!(h.guide_offers_restart());
+                cx.notify();
+            })
+        });
+        shot(&mut cx, handle, out, "perm-one-granted");
+        // 都开了、重启过（新连接）：卡片不见了
+        with_window(&mut cx, handle, |_, cx| {
+            model.update(cx, |m, cx| {
+                let h = m.host_mut(mini).unwrap();
+                h.guide = Default::default();
+                h.set_perms(Perms {
+                    screen: true,
+                    access: true,
+                });
+                assert_eq!(h.guide_steps(), 0);
+                cx.notify();
+            })
+        });
+        frame(&mut cx, handle);
+    }
+
+    /// 远程桌面顶上的宽卡片：屏幕录制有了，辅助功能还没开（能看不能控）。
+    fn desktop_permissions(out: &Option<PathBuf>) {
+        let mut cx = context();
+        let model = fake_model(&mut cx);
+        let (handle, _) = open(&mut cx, model.clone());
+        with_window(&mut cx, handle, |_, cx| {
+            model.update(cx, |m, _| {
+                m.hosts[0].set_perms(Perms {
+                    screen: true,
+                    access: false,
+                });
+            })
+        });
+        let _ = open_desk(&mut cx, handle, &model);
+        shot(&mut cx, handle, out, "desktop-permissions");
+    }
+
+    // ------------------------------------------------------------ 网络页
+
+    /// 假的本机 lolinet：状态和邀请是给定的，要管理员的事一概不做。
+    struct FakeNet {
+        status: NetStatus,
+    }
+
+    impl Lolinet for FakeNet {
+        fn status(&self) -> NetStatus {
+            self.status.clone()
+        }
+        fn invite(&self, kind: InviteKind) -> anyhow::Result<Invite> {
+            let code = "K7QX-M3PA-9TWE";
+            let command = match kind {
+                InviteKind::Phone => format!("https://join.example.com/m#{code}"),
+                InviteKind::Userspace => format!(
+                    "curl -fsSL https://join.example.com/i | sudo LOLINET_USERSPACE=1 sh -s {code}"
+                ),
+                InviteKind::Desktop => {
+                    format!("curl -fsSL https://join.example.com/i | sudo sh -s {code}")
+                }
+            };
+            Ok(Invite {
+                code: code.into(),
+                command,
+                name: format!("{}-3f2a", kind.arg()),
+                ip: "10.188.48.7".into(),
+                kind: kind.arg().into(),
+                expires_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64
+                    + 900,
+            })
+        }
+        fn join(&self, _: &JoinTarget) -> anyhow::Result<String> {
+            anyhow::bail!("测试里不入网")
+        }
+        fn set_exit(&self, _: bool) -> anyhow::Result<String> {
+            anyhow::bail!("测试里不开出口节点")
+        }
+        fn install_cli(&self) -> anyhow::Result<String> {
+            anyhow::bail!("测试里不装命令行")
+        }
+    }
+
+    fn shell(lolinet: bool, lolidesk: bool) -> Shell {
+        Shell {
+            lolinet,
+            lolidesk: lolidesk.then(|| "/usr/local/lib/lolidesk/lolidesk".into()),
+            helper: Some("/Applications/Lolidesk.app/Contents/Helpers/lolidesk".into()),
+        }
+    }
+
+    fn peer(name: &str, ip: &str, direct: bool, proto: &str, lat: f64) -> Peer {
+        Peer {
+            name: name.into(),
+            ip: ip.into(),
+            direct,
+            proto: proto.into(),
+            lat_ms: Some(lat),
+            relay: ip.starts_with("10.188.0."),
+        }
+    }
+
+    fn joined_status() -> NetStatus {
+        NetStatus {
+            kernel: Kernel::Up {
+                node: Node {
+                    name: "studio".into(),
+                    ip: "10.188.16.10".into(),
+                    userspace: false,
+                    version: "2.7.0".into(),
+                },
+                peers: vec![
+                    peer("relay-hk", "10.188.0.1", true, "udp", 38.0),
+                    peer("relay-sg", "10.188.0.2", false, "", 71.4),
+                    peer("desktop", "10.188.1.2", true, "tcp", 3.2),
+                    peer("mini", "10.188.1.7", true, "udp", 11.0),
+                    peer("nas", "10.188.32.4", false, "", 46.8),
+                ],
+            },
+            exit: Some(10180),
+            shell: shell(true, false),
+        }
+    }
+
+    /// 窗口里切到网络页，读一次假的本机 lolinet。
+    fn open_network(
+        cx: &mut HeadlessAppContext,
+        status: NetStatus,
+    ) -> (AnyWindowHandle, Entity<Workspace>, Entity<Model>) {
+        let model = fake_model(cx);
+        model.update(cx, |m, _| m.set_lolinet(Arc::new(FakeNet { status })));
+        let (handle, ws) = open(cx, model.clone());
+        with_window(cx, handle, |_, cx| {
+            model.update(cx, |m, cx| m.select(Selection::Network, cx))
+        });
+        frame(cx, handle);
+        assert!(
+            model.read_with(cx, |m, _| m.net.status.is_some()),
+            "网络页没读到状态"
+        );
+        (handle, ws, model)
+    }
+
+    fn network_not_joined(out: &Option<PathBuf>) {
+        let mut cx = context();
+        let status = NetStatus {
+            kernel: Kernel::NotJoined,
+            exit: None,
+            shell: shell(true, false),
+        };
+        let (handle, ws, _) = open_network(&mut cx, status);
+        shot(&mut cx, handle, out, "network-join");
+        // 粘贴一条配对命令、勾上无 TUN：下面出现要跑的命令
+        with_window(&mut cx, handle, |window, cx| {
+            let page = ws.read(cx).network.clone();
+            let line = page.read(cx).line.clone();
+            line.update(cx, |i, cx| {
+                i.set_value(
+                    "curl -fsSL https://join.example.com/i | sudo sh -s k7qx-m3pa-9twe",
+                    window,
+                    cx,
+                )
+            });
+            page.update(cx, |p, cx| p.set_userspace(true, cx));
+        });
+        shot(&mut cx, handle, out, "network-join-filled");
+        // 坏的命令：只认校验过的几段
+        with_window(&mut cx, handle, |window, cx| {
+            let page = ws.read(cx).network.clone();
+            let line = page.read(cx).line.clone();
+            line.update(cx, |i, cx| {
+                i.set_value(
+                    "curl -fsSL https://join.example.com/i | sudo sh -s K7QX-M3PA-9TWE; rm -rf ~",
+                    window,
+                    cx,
+                )
+            });
+            page.update(cx, |p, cx| p.join(cx));
+        });
+        shot(&mut cx, handle, out, "network-join-bad");
+    }
+
+    fn network_joined(out: &Option<PathBuf>) {
+        let mut cx = context();
+        let (handle, _, _) = open_network(&mut cx, joined_status());
+        shot(&mut cx, handle, out, "network-joined");
+    }
+
+    fn network_down(out: &Option<PathBuf>) {
+        let mut cx = context();
+        let status = NetStatus {
+            kernel: Kernel::Down("dial tcp 127.0.0.1:15888: connection refused".into()),
+            exit: None,
+            shell: shell(true, true),
+        };
+        let (handle, _, _) = open_network(&mut cx, status);
+        shot(&mut cx, handle, out, "network-down");
+    }
+
+    fn open_invite_for(out: &Option<PathBuf>, kind: InviteKind, name: &str) {
+        let mut cx = context();
+        let (handle, _, model) = open_network(&mut cx, joined_status());
+        let form = with_window(&mut cx, handle, |window, cx| {
+            lolidesk_app::ui::network::open_invite(model.clone(), window, cx)
+        });
+        with_window(&mut cx, handle, |_, cx| {
+            form.update(cx, |f, cx| {
+                f.set_kind(kind, cx);
+                f.generate(cx);
+            })
+        });
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        frame(&mut cx, handle);
+        assert!(
+            form.read_with(&cx, |f, _| matches!(f.state, InviteState::Done(_))),
+            "{name}：没拿到配对码"
+        );
+        shot(&mut cx, handle, out, name);
+    }
+
+    fn invite_phone(out: &Option<PathBuf>) {
+        open_invite_for(out, InviteKind::Phone, "invite-phone");
+    }
+
+    fn invite_desktop(out: &Option<PathBuf>) {
+        open_invite_for(out, InviteKind::Desktop, "invite-desktop");
     }
 
     /// 点侧栏把键盘从远程画面拿回来：画面失焦、远端松开所有键、焦点回到窗口。

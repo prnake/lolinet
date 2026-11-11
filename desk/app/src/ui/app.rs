@@ -12,7 +12,7 @@ use crate::{
     assets::AppAssets,
     model::{Model, ModelEvent, Selection, ToastKind},
     theme::{self, *},
-    ui::{desktop::STAGE_CONTEXT, dialogs, home, sidebar::Sidebar},
+    ui::{desktop::STAGE_CONTEXT, dialogs, home, network::NetworkPage, sidebar::Sidebar},
 };
 
 actions!(
@@ -119,6 +119,8 @@ pub fn run() {
 pub struct Workspace {
     pub model: Entity<Model>,
     sidebar: Entity<Sidebar>,
+    /// 网络页（留着：输入框里填了一半的东西切走再回来还在）
+    pub network: Entity<NetworkPage>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -132,6 +134,7 @@ impl Focusable for Workspace {
 impl Workspace {
     pub fn new(model: Entity<Model>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| Sidebar::new(model.clone(), cx));
+        let network = cx.new(|cx| NetworkPage::new(model.clone(), window, cx));
         let subs = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
             cx.subscribe_in(
@@ -177,6 +180,7 @@ impl Workspace {
         Self {
             model,
             sidebar,
+            network,
             focus,
             _subs: subs,
         }
@@ -195,6 +199,7 @@ impl Workspace {
                     return d.clone().into_any_element();
                 }
             }
+            Selection::Network => return self.network.clone().into_any_element(),
             Selection::Home => {}
         }
         home::render(&self.model, cx)

@@ -9,6 +9,7 @@
 //!
 //! 版本 2：远程桌面可选分辨率、帧率和画质，键盘按物理键位（W3C `code`）收发。
 //! computer use 流（[`StreamKind::Cua`]）：给 agent 用的截图和输入，和远程桌面共用主机的屏幕录制、辅助功能授权。
+//! 控制流上能查这两个授权、在主机上打开设置页、重启主机服务（屏幕录制要重启才生效）。
 //! 终端两端都是 libghostty-vt：主机的终端是会话的唯一真相，客户端收它的 Mirror 帧（转义序列）照着画，
 //! 自己按当前模式给按键编码，把字节发回来。
 //! ALPN 不变：版本不一致时由 Hello 回一个看得懂的 Denied，而不是 TLS 握手失败。
@@ -73,6 +74,35 @@ pub enum ControlReq {
     ListSessions,
     /// 主机上装了哪些 agent（claude、codex……），给「新建」菜单用。
     ListLaunchers,
+    /// 远程桌面要的两个系统权限开了没有（只查，不弹授权框）→ [`ControlResp::Permissions`]
+    Permissions,
+    /// 在主机上打开这一项的系统设置页（第一次还会弹系统的授权框）→ `Ok` / `Error`
+    OpenPermission(PermissionKind),
+    /// 重启主机服务（屏幕录制要重启才生效）：先回 `Ok` 再重启；不是 LaunchAgent 跑的回 `Error`
+    RestartHost,
+}
+
+/// 远程桌面（和 computer use）要的系统权限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionKind {
+    /// 屏幕录制：采屏、截图
+    ScreenRecording,
+    /// 辅助功能：注入键鼠
+    Accessibility,
+}
+
+impl PermissionKind {
+    /// macOS 系统设置里这一项的页面（「隐私与安全性」下）
+    pub fn settings_url(self) -> &'static str {
+        match self {
+            Self::ScreenRecording => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            Self::Accessibility => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +122,13 @@ pub enum ControlResp {
     Sessions(Vec<SessionInfo>),
     Error(String),
     Launchers(Vec<Launcher>),
+    /// 主机这个进程现在有没有这两个权限（没有远程桌面的平台回 Error）
+    Permissions {
+        screen_recording: bool,
+        accessibility: bool,
+    },
+    /// 做了（OpenPermission、RestartHost）
+    Ok,
 }
 
 /// 主机开放的能力。远程桌面和 computer use 用的是同一份屏幕录制、辅助功能授权，这里只是主机愿不愿意给。
@@ -673,6 +710,36 @@ mod tests {
         );
         let denied = ControlResp::Denied("x".into());
         assert_eq!(postcard::to_stdvec(&denied).unwrap(), [1, 1, b'x']);
+    }
+
+    /// 新消息加在枚举末尾：前面的编号不动
+    #[test]
+    fn permission_messages() {
+        assert_eq!(
+            postcard::to_stdvec(&ControlReq::ListLaunchers).unwrap(),
+            [3]
+        );
+        assert_eq!(postcard::to_stdvec(&ControlReq::Permissions).unwrap(), [4]);
+        assert_eq!(
+            postcard::to_stdvec(&ControlReq::OpenPermission(PermissionKind::Accessibility))
+                .unwrap(),
+            [5, 1]
+        );
+        assert_eq!(postcard::to_stdvec(&ControlReq::RestartHost).unwrap(), [6]);
+        let resp = ControlResp::Permissions {
+            screen_recording: true,
+            accessibility: false,
+        };
+        let bytes = postcard::to_stdvec(&resp).unwrap();
+        assert_eq!(bytes, [6, 1, 0]);
+        assert!(matches!(
+            postcard::from_bytes::<ControlResp>(&bytes).unwrap(),
+            ControlResp::Permissions {
+                screen_recording: true,
+                accessibility: false
+            }
+        ));
+        assert_eq!(postcard::to_stdvec(&ControlResp::Ok).unwrap(), [7]);
     }
 
     #[test]

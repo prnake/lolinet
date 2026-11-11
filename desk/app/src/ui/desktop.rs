@@ -371,6 +371,12 @@ impl Render for DeskPane {
         };
         let status = self.status();
         let stage_focus = self.stage.read(cx).focus.clone();
+        let guide_focus = stage_focus.clone();
+        // 主机还缺权限：引导卡片放在画面上面
+        let guide = self.model.upgrade().and_then(|m| {
+            let h = m.read(cx).host(self.host)?;
+            super::permissions::card(h, &m, true)
+        });
         div()
             .size_full()
             .flex()
@@ -402,6 +408,26 @@ impl Render for DeskPane {
                     }
                 }),
             )
+            .children(guide.map(|g| {
+                // 点卡片：键盘也从远程画面拿回来
+                let focus = guide_focus.clone();
+                div()
+                    .on_mouse_down(GMouseButton::Left, move |_, window, cx| {
+                        if focus.is_focused(window) {
+                            window.blur(cx);
+                        }
+                    })
+                    .flex()
+                    .flex_none()
+                    .justify_center()
+                    .px(px(16.))
+                    .pt(px(12.))
+                    .pb(px(12.))
+                    .border_b_1()
+                    .border_color(line1())
+                    .bg(ink1())
+                    .child(g)
+            }))
             .child(
                 div()
                     .flex_1()

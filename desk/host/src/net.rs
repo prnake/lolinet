@@ -12,7 +12,7 @@ use lolidesk_proto::{
 };
 use quinn::{Connection, RecvStream, SendStream};
 
-use crate::{config, cua, desktop, input, launchers, terminal::Sessions};
+use crate::{config, cua, desktop, input, launchers, permissions, terminal::Sessions};
 
 pub struct Shared {
     token: String,
@@ -162,6 +162,38 @@ async fn control(
             ControlReq::ListLaunchers => {
                 let list = tokio::task::spawn_blocking(launchers::list).await?;
                 proto::send(send, &ControlResp::Launchers(list)).await?;
+            }
+            ControlReq::Permissions => {
+                let resp = match tokio::task::spawn_blocking(permissions::status).await? {
+                    Ok((screen_recording, accessibility)) => ControlResp::Permissions {
+                        screen_recording,
+                        accessibility,
+                    },
+                    Err(e) => ControlResp::Error(format!("{e:#}")),
+                };
+                proto::send(send, &resp).await?;
+            }
+            ControlReq::OpenPermission(kind) => {
+                tracing::info!(?kind, "打开权限设置");
+                let resp =
+                    match tokio::task::spawn_blocking(move || permissions::open(kind)).await? {
+                        Ok(()) => ControlResp::Ok,
+                        Err(e) => ControlResp::Error(format!("{e:#}")),
+                    };
+                proto::send(send, &resp).await?;
+            }
+            ControlReq::RestartHost => {
+                // 先回话，再交给脱离出去的子进程重启（它会等一秒）
+                if !tokio::task::spawn_blocking(config::under_launch_agent).await? {
+                    let why = "主机不是服务方式运行，手动重启".to_string();
+                    proto::send(send, &ControlResp::Error(why)).await?;
+                    continue;
+                }
+                proto::send(send, &ControlResp::Ok).await?;
+                tracing::info!("客户端要求重启主机服务");
+                if let Err(e) = config::restart_launch_agent() {
+                    tracing::warn!("重启主机服务：{e:#}");
+                }
             }
         }
     }

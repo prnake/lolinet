@@ -66,6 +66,23 @@ fn icon_svg(name: &str) -> Option<&'static str> {
         "detach" => icon!(
             r#"<path d="M14 4.5h5.5V10"/><path d="M19.5 4.5 12 12"/><path d="M18 14v3.5a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2H10"/>"#
         ),
+        "network" => icon!(
+            r#"<circle cx="12" cy="5.5" r="2.5"/><circle cx="5.5" cy="18" r="2.5"/><circle cx="18.5" cy="18" r="2.5"/><path d="M10.8 7.7 6.7 15.8M13.2 7.7l4.1 8.1M8 18h8"/>"#
+        ),
+        "check" => icon!(r#"<path d="m5.5 12.5 4 4 9-9.5"/>"#),
+        "copy" => icon!(
+            r#"<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>"#
+        ),
+        "globe" => icon!(
+            r#"<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.4 2.5 3.5 5.3 3.5 8.5s-1.1 6-3.5 8.5c-2.4-2.5-3.5-5.3-3.5-8.5s1.1-6 3.5-8.5z"/>"#
+        ),
+        "phone" => {
+            icon!(r#"<rect x="6.5" y="3" width="11" height="18" rx="2.5"/><path d="M11 17.5h2"/>"#)
+        }
+        "shield" => icon!(
+            r#"<path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>"#
+        ),
+        "pointer" => icon!(r#"<path d="M6 4l12.5 7-5.5 1.5L10.5 18z"/><path d="m13 12.5 4 5"/>"#),
         _ => return None,
     })
 }
@@ -92,6 +109,13 @@ pub mod ic {
     pub const FILM: &str = "ld/film.svg";
     pub const WARNING: &str = "ld/warning.svg";
     pub const DETACH: &str = "ld/detach.svg";
+    pub const NETWORK: &str = "ld/network.svg";
+    pub const CHECK: &str = "ld/check.svg";
+    pub const COPY: &str = "ld/copy.svg";
+    pub const GLOBE: &str = "ld/globe.svg";
+    pub const PHONE: &str = "ld/phone.svg";
+    pub const SHIELD: &str = "ld/shield.svg";
+    pub const POINTER: &str = "ld/pointer.svg";
 }
 
 /// 应用的资源：先找自己的图标，再交给 gpui-kit 的。
@@ -126,6 +150,13 @@ mod tests {
             "chevron-down",
             "more",
             "warning",
+            "network",
+            "check",
+            "copy",
+            "globe",
+            "phone",
+            "shield",
+            "pointer",
         ] {
             let svg = AppAssets.load(&format!("ld/{name}.svg")).unwrap().unwrap();
             assert!(
