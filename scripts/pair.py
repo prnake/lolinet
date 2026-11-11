@@ -15,7 +15,7 @@ no-tun 实例并用 --socks 指过去。连接直接打 issuer 的 overlay IP，
 --out 例外：配置直接写本地文件，给装不了 join 脚本的设备（Docker 版 EasyTier、没有 sudo 的 NAS）手工下发。
 
 用法:
-  uv run scripts/pair.py new --name laptop --ip 10.188.16.11 [--ttl-days 365] [--socks 127.0.0.1:18080]
+  uv run scripts/pair.py new --name laptop [--ip 10.188.16.11 | --pool userspace] [--ttl-days 365] [--socks 127.0.0.1:18080]
   uv run scripts/pair.py new --name nas --ip 10.188.1.10 --transport tcp --peers chen,hoshiguma,saria \
       --out /tmp/nas.toml --socks 127.0.0.1:18080
 """
@@ -25,6 +25,7 @@ import argparse
 import base64
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -48,6 +49,8 @@ CONSOLE_HOST = urlsplit(NET["console"]).hostname
 CONSOLE_IP = next(r["overlay_ip"] for r in NODES["relays"] if r["name"] == NET["issuer"])
 KV_TITLE = (NODES.get("cloudflare") or {}).get("kv", "lolinet-pairing")
 PAIR_TTL = 900  # 默认 15 分钟；--code-minutes 可调
+# 地址池：和 web/agent/mesh_manager.py 的 POOLS 一致，节点清单的 network.pools 可以改；手机走管理面的 WireGuard 入口，这里不签
+POOLS = {"server": "10.188.1.0/24", "desktop": "10.188.16.0/20", "userspace": "10.188.32.0/20"}
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 CODE_LEN = 12
 PBKDF2_ITER = 200000  # 和 join/install.sh 的 openssl -iter 一致
@@ -105,9 +108,40 @@ def kv_put(key: str, value: str, ttl: int = PAIR_TTL) -> None:
             raise SystemExit(f"KV put failed: {r.text[:200]}")
 
 
+def select_ip(name: str, requested: str | None, pool: str, taken: list[dict]) -> str:
+    """签凭据前定地址。给了 --ip 就核对：在网段里、没分给别的设备。没给就沿用同名设备上次的地址（重新配对不换地址），
+    再不然取地址池里第一个空位（末位 0 和 255 不用，和 mesh_manager.allocate 一样）。taken = relay + 节点清单的设备 + 配对登记。"""
+    owners: dict[str, set[str]] = {}
+    for d in taken:
+        if d.get("overlay_ip"):
+            owners.setdefault(str(d["overlay_ip"]), set()).add(d.get("name", ""))
+    if requested:
+        try:
+            ip = ipaddress.ip_address(requested)
+        except ValueError:
+            ip = None
+        if ip is None or ip not in ipaddress.ip_network(NET["cidr"]):
+            raise SystemExit(f"--ip 要是 {NET['cidr']} 里的地址")
+        others = owners.get(str(ip), set()) - {name}
+        if others:
+            raise SystemExit(f"--ip {ip} 已经分给了 {'、'.join(sorted(others))}")
+        return str(ip)
+    for d in reversed(taken):
+        if d.get("name") == name and d.get("overlay_ip"):
+            return str(d["overlay_ip"])
+    net = ipaddress.ip_network({**POOLS, **(NET.get("pools") or {})}[pool])
+    for ip in net.hosts():
+        if ip.packed[3] not in (0, 255) and str(ip) not in owners:
+            return str(ip)
+    raise SystemExit(f"地址池 {pool}（{net}）已经用完")
+
+
 def new(args) -> None:
     if not 1 <= args.code_minutes <= 1440:
         raise SystemExit("--code-minutes 要在 1–1440 之间")
+    reg = STATE_DIR / "mesh-devices.json"
+    devices = json.loads(reg.read_text()) if reg.exists() else []
+    args.ip = select_ip(args.name, args.ip, args.pool, list(NODES.get("relays") or []) + list(NODES.get("devices") or []) + devices)
     load_env()
     cid, secret, expiry = console_credential(args.name, args.ttl_days, args.socks)
     config = render(args.name, args.ip, secret, args.peers.split(",") if args.peers else None, transport=args.transport)
@@ -122,8 +156,6 @@ def new(args) -> None:
     if NET.get("manager"):
         # 内网管理面（lolinet invite 用）：lolinet up 存进 /etc/lolinet/lolinet.json；和 web/agent/mesh_manager.py 写的一样
         config += f"# lolinet = {json.dumps({'manager': NET['manager'], 'manager_ip': CONSOLE_IP}, separators=(',', ':'))}\n"
-    reg = STATE_DIR / "mesh-devices.json"
-    devices = json.loads(reg.read_text()) if reg.exists() else []
     devices.append({"name": args.name, "overlay_ip": args.ip, "credential_id": cid, "expiry_unix": expiry,
                     "paired_at": dt.datetime.now().isoformat(timespec="seconds")})
     if args.out:
@@ -149,7 +181,9 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("new")
     p.add_argument("--name", required=True)
-    p.add_argument("--ip", required=True, help="overlay IP，人用电脑 10.188.16.0/20，地址段见 nodes.example.yaml")
+    p.add_argument("--ip", help="overlay IP；不给就沿用同名设备的地址，或者取 --pool 里第一个空位（地址段见 nodes.example.yaml）")
+    p.add_argument("--pool", choices=tuple(POOLS), default="desktop",
+                   help="不给 --ip 时从哪个地址池取：desktop 10.188.16.0/20（人用电脑，默认）、userspace 10.188.32.0/20（无 TUN）、server 10.188.1.0/24")
     p.add_argument("--ttl-days", type=int, default=365)
     p.add_argument("--code-minutes", type=int, default=15, help="配对码有效期（分钟，1–1440），一次性不变")
     p.add_argument("--peers", help=f"逗号分隔的 relay 名，默认 {','.join(DEFAULT_PEERS)}")

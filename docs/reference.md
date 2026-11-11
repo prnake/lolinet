@@ -216,7 +216,7 @@ Run them with `uv run`; each declares its own dependencies.
 
 | Command | |
 | :-- | :-- |
-| `scripts/pair.py new --name N --ip IP [options]` | Sign a credential, render the config, encrypt it with a new pairing code, store it in KV. Options: `--peers`, `--ttl-days` (365), `--code-minutes` (15, max 1440), `--socks HOST:PORT`, `--transport wss\|tcp`, `--no-probe`, `--location CITY`, `--out FILE` (write the config instead of making a code) |
+| `scripts/pair.py new --name N [--ip IP] [options]` | Sign a credential, render the config, encrypt it with a new pairing code, store it in KV. Without `--ip`: the address a device of that name had, else the first free one in `--pool desktop\|userspace\|server` (default `desktop`). Options: `--peers`, `--ttl-days` (365), `--code-minutes` (15, max 1440), `--socks HOST:PORT`, `--transport wss\|tcp`, `--no-probe`, `--location CITY`, `--out FILE` (write the config instead of making a code) |
 | `scripts/revoke.py NAME SOCKS\|- [CREDENTIAL_ID]` | Revoke the device's latest credential (or the one given) and remove it from the registry |
 | `scripts/device_config.py --name N --out FILE [--cred ID] [--by-name]` | Render a config for a device in `nodes.yaml` from a saved credential |
 | `join/deploy.py worker` | Upload the Worker with its bindings, attach the custom domains, turn off `workers.dev` |
