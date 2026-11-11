@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
 import http.server
 import json
 import os
@@ -95,8 +96,22 @@ class FakeWorker(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+# 测试里的 HTTP 都在回环上：不经代理（urllib 默认读环境变量里的代理，macOS 上还读系统的代理设置）
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def http_up(port: int) -> bool:
+    """回环上这个端口回 HTTP 了（什么状态码都算）"""
+    try:
+        with DIRECT.open(f"http://127.0.0.1:{port}/", timeout=3):
+            return True
+    except urllib.error.HTTPError:
+        return True
+
+
 def nginx(upstream: int, client_ip: list):
-    """替 nginx：Host 原样，X-Forwarded-For 设成 client_ip[0]（线上是 $remote_addr，成员的 overlay 地址）"""
+    """替 nginx：Host 原样，X-Forwarded-For 设成 client_ip[0]（线上是 $remote_addr，成员的 overlay 地址）。
+    连管理面这一步连不上就重试（短超时，打出来）；连上以后请求只发一次：POST 重发会多发一个邀请"""
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -109,12 +124,27 @@ def nginx(upstream: int, client_ip: list):
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if method == "POST" else None
             headers = {k: v for k, v in self.headers.items() if k.lower() not in ("content-length", "x-forwarded-for", "connection")}
             headers["X-Forwarded-For"] = client_ip[0]
-            req = urllib.request.Request(f"http://127.0.0.1:{upstream}{self.path}", data=body, method=method, headers=headers)
+            conn = None
+            for attempt in range(1, 5):
+                c = http.client.HTTPConnection("127.0.0.1", upstream, timeout=10)
+                try:
+                    c.connect()
+                    conn = c
+                    break
+                except OSError as e:
+                    c.close()
+                    print(f"  （替 nginx：第 {attempt} 次连不上管理面 127.0.0.1:{upstream}：{e}）", flush=True)
+                    time.sleep(1)
+            if conn is None:
+                self.send_error(502, "manager unreachable")
+                return
+            conn.sock.settimeout(60)
             try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    status, data = r.status, r.read()
-            except urllib.error.HTTPError as e:
-                status, data = e.code, e.read()
+                conn.request(method, self.path, body=body, headers=headers)
+                r = conn.getresponse()
+                status, data = r.status, r.read()
+            finally:
+                conn.close()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -320,7 +350,10 @@ bind_device = false
                                       stdout=mlog, stderr=subprocess.STDOUT))
         client = ["10.188.16.10"]
         nsrv, nport = serve(nginx(mport, client))
-        wait_for(lambda: socket.create_connection(("127.0.0.1", mport), timeout=1).close() or True, 10)
+        # 管理面回 HTTP 了才往下走；起不来就停在这里，别让后面一串都跟着错
+        if not wait_for(lambda: http_up(mport), 30):
+            mlog.flush()
+            raise SystemExit("管理面 30 秒没起来：" + (tmp / "manager.log").read_text()[-2000:])
 
         def invite(kind: str) -> subprocess.CompletedProcess:
             # 管理面地址按 install.sh 记下的写法：https 域名 @ overlay 地址；测试里是 http，--resolve 把 manager.test 钉到回环
@@ -380,7 +413,7 @@ bind_device = false
             client[0] = src
             req = urllib.request.Request(f"http://127.0.0.1:{nport}{path}", method="GET", headers={"Host": "manager.test"})
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with DIRECT.open(req, timeout=30) as resp:
                     return resp.status, resp.read().decode()
             except urllib.error.HTTPError as e:
                 return e.code, e.read().decode()
@@ -390,7 +423,7 @@ bind_device = false
             req = urllib.request.Request(f"http://127.0.0.1:{nport}{path}", data=json.dumps(obj).encode(), method="POST",
                                          headers={"Host": "manager.test", "X-Mesh-Agent": "1", "Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with DIRECT.open(req, timeout=30) as resp:
                     return resp.status
             except urllib.error.HTTPError as e:
                 return e.code
