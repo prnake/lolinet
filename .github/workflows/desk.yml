@@ -1,5 +1,6 @@
-# lolidesk（desk/，Rust 工作区）：编 lolidesk（一个程序：lolidesk host 让这台能被连，lolidesk <主机> 连别人），macOS 上再编图形客户端 Lolidesk.app（GPUI，包里也带着 lolidesk）。
-# 和 lolinet 同样四个平台：macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 只有终端：没有采屏，也不编图形客户端）。
+# lolidesk（desk/，Rust 工作区）：编 lolidesk（一个程序：lolidesk host 让这台能被连，lolidesk <主机> 连别人）和图形客户端（GPUI）：
+# macOS 上装成 Lolidesk.app（包里也带着 lolidesk），Linux 上是包根目录的 lolidesk-app（旁边是 lolidesk.desktop 和图标）。
+# 和 lolinet 同样四个平台：macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 的主机没有采屏，Linux 的图形客户端还看不了远程桌面）。
 # 终端两端都用 libghostty-vt（运行时载入），版本钉在 desk/ghostty/libghostty-vt.json，由 desk/scripts/fetch-ghostty.sh 取。
 # 独立发包，不编进 lolinet：lolinet 保持小体积的静态二进制（build.yml 的 Verify 会查）。
 # PR 和 main 上都跑：fmt、clippy、测试、编译，再在回环上实跑终端会话（含主机重启后会话带着历史回来）；产物是 artifact。
@@ -56,6 +57,15 @@ jobs:
         with:
           workspaces: desk
           key: ${{ matrix.target }}
+      # Linux 上的图形客户端（GPUI）要的系统库：键盘（xkbcommon）、X11（xcb）、Wayland、字体（fontconfig、freetype）、Vulkan。
+      # 测试里的快照用 Mesa 的软件 Vulkan（lavapipe）离屏画；再装一个小的中文字体，快照里的中文才看得见
+      - name: Linux packages (GPUI)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-xcb-dev \
+            libfontconfig-dev libfreetype-dev libvulkan-dev mesa-vulkan-drivers fonts-wqy-microhei
       # 终端核心：按目标平台取钉住的 libghostty-vt（测试、冒烟测试和打包都用它）
       - name: libghostty-vt
         working-directory: desk
@@ -76,10 +86,20 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
+      # 快照测试（lolidesk-app 的 tests/snapshots.rs）在 macOS 和 Linux 上都跑；Linux 上把画出来的 PNG 传上来看
       - name: Test
         if: matrix.native
         working-directory: desk
-        run: cargo test --locked --workspace --target ${{ matrix.target }}
+        run: |
+          [ "${{ runner.os }}" = Linux ] && export LOLIDESK_SNAPSHOTS=$PWD/snapshots
+          cargo test --locked --workspace --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v5
+        if: runner.os == 'Linux' && matrix.native
+        with:
+          name: lolidesk-snapshots-${{ matrix.name }}
+          path: desk/snapshots/*.png
+          if-no-files-found: warn
 
       - name: Build
         working-directory: desk
@@ -111,9 +131,16 @@ jobs:
           printf 'lolidesk %s\ntarget %s\nbuilt from %s@%s run %s\n' "$(git describe --always)" "${{ matrix.target }}" \
             "${{ github.repository }}" "${{ github.sha }}" "${{ github.run_number }}" > pkg/BUILD-INFO
           # 和 lolinet 的包同一种格式：tar 根目录直接是二进制，libghostty-vt 放在旁边（主机从可执行文件旁边载入）；
-          # macOS 的包里多一个 Lolidesk.app
+          # macOS 的包里多一个 Lolidesk.app，Linux 的包里多 lolidesk-app、lolidesk.desktop、lolidesk.svg（见 scripts/bundle-linux.sh）
           FILES="lolidesk $(basename "$GHOSTTY_LIB") BUILD-INFO"
           if [ -n "${APP:-}" ]; then cp -R "$APP" pkg/ && FILES="$FILES Lolidesk.app"; fi
+          if [ "${{ runner.os }}" = Linux ]; then
+            sh scripts/bundle-linux.sh target/${{ matrix.target }}/release/lolidesk-app pkg
+            FILES="$FILES lolidesk-app lolidesk.desktop lolidesk.svg"
+            # 图形客户端动态链接的系统库都要找得到（Linux 桌面上都有：xkbcommon、xcb、wayland、fontconfig、freetype）
+            ldd pkg/lolidesk-app | tee ldd.out
+            if grep -q 'not found' ldd.out; then echo "lolidesk-app 有找不到的库"; exit 1; fi
+          fi
           COPYFILE_DISABLE=1 tar -czf lolidesk-$OS-$ARCH.tar.gz -C pkg $FILES
           ls -l pkg && shasum -a 256 lolidesk-$OS-$ARCH.tar.gz
 
@@ -205,7 +232,7 @@ jobs:
           (cd out && for f in lolidesk-*.tar.gz; do sha256sum "$f" > "$f.sha256"; done && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
           BEFORE=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
           gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS out/lolidesk.json --target "$GITHUB_SHA" --latest=false --title "lolidesk $V" \
-            --notes "lolidesk ${V}：lolidesk（一个程序：lolidesk host 让这台电脑能被连，lolidesk <主机> 连别人）和终端核心 libghostty-vt，macOS 的包里还有图形客户端 Lolidesk.app（ad-hoc 签名，第一次打开要右键 → 打开）。macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 只有终端）。独立发包，不编进 lolinet。"
+            --notes "lolidesk ${V}：lolidesk（一个程序：lolidesk host 让这台电脑能被连，lolidesk <主机> 连别人）和终端核心 libghostty-vt。macOS 的包里还有图形客户端 Lolidesk.app（ad-hoc 签名，第一次打开要右键 → 打开）；Linux 的包里是 lolidesk-app（解开后直接跑，远程桌面还看不了）。macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 的主机只有终端）。独立发包，不编进 lolinet。"
           # releases/latest 还得是 lolinet 的那一版
           AFTER=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
           [ "$AFTER" = "$BEFORE" ] || { echo "releases/latest 从 ${BEFORE:-无} 变成了 $AFTER"; exit 1; }

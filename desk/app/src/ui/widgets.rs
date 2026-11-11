@@ -4,13 +4,13 @@ use std::cell::Cell;
 
 use gpui_kit::component::{Selectable, menu::DropdownMenu, tooltip::Tooltip};
 use gpui_kit::{
-    AnyElement, App, BoxShadow, Div, ElementId, FontWeight, Hsla, InteractiveElement,
+    AnyElement, App, BoxShadow, Decorations, Div, ElementId, FontWeight, Hsla, InteractiveElement,
     Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce, SharedString,
     Stateful, StatefulInteractiveElement, StyleRefinement, Styled, Svg, Window, div, point,
     prelude::FluentBuilder, px, svg,
 };
 
-use crate::theme::*;
+use crate::{assets::ic, theme::*};
 
 pub fn icon(path: &'static str, size: f32, color: Hsla) -> Svg {
     svg()
@@ -286,6 +286,56 @@ pub fn drag_region(el: Stateful<Div>) -> Stateful<Div> {
             window.start_window_move();
         }
     })
+}
+
+/// 窗口按钮（最小化、最大化、关窗口）：只在 Linux 上窗口自己画边框时有
+/// （Wayland 合成器不给标题栏，比如 GNOME）。窗口管理器画标题栏时、macOS 上什么都不画。
+#[derive(IntoElement)]
+pub struct WindowControls;
+
+impl RenderOnce for WindowControls {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let own = cfg!(target_os = "linux")
+            && matches!(window.window_decorations(), Decorations::Client { .. });
+        if !own {
+            // 不占地方：不进 flex 排版，也就不多出一段 gap
+            return div().absolute().into_any_element();
+        }
+        let can = window.window_controls();
+        let max = window.is_maximized();
+        // 按下不给外面的拖窗口区域
+        let button = |id: &'static str, path: &'static str, tip: &'static str| {
+            icon_button(id, path, tip).on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(2.))
+            .ml(px(6.))
+            .when(can.minimize, |d| {
+                d.child(
+                    button("win-min", ic::WIN_MIN, "最小化")
+                        .on_click(|_, window, _| window.minimize_window()),
+                )
+            })
+            .when(can.maximize, |d| {
+                let (path, tip) = if max {
+                    (ic::WIN_RESTORE, "还原")
+                } else {
+                    (ic::WIN_MAX, "最大化")
+                };
+                d.child(button("win-max", path, tip).on_click(|_, window, _| window.zoom_window()))
+            })
+            .child(
+                button("win-close", ic::CLOSE, "关闭")
+                    .on_click(|_, window, _| window.remove_window()),
+            )
+            .into_any_element()
+    }
 }
 
 // ---------------------------------------------------------------- 菜单触发器

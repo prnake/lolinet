@@ -25,20 +25,40 @@ pub const WORKSPACE_CONTEXT: &str = "Workspace";
 
 /// 窗口里的快捷键：画面（DeskStage）拿走所有键，所以这些在那一层都用 NoAction 挡掉，
 /// 连同 gpui-kit 的 Root 绑的 tab / shift-tab / cmd-c。⌘Q 不挡（全局绑定，留在本地）。
+#[cfg(target_os = "macos")]
 const WINDOW_KEYS: [&str; 5] = ["cmd-h", "cmd-alt-h", "cmd-m", "cmd-n", "cmd-ctrl-f"];
+#[cfg(target_os = "macos")]
 const ROOT_KEYS: [&str; 3] = ["tab", "shift-tab", "cmd-c"];
+#[cfg(target_os = "macos")]
+const QUIT_KEY: &str = "cmd-q";
+
+/// Linux：Ctrl 组合键是终端的键，应用自己的用 Ctrl+Shift（和 GNOME 终端一样），全屏是 F11。
+/// 没有隐藏、最小化的快捷键（窗口管理器管）。gpui-kit 的 Root 在这里绑的是 ctrl-c。
+#[cfg(not(target_os = "macos"))]
+const WINDOW_KEYS: [&str; 2] = ["ctrl-shift-n", "f11"];
+#[cfg(not(target_os = "macos"))]
+const ROOT_KEYS: [&str; 3] = ["tab", "shift-tab", "ctrl-c"];
+#[cfg(not(target_os = "macos"))]
+const QUIT_KEY: &str = "ctrl-shift-q";
 
 /// 初始化 gpui-kit、主题、按键（窗口和测试都用）。
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
     theme::install(cx);
+    #[cfg(target_os = "macos")]
     let mut keys = vec![
-        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new(QUIT_KEY, Quit, None),
         KeyBinding::new(WINDOW_KEYS[0], Hide, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(WINDOW_KEYS[1], HideOthers, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(WINDOW_KEYS[2], Minimize, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(WINDOW_KEYS[3], AddHost, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(WINDOW_KEYS[4], ToggleFullScreen, Some(WORKSPACE_CONTEXT)),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let mut keys = vec![
+        KeyBinding::new(QUIT_KEY, Quit, None),
+        KeyBinding::new(WINDOW_KEYS[0], AddHost, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(WINDOW_KEYS[1], ToggleFullScreen, Some(WORKSPACE_CONTEXT)),
     ];
     for k in ROOT_KEYS.iter().chain(WINDOW_KEYS.iter()) {
         keys.push(KeyBinding::new(k, NoAction, Some(STAGE_CONTEXT)));
@@ -60,6 +80,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
         app_owns_titlebar_drag: true,
         window_min_size: Some(size(px(820.), px(520.))),
         window_bounds: Some(WindowBounds::centered(size(px(1280.), px(820.)), cx)),
+        app_id: cfg!(target_os = "linux").then(|| crate::APP_ID.to_string()),
         ..Default::default()
     }
 }

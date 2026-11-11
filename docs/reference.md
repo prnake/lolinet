@@ -284,7 +284,7 @@ All four packages must carry the same version. Older manifests also had a `"prob
 
 The `dist` workflow uploads every release to the join site's `dl/` unchanged, packages first and the manifest last, so a device never sees a manifest whose packages aren't there yet.
 
-lolidesk ships as `lolidesk-<version>` releases, published by the `desk` workflow on every push to `main` that changes `desk/` and never marked latest. Each holds `lolidesk-<os>-<arch>.tar.gz` for the same four platforms (`lolidesk`, `libghostty-vt.dylib` or `.so`, `BUILD-INFO` whose first line is `lolidesk <version>`, and `Lolidesk.app` on macOS), `*.sha256`, `SHA256SUMS` and the manifest `lolidesk.json`:
+lolidesk ships as `lolidesk-<version>` releases, published by the `desk` workflow on every push to `main` that changes `desk/` and never marked latest. Each holds `lolidesk-<os>-<arch>.tar.gz` for the same four platforms (`lolidesk`, `libghostty-vt.dylib` or `.so`, `BUILD-INFO` whose first line is `lolidesk <version>`; `Lolidesk.app` on macOS; `lolidesk-app`, `lolidesk.desktop` and `lolidesk.svg` on Linux), `*.sha256`, `SHA256SUMS` and the manifest `lolidesk.json`:
 
 ```json
 {

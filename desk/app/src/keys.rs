@@ -264,6 +264,12 @@ pub fn current_key_code() -> Option<u16> {
     }
 }
 
+/// 别的平台：GPUI 的按键里没有物理键码，按键名猜（[`key_name_to_code`]）。
+#[cfg(not(target_os = "macos"))]
+pub fn current_key_code() -> Option<u16> {
+    None
+}
+
 /// 修饰键单独按下 / 松开时判断方向的状态：记着哪些修饰键（键码）按着。
 #[derive(Debug, Default, Clone)]
 pub struct ModifierTracker {

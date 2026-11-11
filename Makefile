@@ -3,7 +3,7 @@
 #
 #   make lolinet        lolinet for this machine → .build/out/lolinet-<os>-<arch>.tar.gz
 #   make desk           lolidesk (host and client in one) → desk/target/release/ (--version prints git describe, as in CI), libghostty-vt → desk/.ghostty/
-#   make desk-app       Lolidesk.app (macOS, GPUI) → desk/app-out/
+#   make desk-app       desktop app (GPUI): Lolidesk.app on macOS, the Linux package layout on Linux → desk/app-out/
 #   make web            local console (web/dist) and public probe page (web/dist-probe)
 #   make check          web + scripts + desk checks
 #   make check-sni CORE=path/to/easytier-core   prove the WSS SNI patch works on a built binary
@@ -42,9 +42,20 @@ MIHOMO_BIN := $(CURDIR)/desk/.mihomo/mihomo
 $(MIHOMO_BIN):
 	sh desk/scripts/fetch-mihomo.sh $(GHOSTTY_PLATFORM) desk/.mihomo
 
+ifneq ($(filter darwin-%,$(GHOSTTY_PLATFORM)),)
 desk-app: $(GHOSTTY_LIB) $(MIHOMO_BIN)
 	cd desk && cargo build --locked --release -p lolidesk-app -p lolidesk
 	MIHOMO=$(MIHOMO_BIN) sh desk/scripts/bundle-app.sh desk/target/release/lolidesk-app desk/target/release/lolidesk $(GHOSTTY_LIB) desk/app-out
+else
+# Linux: the same layout as the release package (lolidesk, libghostty-vt.so, BUILD-INFO, lolidesk-app,
+# lolidesk.desktop, lolidesk.svg) → desk/app-out/lolidesk/. Needs GPUI's system packages (desk/README.md).
+desk-app: $(GHOSTTY_LIB)
+	cd desk && LOLIDESK_VERSION=$(DESK_VERSION) cargo build --locked --release -p lolidesk-app -p lolidesk
+	rm -rf desk/app-out/lolidesk && mkdir -p desk/app-out/lolidesk
+	cp desk/target/release/lolidesk $(GHOSTTY_LIB) desk/app-out/lolidesk/
+	printf 'lolidesk %s\n' "$(DESK_VERSION)" > desk/app-out/lolidesk/BUILD-INFO
+	sh desk/scripts/bundle-linux.sh desk/target/release/lolidesk-app desk/app-out/lolidesk
+endif
 
 web/node_modules: web/package-lock.json
 	cd web && npm ci

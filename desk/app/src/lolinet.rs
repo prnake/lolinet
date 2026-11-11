@@ -2,15 +2,18 @@
 //!
 //! - 读的不要 root：`lolinet cli -o json node|peer`（本机节点、别的节点）、`lolinet invite --json`、
 //!   `/etc/lolinet/exit.json`（出口节点开着时才有，644）。
-//! - 要 root 的（入网、开关出口节点、装到命令行）经 osascript 的 `with administrator privileges` 弹系统密码框。
+//! - 要 root 的（入网、开关出口节点、装到命令行）：macOS 经 osascript 的 `with administrator privileges` 弹系统密码框，
 //!   shell 命令只由校验过的几段拼出来（准入站、配对码、本机找到的路径，都加单引号），用户输入的原文不进 shell。
+//!   Linux 经 pkexec（polkit 弹密码框），给的是参数表（[`pkexec_join`]、[`pkexec_exit`]、[`pkexec_link`]），不经 shell；
+//!   只有入网是 `sh -c` 跑 [`JoinTarget::shell`]，它同样只由校验过、加了单引号的几段拼出来。
+//! - Linux 的应用菜单（`~/.local/share/applications/lolidesk.desktop`）不要 root：从包里的 lolidesk.desktop 改出来。
 //!
 //! 界面只认 [`Lolinet`] 这个接口（测试换成假数据）。这些调用都会阻塞，界面在后台线程里调。
 
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 
@@ -26,6 +29,12 @@ const CONFIGS: [&str; 2] = ["/etc/lolinet/loli.toml", "/etc/easytier/loli.toml"]
 const EXIT_JSON: &str = "/etc/lolinet/exit.json";
 /// 出口节点的默认端口（`lolinet exit on`）
 pub const EXIT_PORT: u16 = 10180;
+/// Linux：以 root 跑命令（polkit）
+pub const PKEXEC: &str = "/usr/bin/pkexec";
+/// Linux 的包里，lolidesk-app 旁边的东西（包根目录：lolidesk、libghostty-vt.so、BUILD-INFO，再加这几个）
+pub const APP_BIN: &str = "lolidesk-app";
+pub const DESKTOP_FILE: &str = "lolidesk.desktop";
+pub const ICON_FILE: &str = "lolidesk.svg";
 /// 接入点（relay）的网段前缀，和 `lolinet status` 一样
 const RELAY_PREFIX: &str = "10.188.0.";
 
@@ -78,8 +87,11 @@ pub struct Shell {
     pub lolinet: bool,
     /// /usr/local/bin/lolidesk 在不在；是链接的话指到哪
     pub lolidesk: Option<String>,
-    /// app 里带的命令行（Contents/Helpers/lolidesk）；不是从 app 里跑的是 None
+    /// app 里带的命令行（macOS：Contents/Helpers/lolidesk；Linux：包里 lolidesk-app 旁边的 lolidesk）；
+    /// 不是从 app / 包里跑的是 None
     pub helper: Option<PathBuf>,
+    /// Linux 的应用菜单：加了没有（加的是这个包里的 app）。macOS、不是从包里跑的是 None
+    pub menu: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -412,6 +424,28 @@ pub fn admin_script(shell: &str) -> String {
     )
 }
 
+/// Linux：pkexec 跑入网脚本。shell 命令是 [`JoinTarget::shell`]（只有校验过、加了单引号的几段）
+pub fn pkexec_join(t: &JoinTarget) -> Vec<String> {
+    vec![PKEXEC.into(), "/bin/sh".into(), "-c".into(), t.shell()]
+}
+
+/// Linux：pkexec 跑 `/usr/local/bin/lolinet exit on|off`（先查过它是 root 的）
+pub fn pkexec_exit(on: bool) -> Vec<String> {
+    let what = if on { "on" } else { "off" };
+    vec![PKEXEC.into(), BIN.into(), "exit".into(), what.into()]
+}
+
+/// Linux：pkexec 把包里的 lolidesk 链到 /usr/local/bin/lolidesk（-n：那里是指向目录的链接也直接换掉）
+pub fn pkexec_link(helper: &str) -> Vec<String> {
+    vec![
+        PKEXEC.into(),
+        "/bin/ln".into(),
+        "-sfn".into(),
+        helper.into(),
+        DESK_BIN.into(),
+    ]
+}
+
 /// 要以 root 跑的程序：存在、属于 root、组和其他人都写不了（它所在的目录也一样）
 fn root_owned(p: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -430,6 +464,59 @@ fn safe_path(p: &Path) -> Result<String> {
     Ok(s.to_string())
 }
 
+// ---------------------------------------------------------------- Linux 的包和应用菜单
+
+/// Linux：解开的包里 lolidesk-app 旁边的 lolidesk。要有 BUILD-INFO 才算是包（开发时编出来的不算）
+pub fn package_helper(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let helper = dir.join("lolidesk");
+    (dir.join("BUILD-INFO").is_file() && helper.is_file()).then_some(helper)
+}
+
+/// 桌面文件里的路径：绝对路径，不带引号、反斜杠、$、`、% 和控制字符（这些在 Exec 里要转义，干脆不收）
+fn desktop_path(p: &Path) -> Result<String> {
+    let s = safe_path(p)?;
+    anyhow::ensure!(p.is_absolute(), "{s} 不是绝对路径");
+    anyhow::ensure!(
+        !s.contains(['"', '\\', '$', '`', '%', '\'']),
+        "路径里有引号、反斜杠、$、` 或 %，加不进应用菜单：{s}"
+    );
+    Ok(s)
+}
+
+/// 包里的 lolidesk.desktop 改成这台机器上的：Exec、TryExec、Icon 换成包里的绝对路径，别的照抄
+pub fn desktop_entry(template: &str, app: &Path, icon: &Path) -> Result<String> {
+    let app = desktop_path(app)?;
+    let icon = desktop_path(icon)?;
+    let mut out = String::new();
+    let mut seen = (false, false);
+    for line in template.lines() {
+        let key = line.split('=').next().unwrap_or("").trim();
+        match key {
+            "Exec" => {
+                seen.0 = true;
+                out.push_str(&format!("Exec=\"{app}\"\n"));
+            }
+            "TryExec" => out.push_str(&format!("TryExec={app}\n")),
+            "Icon" => {
+                seen.1 = true;
+                out.push_str(&format!("Icon={icon}\n"));
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    anyhow::ensure!(seen == (true, true), "{DESKTOP_FILE} 里没有 Exec 或 Icon");
+    Ok(out)
+}
+
+/// 应用菜单里的文件：$XDG_DATA_HOME/applications/lolidesk.desktop（默认 ~/.local/share）
+pub fn menu_entry_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("applications").join(DESKTOP_FILE))
+}
+
 // ---------------------------------------------------------------- 接口
 
 /// 网络页要的一切。都会阻塞：界面在后台线程里调。
@@ -443,9 +530,13 @@ pub trait Lolinet: Send + Sync {
     fn set_exit(&self, on: bool) -> Result<String>;
     /// 把 app 里的 lolidesk 链到 /usr/local/bin/lolidesk（管理员）
     fn install_cli(&self) -> Result<String>;
+    /// Linux：把这个包里的 app 加到应用菜单（不要管理员）
+    fn install_menu(&self) -> Result<String> {
+        bail!("这个平台没有应用菜单")
+    }
 }
 
-/// 真的：调本机的 lolinet、osascript。
+/// 真的：调本机的 lolinet、osascript（macOS）/ pkexec（Linux）。
 pub struct System;
 
 impl System {
@@ -462,12 +553,29 @@ impl System {
         })
     }
 
-    /// app 里带的命令行：…/Lolidesk.app/Contents/MacOS/Lolidesk 旁边的 ../Helpers/lolidesk
+    /// app 里带的命令行。macOS：…/Lolidesk.app/Contents/MacOS/Lolidesk 旁边的 ../Helpers/lolidesk；
+    /// Linux：解开的包里 lolidesk-app 旁边的 lolidesk（[`package_helper`]）
     pub fn helper() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
+        if !cfg!(target_os = "macos") {
+            return package_helper(&exe);
+        }
         let contents = exe.parent()?.parent()?;
         let helper = contents.join("Helpers/lolidesk");
         (contents.file_name()? == "Contents" && helper.is_file()).then_some(helper)
+    }
+
+    /// Linux：从包里跑的话，（应用菜单要的桌面文件，加到菜单里该是什么样）
+    fn menu() -> Option<(PathBuf, String)> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        let exe = std::env::current_exe().ok()?;
+        package_helper(&exe)?;
+        let dir = exe.parent()?;
+        let template = std::fs::read_to_string(dir.join(DESKTOP_FILE)).ok()?;
+        let entry = desktop_entry(&template, &exe, &dir.join(ICON_FILE)).ok()?;
+        Some((menu_entry_path()?, entry))
     }
 
     fn shell() -> Shell {
@@ -480,12 +588,14 @@ impl System {
                     .unwrap_or_else(|_| DESK_BIN.to_string())
             }),
             helper: Self::helper(),
+            menu: Self::menu()
+                .map(|(path, entry)| std::fs::read_to_string(path).is_ok_and(|now| now == entry)),
         }
     }
 }
 
-/// 跑一个命令，最多等 `limit`；超时就杀掉。返回（成功没有，stdout，stderr）。
-fn run(cmd: &mut Command, limit: Duration) -> Result<(bool, Vec<u8>, String)> {
+/// 跑一个命令，最多等 `limit`；超时就杀掉。返回（退出状态，stdout，stderr）。
+fn run(cmd: &mut Command, limit: Duration) -> Result<(ExitStatus, Vec<u8>, String)> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -520,15 +630,15 @@ fn run(cmd: &mut Command, limit: Duration) -> Result<(bool, Vec<u8>, String)> {
     let stderr = String::from_utf8_lossy(&err_t.join().unwrap_or_default())
         .trim()
         .to_string();
-    Ok((status.success(), stdout, stderr))
+    Ok((status, stdout, stderr))
 }
 
 fn cli_json(bin: &Path, what: &str) -> Result<Value> {
-    let (ok, out, err) = run(
+    let (st, out, err) = run(
         Command::new(bin).args(["cli", "-o", "json", what]),
         Duration::from_secs(8),
     )?;
-    if !ok {
+    if !st.success() {
         bail!(if err.is_empty() {
             "本机内核问不到".to_string()
         } else {
@@ -540,12 +650,12 @@ fn cli_json(bin: &Path, what: &str) -> Result<Value> {
 
 /// 经 osascript 以管理员身份跑（弹系统密码框，等用户输完）。点了取消算失败。
 fn run_admin(shell: &str) -> Result<String> {
-    let (ok, out, err) = run(
+    let (st, out, err) = run(
         Command::new("/usr/bin/osascript").args(["-e", &admin_script(shell)]),
         Duration::from_secs(600),
     )?;
     let out = String::from_utf8_lossy(&out).trim_end().to_string();
-    if ok {
+    if st.success() {
         return Ok(out);
     }
     if err.contains("-128") {
@@ -553,6 +663,32 @@ fn run_admin(shell: &str) -> Result<String> {
     }
     // osascript 的错误是「…: 脚本的输出 (退出码)」，输出在里面
     bail!(if err.is_empty() { out } else { err })
+}
+
+/// Linux：经 pkexec 以 root 跑（polkit 弹密码框，等用户输完）。点了取消算失败。输出是 stdout 再接 stderr。
+fn run_pkexec(argv: &[String]) -> Result<String> {
+    let (prog, args) = argv.split_first().context("空命令")?;
+    let (st, out, err) = run(Command::new(prog).args(args), Duration::from_secs(600))
+        .with_context(|| format!("跑不了 {prog}：要装 polkit（pkexec）"))?;
+    let out = String::from_utf8_lossy(&out).trim_end().to_string();
+    let text = [out.as_str(), err.as_str()]
+        .iter()
+        .filter(|t| !t.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    match st.code() {
+        Some(0) => Ok(text),
+        // pkexec：126 是用户关了密码框，127 是没拿到授权
+        Some(126) => bail!("取消了"),
+        Some(127) if text.is_empty() => bail!("没拿到管理员权限"),
+        Some(c) if text.is_empty() => bail!("失败了（退出码 {c}）"),
+        _ => bail!(if text.is_empty() {
+            "失败了".into()
+        } else {
+            text
+        }),
+    }
 }
 
 impl Lolinet for System {
@@ -584,11 +720,11 @@ impl Lolinet for System {
 
     fn invite(&self, kind: InviteKind) -> Result<Invite> {
         let bin = Self::find().context("没装 lolinet：先加入网络")?;
-        let (ok, out, err) = run(
+        let (st, out, err) = run(
             Command::new(bin).args(["invite", "--json", "--kind", kind.arg()]),
             Duration::from_secs(30),
         )?;
-        if !ok {
+        if !st.success() {
             bail!(if err.is_empty() {
                 "lolinet invite 失败".to_string()
             } else {
@@ -599,7 +735,11 @@ impl Lolinet for System {
     }
 
     fn join(&self, target: &JoinTarget) -> Result<String> {
-        run_admin(&target.shell())
+        if cfg!(target_os = "macos") {
+            run_admin(&target.shell())
+        } else {
+            run_pkexec(&pkexec_join(target))
+        }
     }
 
     fn set_exit(&self, on: bool) -> Result<String> {
@@ -607,18 +747,41 @@ impl Lolinet for System {
         // 不在 PATH 里找，免得用户目录里随便一个叫 lolinet 的程序借着密码框拿到 root
         let bin = Path::new(BIN);
         root_owned(bin).with_context(|| format!("{BIN} 不能以管理员身份跑"))?;
+        if !cfg!(target_os = "macos") {
+            return run_pkexec(&pkexec_exit(on));
+        }
         let what = if on { "on" } else { "off" };
         run_admin(&format!("{} exit {what} 2>&1", sh_quote(BIN)))
     }
 
     fn install_cli(&self) -> Result<String> {
-        let helper = Self::helper().context("不是从 Lolidesk.app 里跑的，没有可链接的 lolidesk")?;
+        let helper = Self::helper().context(if cfg!(target_os = "macos") {
+            "不是从 Lolidesk.app 里跑的，没有可链接的 lolidesk"
+        } else {
+            "不是从解开的 lolidesk 包里跑的，没有可链接的 lolidesk"
+        })?;
         let helper = safe_path(&helper)?;
+        if !cfg!(target_os = "macos") {
+            run_pkexec(&pkexec_link(&helper))?;
+            return Ok(format!("{DESK_BIN} -> {helper}"));
+        }
         run_admin(&format!(
             "mkdir -p /usr/local/bin && ln -sf {} {DESK_BIN} && echo {DESK_BIN} '->' {}",
             sh_quote(&helper),
             sh_quote(&helper)
         ))
+    }
+
+    fn install_menu(&self) -> Result<String> {
+        let (path, entry) =
+            Self::menu().context("不是从解开的 lolidesk 包里跑的（旁边要有 lolidesk.desktop）")?;
+        let dir = path.parent().context("应用菜单的目录不对")?;
+        std::fs::create_dir_all(dir).with_context(|| format!("建不了 {}", dir.display()))?;
+        // 先写临时文件再改名：菜单不会读到写了一半的
+        let tmp = dir.join(format!(".{DESKTOP_FILE}.{}", std::process::id()));
+        std::fs::write(&tmp, &entry).with_context(|| format!("写不了 {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).with_context(|| format!("写不了 {}", path.display()))?;
+        Ok(format!("{}\n{}", path.display(), entry.trim_end()))
     }
 }
 
@@ -759,6 +922,94 @@ mod tests {
             r#"do shell script "echo \"a\\\"; b" with administrator privileges without altering line endings"#
         );
         assert_eq!(sh_quote("/Apps/it's/x"), r"'/Apps/it'\''s/x'");
+    }
+
+    #[test]
+    fn pkexec_argv() {
+        let t = JoinTarget {
+            base: "https://join.example.com".into(),
+            code: "ABCD-EFGH-JK23".into(),
+            userspace: false,
+        };
+        let argv = pkexec_join(&t);
+        assert_eq!(argv[..3], ["/usr/bin/pkexec", "/bin/sh", "-c"]);
+        assert_eq!(argv.len(), 4);
+        assert_eq!(argv[3], t.shell());
+        assert_eq!(
+            pkexec_exit(true),
+            ["/usr/bin/pkexec", "/usr/local/bin/lolinet", "exit", "on"]
+        );
+        assert_eq!(
+            pkexec_exit(false),
+            ["/usr/bin/pkexec", "/usr/local/bin/lolinet", "exit", "off"]
+        );
+        // 路径原样是一个参数：空格、引号、分号都不经 shell
+        let odd = "/home/u/my apps/it's;x/lolidesk";
+        assert_eq!(
+            pkexec_link(odd),
+            [
+                "/usr/bin/pkexec",
+                "/bin/ln",
+                "-sfn",
+                odd,
+                "/usr/local/bin/lolidesk"
+            ]
+        );
+    }
+
+    #[test]
+    fn desktop_entries() {
+        let template = include_str!("../linux/lolidesk.desktop");
+        let app = Path::new("/home/u/lolidesk/lolidesk-app");
+        let icon = Path::new("/home/u/lolidesk/lolidesk.svg");
+        let e = desktop_entry(template, app, icon).unwrap();
+        assert!(e.starts_with("[Desktop Entry]\n"));
+        assert!(e.contains("\nExec=\"/home/u/lolidesk/lolidesk-app\"\n"));
+        assert!(e.contains("\nTryExec=/home/u/lolidesk/lolidesk-app\n"));
+        assert!(e.contains("\nIcon=/home/u/lolidesk/lolidesk.svg\n"));
+        // 窗口的 app_id 要和桌面文件的名字、StartupWMClass 一样
+        assert_eq!(DESKTOP_FILE, format!("{}.desktop", crate::APP_ID));
+        assert!(e.contains(&format!("\nStartupWMClass={}\n", crate::APP_ID)));
+        assert_eq!(e.lines().count(), template.lines().count());
+        // 有空格的路径可以（Exec 里加了双引号）
+        let spaced = desktop_entry(template, Path::new("/home/u/My Apps/lolidesk-app"), icon);
+        assert!(
+            spaced
+                .unwrap()
+                .contains("\nExec=\"/home/u/My Apps/lolidesk-app\"\n")
+        );
+        for bad in [
+            "lolidesk-app",
+            "/home/u/a\"b/lolidesk-app",
+            "/home/u/$HOME/lolidesk-app",
+            "/home/u/a`id`/lolidesk-app",
+            "/home/u/a\\b/lolidesk-app",
+            "/home/u/100%/lolidesk-app",
+            "/home/u/a\nExec=x/lolidesk-app",
+        ] {
+            assert!(
+                desktop_entry(template, Path::new(bad), icon).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(desktop_entry("[Desktop Entry]\nName=x\n", app, icon).is_err());
+    }
+
+    #[test]
+    fn package_layout() {
+        let dir = std::env::temp_dir().join(format!("lolidesk-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join(APP_BIN);
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(dir.join("lolidesk"), b"").unwrap();
+        // 开发时编出来的（旁边没有 BUILD-INFO）不算包
+        assert_eq!(package_helper(&exe), None);
+        std::fs::write(dir.join("BUILD-INFO"), b"lolidesk test\n").unwrap();
+        assert_eq!(package_helper(&exe), Some(dir.join("lolidesk")));
+        std::fs::remove_file(dir.join("lolidesk")).unwrap();
+        assert_eq!(package_helper(&exe), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -639,9 +639,35 @@ fn cli_section(
         (None, None) => div()
             .text_size(T_XS)
             .text_color(fg3())
-            .child("从 Lolidesk.app 里打开才能装")
+            .child(if cfg!(target_os = "macos") {
+                "从 Lolidesk.app 里打开才能装"
+            } else {
+                "从解开的 lolidesk 包里打开才能装"
+            })
             .into_any_element(),
     };
+    // Linux：应用菜单（不要管理员）
+    let menu_state = sh.menu.map(|added| {
+        if added {
+            installed("已加").into_any_element()
+        } else if matches!(job, Some(NetJob::InstallMenu)) {
+            pill_busy("net-menu", "正在加…", false)
+                .h(px(26.))
+                .px(px(12.))
+                .text_size(T_XS)
+                .into_any_element()
+        } else {
+            let model = model.clone();
+            pill_sm("net-menu", "加到应用菜单", false)
+                .on_click(move |_, _, cx| {
+                    model.update(cx, |m, cx| m.run_net_job(NetJob::InstallMenu, cx))
+                })
+                .into_any_element()
+        }
+    });
+    let menu_path = lolinet::menu_entry_path()
+        .map(|p| home_short(&p))
+        .unwrap_or_default();
     let desk_path = match &sh.lolidesk {
         Some(t) if t != lolinet::DESK_BIN => format!("{} → {t}", lolinet::DESK_BIN),
         _ => lolinet::DESK_BIN.to_string(),
@@ -663,7 +689,7 @@ fn cli_section(
     };
     let failed = output
         .as_ref()
-        .filter(|(j, ok, _)| *j == NetJob::InstallCli && !ok)
+        .filter(|(j, ok, _)| matches!(j, NetJob::InstallCli | NetJob::InstallMenu) && !ok)
         .map(|(_, _, text)| card_row(false).child(output_box(false, text).flex_1()));
     let note = if !sh.lolinet {
         "lolinet 在加入网络时由安装脚本装上（见上面的「加入网络」）。"
@@ -686,6 +712,7 @@ fn cli_section(
                         lolinet_state,
                     ))
                     .child(row(false, "lolidesk", desk_path, desk_state))
+                    .children(menu_state.map(|st| row(false, "菜单", menu_path, st)))
                     .children(failed),
             )
             .child(
@@ -696,6 +723,14 @@ fn cli_section(
                     .child(note),
             ),
     )
+}
+
+/// 家目录下的路径写成 ~/…
+fn home_short(p: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|h| p.strip_prefix(h).ok().map(|r| r.to_path_buf())) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => p.display().to_string(),
+    }
 }
 
 /// 一件事的输出：等宽小字，成功是平常的灰，失败是红边。

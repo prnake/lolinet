@@ -7,6 +7,8 @@
 //! 键盘全部按物理键位发（[`crate::keys`]），Tab / Shift+Tab / ⌘ 组合键也是——`DeskStage` 这一层
 //! 用 `NoAction` 把外层（gpui-kit 的 Root、窗口的快捷键）的绑定挡掉，按键才会落到这里的监听上。
 //! 失焦、窗口失去激活时发 `ReleaseAll`。
+//!
+//! 画面要硬解（[`Decoder::supported`]）：现在只有 macOS 有。别的平台（Linux）不开流，这一页只说明看不了。
 
 use std::{cell::Cell, net::SocketAddr, rc::Rc, sync::Arc, time::Duration};
 
@@ -18,11 +20,16 @@ use gpui_kit::component::{
 use gpui_kit::{
     Anchor, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton as GMouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Pixels, Render,
-    ScrollEvent, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
-    Task, WeakEntity, Window, canvas, div, prelude::FluentBuilder, px, surface,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent,
+    SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
+    WeakEntity, Window, canvas, div, prelude::FluentBuilder, px,
 };
-use lolidesk_core::{decode::Frame, net::Client};
+#[cfg(target_os = "macos")]
+use gpui_kit::{ObjectFit, surface};
+use lolidesk_core::{
+    decode::{Decoder, Frame},
+    net::Client,
+};
 use lolidesk_proto::{DeskInput, DisplayInfo, MouseButton, VideoSettings};
 
 use crate::{
@@ -38,6 +45,9 @@ use crate::{
 
 /// 画面那一层的按键上下文：这里绑 `NoAction` 挡住外层的快捷键。
 pub const STAGE_CONTEXT: &str = "DeskStage";
+
+/// 没有视频解码的平台上，远程桌面那一页的标题。
+pub const UNSUPPORTED: &str = "远程桌面还不能在 Linux 上看";
 
 /// 实际生效的编码参数（主机的 Ready）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +74,8 @@ pub struct DeskPane {
     /// 连接断了，等重连后重新开始
     pub suspended: bool,
     pub stats: StatsSnapshot,
+    /// 这个平台解不了画面（没有硬解）：不开流，只说明
+    pub unsupported: bool,
     client: Option<Arc<Client>>,
     /// 第几次开始（旧流迟到的事不算）
     run: u32,
@@ -102,6 +114,7 @@ impl DeskPane {
             stopped: false,
             suspended: false,
             stats: StatsSnapshot::default(),
+            unsupported: !Decoder::supported(),
             client: None,
             run: 0,
             _tasks: Vec::new(),
@@ -113,6 +126,10 @@ impl DeskPane {
     }
 
     fn start(&mut self, client: Arc<Client>, video: VideoSettings, cx: &mut Context<Self>) {
+        // 解不了画面就不让主机采屏、编码、发过来
+        if self.unsupported {
+            return;
+        }
         self.run += 1;
         let run = self.run;
         self._tasks.clear();
@@ -285,6 +302,27 @@ impl DeskPane {
             .items_center()
             .justify_center()
             .gap(px(12.));
+        if self.unsupported {
+            return Some(
+                base.bg(void())
+                    .child(icon(ic::MONITOR, 28., fg3()))
+                    .child(
+                        div()
+                            .text_size(T_SM)
+                            .text_color(fg2())
+                            .child(UNSUPPORTED),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(520.))
+                            .text_size(T_XS)
+                            .text_color(fg3())
+                            .text_center()
+                            .child("这一版的 Linux 客户端还没有视频解码。终端照常能用；要看画面，用 macOS 上的 Lolidesk.app。"),
+                    )
+                    .into_any_element(),
+            );
+        }
         if self.stopped {
             let model = self.model.clone();
             let (host, display) = (self.host, self.display.id);
@@ -350,7 +388,9 @@ impl DeskPane {
 impl Render for DeskPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.stage.read(cx).focus.is_focused(window);
-        let right = if focused {
+        let right = if self.unsupported {
+            div()
+        } else if focused {
             div()
                 .flex()
                 .items_center()
@@ -435,16 +475,18 @@ impl Render for DeskPane {
                     .relative()
                     .child(self.stage.clone())
                     .children(status)
-                    .child(
-                        self.toolbar.clone().cached(
-                            StyleRefinement::default()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom(px(16.))
-                                .h(px(42.)),
-                        ),
-                    ),
+                    .when(!self.unsupported, |d| {
+                        d.child(
+                            self.toolbar.clone().cached(
+                                StyleRefinement::default()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom(px(16.))
+                                    .h(px(42.)),
+                            ),
+                        )
+                    }),
             )
     }
 }
@@ -710,7 +752,7 @@ fn map_button(b: GMouseButton) -> Option<MouseButton> {
 impl Render for Stage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bounds = self.bounds.clone();
-        div()
+        let stage = div()
             .id("stage")
             .key_context(STAGE_CONTEXT)
             .track_focus(&self.focus)
@@ -733,15 +775,18 @@ impl Render for Stage {
                 canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
                     .absolute()
                     .size_full(),
+            );
+        // 画面：macOS 上是硬解出来的 IOSurface，直接当纹理画
+        #[cfg(target_os = "macos")]
+        let stage = stage.when_some(self.frame.as_ref(), |s, f| {
+            s.child(
+                surface(f.0.clone())
+                    .absolute()
+                    .size_full()
+                    .object_fit(ObjectFit::Contain),
             )
-            .when_some(self.frame.as_ref(), |s, f| {
-                s.child(
-                    surface(f.0.clone())
-                        .absolute()
-                        .size_full()
-                        .object_fit(ObjectFit::Contain),
-                )
-            })
+        });
+        stage
     }
 }
 

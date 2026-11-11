@@ -13,7 +13,7 @@
 //! 用户自己点「断开」的不重连；主机拒绝、证书指纹变了也不重连（重试也没用）。
 
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -274,6 +274,8 @@ pub enum NetJob {
     Join(JoinTarget),
     Exit(bool),
     InstallCli,
+    /// Linux：加到应用菜单
+    InstallMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -939,6 +941,8 @@ impl Model {
             h.guide.opened_screen = true;
         }
         let title = h.title();
+        // 只有 macOS 的主机会要这些权限；这边不是 Mac 就只在主机上打开
+        #[cfg(target_os = "macos")]
         if is_this_mac(client.addr.ip()) {
             let _ = std::process::Command::new("/usr/bin/open")
                 .arg(kind.settings_url())
@@ -1068,6 +1072,7 @@ impl Model {
                 NetJob::Join(t) => backend.join(t),
                 NetJob::Exit(on) => backend.set_exit(*on),
                 NetJob::InstallCli => backend.install_cli(),
+                NetJob::InstallMenu => backend.install_menu(),
             }
         });
         cx.spawn(async move |this, cx| {
@@ -1084,6 +1089,9 @@ impl Model {
                     (NetJob::Exit(false), true) => Some((ToastKind::Info, "出口节点关了".into())),
                     (NetJob::InstallCli, true) => {
                         Some((ToastKind::Success, "lolidesk 装到命令行了".into()))
+                    }
+                    (NetJob::InstallMenu, true) => {
+                        Some((ToastKind::Success, "加到应用菜单了".into()))
                     }
                     (_, false) => Some((ToastKind::Error, first_line(&text))),
                 };
@@ -1420,7 +1428,8 @@ fn first_line(text: &str) -> String {
 }
 
 /// 这个地址是不是这台 Mac 自己（回环，或者本机网卡上的地址）。
-pub fn is_this_mac(ip: IpAddr) -> bool {
+#[cfg(target_os = "macos")]
+pub fn is_this_mac(ip: std::net::IpAddr) -> bool {
     ip.is_loopback()
         || if_addrs::get_if_addrs()
             .map(|list| list.iter().any(|i| i.ip() == ip))

@@ -83,6 +83,12 @@ fn icon_svg(name: &str) -> Option<&'static str> {
             r#"<path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>"#
         ),
         "pointer" => icon!(r#"<path d="M6 4l12.5 7-5.5 1.5L10.5 18z"/><path d="m13 12.5 4 5"/>"#),
+        // Linux 上自己画的窗口按钮
+        "win-min" => icon!(r#"<path d="M6.5 12h11"/>"#),
+        "win-max" => icon!(r#"<rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/>"#),
+        "win-restore" => icon!(
+            r#"<rect x="6" y="9" width="9" height="9" rx="1.5"/><path d="M9 9V7.5A1.5 1.5 0 0 1 10.5 6H16.5A1.5 1.5 0 0 1 18 7.5V13.5A1.5 1.5 0 0 1 16.5 15H15"/>"#
+        ),
         _ => return None,
     })
 }
@@ -116,6 +122,9 @@ pub mod ic {
     pub const PHONE: &str = "ld/phone.svg";
     pub const SHIELD: &str = "ld/shield.svg";
     pub const POINTER: &str = "ld/pointer.svg";
+    pub const WIN_MIN: &str = "ld/win-min.svg";
+    pub const WIN_MAX: &str = "ld/win-max.svg";
+    pub const WIN_RESTORE: &str = "ld/win-restore.svg";
 }
 
 /// 应用的资源：先找自己的图标，再交给 gpui-kit 的。
@@ -157,6 +166,9 @@ mod tests {
             "phone",
             "shield",
             "pointer",
+            "win-min",
+            "win-max",
+            "win-restore",
         ] {
             let svg = AppAssets.load(&format!("ld/{name}.svg")).unwrap().unwrap();
             assert!(

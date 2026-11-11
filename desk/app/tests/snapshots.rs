@@ -1,28 +1,32 @@
-//! 离屏渲染快照：用 GPUI 的无窗口上下文和真的 Metal 离屏渲染器画各个界面，
+//! 离屏渲染快照：用 GPUI 的无窗口上下文和真的离屏渲染器（macOS 是 Metal，Linux 是 wgpu）画各个界面，
 //! 设了 `LOLIDESK_SNAPSHOTS=<目录>` 就把 PNG 存进去（人看设计用）。
-//! 顺带测按键路由：画面拿到焦点后 Tab / Shift+Tab / ⌘C / ⌘H 都发给远端，不被窗口拿走。
+//! 顺带测按键路由：画面拿到焦点后 Tab / Shift+Tab / ⌘C / ⌘H 都发给远端，不被窗口拿走（只在 macOS：
+//! Linux 上还没有远程画面，远程桌面那一页只说明看不了）。
 //!
 //! GPUI 的 Mac 平台只能在主线程建，所以这个测试不用 libtest（`harness = false`）。
 
 fn main() {
-    #[cfg(target_os = "macos")]
-    mac::run();
-    #[cfg(not(target_os = "macos"))]
-    println!("snapshots: 跳过（只有 macOS 有界面）");
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    gui::run();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    println!("snapshots: 跳过（只有 macOS 和 Linux 有界面）");
 }
 
-#[cfg(target_os = "macos")]
-mod mac {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod gui {
     #![allow(unsafe_code)]
+    // 远程画面上的输入只在 macOS 上测：Linux 上那些帮手和引入用不到
+    #![cfg_attr(not(target_os = "macos"), allow(unused_imports, dead_code))]
 
-    /// 终端的快照和测试（tests/mac/term_cases.rs）。
+    /// 终端的快照和测试（tests/gui/term_cases.rs）。
     mod term_cases;
 
+    #[cfg(target_os = "macos")]
+    use std::ptr::{self, NonNull};
     use std::{
         net::SocketAddr,
         panic::{AssertUnwindSafe, catch_unwind},
         path::PathBuf,
-        ptr::{self, NonNull},
         sync::Arc,
     };
 
@@ -52,7 +56,9 @@ mod mac {
     use lolidesk_proto::{
         DeskInput, DeskReq, DisplayInfo, Launcher, MouseButton as PButton, SessionInfo,
     };
+    #[cfg(target_os = "macos")]
     use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
+    #[cfg(target_os = "macos")]
     use objc2_core_video::{
         CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane,
         CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
@@ -64,11 +70,18 @@ mod mac {
     /// 一个测试：参数是存快照的目录（没设就不存）。
     type Case = fn(&Option<PathBuf>);
 
+    /// 复制（终端有选区时）：macOS ⌘C，Linux Ctrl+Shift+C
+    pub(super) const COPY_KEY: &str = if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-shift-c"
+    };
+
     const W: f32 = 1280.;
     const H: f32 = 820.;
 
     pub fn run() {
-        // 没有 Metal 设备（比如某些虚拟机）就画不了：跳过，不算失败
+        // 没有 Metal 设备（比如某些虚拟机）、Linux 上没有 Vulkan / GL 就画不了：跳过，不算失败
         match gpui_kit::platform::current_headless_renderer() {
             Ok(Some(_)) => {}
             Ok(None) => return println!("snapshots: 跳过（没有离屏渲染器）"),
@@ -92,6 +105,7 @@ mod mac {
             ("terminal_reattach", term_cases::terminal_reattach),
             ("terminal_perf", term_cases::terminal_perf),
             ("desktop", desktop),
+            #[cfg(target_os = "macos")]
             ("desktop_menu", desktop_menu),
             ("desktop_states", desktop_states),
             ("new_menu", new_menu),
@@ -102,8 +116,12 @@ mod mac {
             ("network_down", network_down),
             ("invite_phone", invite_phone),
             ("invite_desktop", invite_desktop),
+            // 远程画面上的输入：只有 macOS 有画面
+            #[cfg(target_os = "macos")]
             ("keyboard_back", keyboard_back),
+            #[cfg(target_os = "macos")]
             ("stage_keys", stage_keys),
+            #[cfg(target_os = "macos")]
             ("stage_pointer", stage_pointer),
         ];
         // 终端的那些要 libghostty-vt（LOLIDESK_GHOSTTY_VT）；没有就跳过，同 lolidesk-ghostty 自己的测试
@@ -320,7 +338,14 @@ mod mac {
         })
     }
 
+    /// Linux：没有解码器，画面是个空壳（远程桌面那一页只说明看不了）。
+    #[cfg(not(target_os = "macos"))]
+    fn fake_frame(_: usize, _: usize) -> Frame {
+        Frame
+    }
+
     /// 一帧假的远程画面：NV12 全范围、IOSurface 做底（GPUI 的 surface 只收这种）。
+    #[cfg(target_os = "macos")]
     fn fake_frame(w: usize, h: usize) -> Frame {
         unsafe {
             let iosurface = CFDictionary::<CFString, CFType>::empty();
@@ -538,6 +563,9 @@ mod mac {
         let model = fake_model(&mut cx);
         let (handle, _) = open(&mut cx, model.clone());
         let (pane, _rx) = open_desk(&mut cx, handle, &model);
+        // 只有 macOS 解得了画面；别的平台不开流，只说明看不了
+        let unsupported = pane.read_with(&cx, |p, _| p.unsupported);
+        assert_eq!(unsupported, !cfg!(target_os = "macos"));
         shot(&mut cx, handle, out, "desktop");
         // 点画面：键盘交给远端（顶栏换成「键盘在远端」）
         let stage = pane.read_with(&cx, |p, _| p.stage.clone());
@@ -547,6 +575,7 @@ mod mac {
         shot(&mut cx, handle, out, "desktop-focused");
     }
 
+    #[cfg(target_os = "macos")]
     fn desktop_menu(out: &Option<PathBuf>) {
         let mut cx = context();
         let model = fake_model(&mut cx);
@@ -722,6 +751,7 @@ mod mac {
             lolinet,
             lolidesk: lolidesk.then(|| "/usr/local/lib/lolidesk/lolidesk".into()),
             helper: Some("/Applications/Lolidesk.app/Contents/Helpers/lolidesk".into()),
+            menu: None,
         }
     }
 
@@ -863,6 +893,7 @@ mod mac {
     }
 
     /// 点侧栏把键盘从远程画面拿回来：画面失焦、远端松开所有键、焦点回到窗口。
+    #[cfg(target_os = "macos")]
     fn keyboard_back(_: &Option<PathBuf>) {
         let mut cx = context();
         let model = fake_model(&mut cx);
@@ -896,6 +927,7 @@ mod mac {
 
     // ------------------------------------------------------------ 按键和指针
 
+    #[cfg(target_os = "macos")]
     fn stage_keys(_: &Option<PathBuf>) {
         let mut cx = context();
         let model = fake_model(&mut cx);
@@ -966,6 +998,7 @@ mod mac {
         );
     }
 
+    #[cfg(target_os = "macos")]
     fn stage_pointer(_: &Option<PathBuf>) {
         let mut cx = context();
         let model = fake_model(&mut cx);

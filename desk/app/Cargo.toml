@@ -34,18 +34,20 @@ serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 
-# 图形界面只在 macOS 上编（Linux 只有终端，没有采屏和解码）
-[target.'cfg(target_os = "macos")'.dependencies]
+# 图形界面在 macOS 和 Linux 上编（别的平台 main 是个空壳）
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 gpui-kit = "=0.9.1"
+# 邀请手机：配对链接的二维码（只要模块矩阵，自己画成方块）
+qrcode = { version = "0.14", default-features = false }
+
+# macOS：远程画面（CVPixelBuffer）、物理键码（NSEvent）、主机是不是这台 Mac（权限设置页在本机也打开）
+[target.'cfg(target_os = "macos")'.dependencies]
+if-addrs = "0.13"
 objc2-core-foundation = "0.3.2"
 objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", features = ["NSEvent", "NSApplication", "NSResponder", "NSPasteboard"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
-# 邀请手机：配对链接的二维码（只要模块矩阵，自己画成方块）
-qrcode = { version = "0.14", default-features = false }
-# 主机是不是这台 Mac（权限设置页在本机也打开）
-if-addrs = "0.13"
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dev-dependencies]
 gpui-kit = { version = "=0.9.1", features = ["test-support"] }

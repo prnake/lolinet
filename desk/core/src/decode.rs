@@ -9,6 +9,13 @@ pub use mac::{Decoder, Frame};
 pub struct Frame;
 
 #[cfg(not(target_os = "macos"))]
+impl Frame {
+    pub fn size(&self) -> (u32, u32) {
+        (0, 0)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 pub struct Decoder;
 
 #[cfg(not(target_os = "macos"))]

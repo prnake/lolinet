@@ -75,6 +75,7 @@ actions!(
 pub const GRID_CONTEXT: &str = "Terminal";
 
 /// 终端的快捷键。在 `ui::app::init` 里调。
+#[cfg(target_os = "macos")]
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-c", TermCopy, Some(GRID_CONTEXT)),
@@ -88,6 +89,25 @@ pub fn bind_keys(cx: &mut App) {
         // gpui-kit 的 Root 拿 tab / shift-tab 挪焦点：在终端里它们是键
         KeyBinding::new("tab", NoAction, Some(GRID_CONTEXT)),
         KeyBinding::new("shift-tab", NoAction, Some(GRID_CONTEXT)),
+    ]);
+}
+
+/// Linux：Ctrl 组合键归终端里的程序，复制粘贴这些用 Ctrl+Shift（和 GNOME 终端一样）；字号用 Ctrl+= / Ctrl+- / Ctrl+0。
+#[cfg(not(target_os = "macos"))]
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("ctrl-shift-c", TermCopy, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-shift-v", TermPaste, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-shift-k", TermClear, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-=", FontBigger, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-+", FontBigger, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl--", FontSmaller, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-0", FontReset, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-shift-a", TermSelectAll, Some(GRID_CONTEXT)),
+        // gpui-kit 的 Root 拿 tab / shift-tab 挪焦点、ctrl-c 复制：在终端里它们是键（ctrl-c 是中断）
+        KeyBinding::new("tab", NoAction, Some(GRID_CONTEXT)),
+        KeyBinding::new("shift-tab", NoAction, Some(GRID_CONTEXT)),
+        KeyBinding::new("ctrl-c", NoAction, Some(GRID_CONTEXT)),
     ]);
 }
 
@@ -1254,8 +1274,13 @@ impl TermGrid {
             self.session.update(cx, |s, _| s.claim());
         }
         let (x, y) = self.cell_at(ev.position);
-        // ⌘ 点链接：打开
-        if ev.modifiers.platform && ev.button == GButton::Left {
+        // ⌘ 点链接：打开（Linux 上是 Ctrl 点）
+        let link_click = if cfg!(target_os = "macos") {
+            ev.modifiers.platform
+        } else {
+            ev.modifiers.control
+        };
+        if link_click && ev.button == GButton::Left {
             if let Some(url) = self.link_at(x, y) {
                 cx.open_url(&url);
             }

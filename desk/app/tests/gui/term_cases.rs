@@ -18,7 +18,7 @@ use lolidesk_ghostty::{Mirror, Terminal};
 use lolidesk_proto::{TermEvent, TermReq, TermSize};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::{addr, context, fake_model, frame, shot, with_window};
+use super::{COPY_KEY, addr, context, fake_model, frame, shot, with_window};
 
 /// 主机那边的终端 + 客户端的窗口。
 struct Rig {
@@ -409,8 +409,8 @@ pub(super) fn terminal_selection(out: &Option<PathBuf>) {
         Some("world selection-test lolinet/desk\nsecond line of text here\nthird line")
     );
     shot(&mut rig.cx, rig.handle, out, "terminal-selection");
-    // ⌘C 复制选区，不发给程序
-    let sent = rig.key("cmd-c");
+    // ⌘C（Linux 上 Ctrl+Shift+C）复制选区，不发给程序
+    let sent = rig.key(COPY_KEY);
     assert!(sent.is_empty(), "⌘C 发给了程序：{sent:?}");
     let clip = rig
         .cx
@@ -452,7 +452,7 @@ pub(super) fn terminal_keys(_: &Option<PathBuf>) {
     assert_eq!(rig.key("enter"), b"\r");
     assert_eq!(rig.key("escape"), b"\x1b");
     assert_eq!(rig.key("f1"), b"\x1bOP");
-    assert!(rig.key("cmd-c").is_empty(), "⌘C 没有选区时什么都不发");
+    assert!(rig.key(COPY_KEY).is_empty(), "⌘C 没有选区时什么都不发");
     // 帧打开应用光标键模式之后，上是 ESC O A
     rig.feed(b"\x1b[?1h");
     assert_eq!(rig.key("up"), b"\x1bOA");

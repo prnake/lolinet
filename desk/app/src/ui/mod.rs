@@ -12,11 +12,14 @@ pub mod sidebar;
 pub mod terminal;
 pub mod widgets;
 
-use gpui_kit::{Div, InteractiveElement, IntoElement, ParentElement, Stateful, Styled, div, px};
+use gpui_kit::{
+    Div, InteractiveElement, IntoElement, ParentElement, Stateful, Styled, div,
+    prelude::FluentBuilder, px,
+};
 
 use crate::theme::*;
 
-/// 右边内容区的顶栏（能拖窗口）：左边标题，右边操作。
+/// 右边内容区的顶栏（能拖窗口）：左边标题，右边操作（Linux 上窗口自己画边框时再加窗口按钮）。
 pub fn top_bar(id: &'static str, left: impl IntoElement, right: impl IntoElement) -> Stateful<Div> {
     widgets::drag_region(
         div()
@@ -45,7 +48,10 @@ pub fn top_bar(id: &'static str, left: impl IntoElement, right: impl IntoElement
                     .items_center()
                     .gap(px(6.))
                     .flex_none()
-                    .child(right),
+                    .child(right)
+                    .when(cfg!(target_os = "linux"), |d| {
+                        d.child(widgets::WindowControls)
+                    }),
             ),
     )
 }

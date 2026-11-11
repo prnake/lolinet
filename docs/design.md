@@ -48,12 +48,12 @@ The goal: **any member can invite**, and **the central server picks the address*
 
 ## The desktop app
 
-`Lolidesk.app` (macOS first, then Linux; Windows later) is the desktop side of everything:
+The desktop app is the desktop side of everything: `Lolidesk.app` on macOS, and `lolidesk-app` in the Linux package (**built**: what is built below works the same there, with administrator prompts through `pkexec`; showing the remote desktop on Linux needs a video decoder and is **planned**). Windows later.
 
 - **Join** (**built**): paste the pairing command or enter the join site and code; the app checks both, runs the join script with an administrator prompt and shows its output. **Invite** (**built**): make a code for another machine or a phone (with a QR code).
 - **Network**: this node, its peers and their latency, and the exit node switch (**built**); a list of the network's exit nodes and switches for TUN or userspace and mihomo (**planned**).
 - **Hosts**: remote terminals and desktops, as today.
-- **Shell**: `lolinet` comes with joining; the app shows whether `lolinet` and `lolidesk` are in `/usr/local/bin` and links its own `lolidesk` there with one button (**built**), so everything the app does is also a command. Doing it on first run is **planned**.
+- **Shell**: `lolinet` comes with joining; the app shows whether `lolinet` and `lolidesk` are in `/usr/local/bin` and links its own `lolidesk` there with one button (**built**), so everything the app does is also a command. On Linux a second button adds the app to the application menu (**built**). Doing it on first run is **planned**.
 - **Permissions guide** (**built**): Screen Recording and Accessibility, checked live, each with a button that opens the right settings page on the host, and a button that restarts the host service once Screen Recording is on.
 
 ## Remote control and computer use, one permission
