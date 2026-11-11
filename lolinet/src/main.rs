@@ -131,8 +131,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// 这台电脑的 mihomo 配置：网内地址走 lolinet，规则和出口节点由内网管理面集中下发
+    /// 这台电脑的 mihomo 配置：网内地址走 lolinet，规则和出口节点由内网管理面集中下发。
+    /// 不带子命令打印配置；on / off 把 mihomo 跑成系统服务（要 root）
+    #[command(args_conflicts_with_subcommands = true)]
     Mihomo {
+        #[command(subcommand)]
+        cmd: Option<MihomoCmd>,
         /// tun 或 userspace；不给就看本机内核是哪种
         #[arg(long, value_parser = ["tun", "userspace"])]
         mode: Option<String>,
@@ -179,6 +183,22 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
+}
+
+#[derive(Subcommand)]
+enum MihomoCmd {
+    /// 取配置、用 mihomo -t 检查，装成系统服务并启动（要 root）
+    On {
+        /// mihomo 的二进制；不给就用 Lolidesk.app 里带的、系统里装的
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        #[arg(long, value_parser = ["tun", "userspace"])]
+        mode: Option<String>,
+        #[arg(long)]
+        manager: Option<String>,
+    },
+    /// 停掉并卸载（要 root）
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -280,7 +300,11 @@ fn lolinet(args: Args) -> Result<()> {
             service::restart()
         }
         Cmd::Invite { kind, name, manager, json } => invite::run(kind, name, manager, json),
-        Cmd::Mihomo { mode, out, manager } => mihomo::run(mode, out, manager),
+        Cmd::Mihomo { cmd, mode, out, manager } => match cmd {
+            None => mihomo::run(mode, out, manager),
+            Some(MihomoCmd::On { bin, mode, manager }) => mihomo::on(bin, mode, manager),
+            Some(MihomoCmd::Off) => mihomo::off(),
+        },
         Cmd::Exit { cmd } => match cmd.unwrap_or(ExitCmd::Status) {
             ExitCmd::Status => exit::status(),
             ExitCmd::On { port, allow, lan } => exit::on(port, allow, lan),
@@ -302,8 +326,8 @@ fn lolinet(args: Args) -> Result<()> {
             Err(tail.arg(Path::new(LOG_DIR).join("easytier.log")).exec().into())
         }
         Cmd::Run { config } => {
-            fs::create_dir_all(LOG_DIR).with_context(|| format!("建 {LOG_DIR}"))?;
-            Err(exec_as("easytier-core", core_args(&config)))
+            let dir = log_dir()?;
+            Err(exec_as("easytier-core", core_args(&config, &dir)))
         }
         Cmd::Core { args } => Err(exec_as("easytier-core", args)),
         Cmd::Cli { args } => Err(exec_as("easytier-cli", args)),
@@ -313,11 +337,26 @@ fn lolinet(args: Args) -> Result<()> {
 /// 后台进程的 easytier-core 参数。v2.7.0 不认配置文件里的 rpc_portal，命令行给，否则管理口听 0.0.0.0；
 /// 日志只写文件（10 MB 一份、留 5 份）。终端那份关掉：打洞超时之类的 warn / error 很密，launchd 收的 stderr 不轮转，
 /// 一天能涨好几 MB；参数错误、panic 直接写 stderr，launchd / journald 照样收得到。
-fn core_args(config: &Path) -> Vec<OsString> {
-    let mut v: Vec<OsString> = vec!["-c".into(), config.into()];
+/// 日志目录：服务（root）写 /var/log/lolinet；没有 root 跑（容器里、userspace 模式）写不了那里，就写用户自己的
+/// $XDG_STATE_HOME/lolinet（默认 ~/.local/state/lolinet）
+fn log_dir() -> Result<PathBuf> {
+    if fs::create_dir_all(LOG_DIR).is_ok() && unsafe { nix::libc::access(c"/var/log/lolinet".as_ptr(), nix::libc::W_OK) } == 0 {
+        return Ok(LOG_DIR.into());
+    }
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))
+        .context("没有 HOME，也写不了 /var/log/lolinet")?;
+    let dir = state.join("lolinet");
+    fs::create_dir_all(&dir).with_context(|| format!("建 {}", dir.display()))?;
+    eprintln!("lolinet：没有权限写 {LOG_DIR}，内核日志写到 {}", dir.display());
+    Ok(dir)
+}
+
+fn core_args(config: &Path, log_dir: &Path) -> Vec<OsString> {
+    let mut v: Vec<OsString> = vec!["-c".into(), config.into(), "--file-log-dir".into(), log_dir.into()];
     for a in [
         "--rpc-portal", RPC,
-        "--file-log-dir", LOG_DIR,
         "--file-log-level", "info",
         "--file-log-size", "10",
         "--file-log-count", "5",

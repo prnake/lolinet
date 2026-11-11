@@ -1,6 +1,7 @@
 //! 系统服务：macOS 是 launchd LaunchDaemon，Linux 是 systemd，都以 root 跑（TUN 要）。
 //! 四个：内核（lolinet run）、自动升级的定时任务（lolinet upgrade --auto）、公开探针（lolinet probe run，读完配置降到 nobody）、
-//! 出口节点（lolinet exit run，绑好端口降到 nobody；只有 lolinet exit on 才装）。
+//! 出口节点（lolinet exit run，绑好端口降到 nobody；只有 lolinet exit on 才装）；
+//! mihomo（lolinet mihomo on 才装，跑的是 mihomo 自己的二进制，root：它的 TUN 要）。
 //! 两套都在所有平台上编译，运行时按系统选，这样在 Mac 上编译也能查 Linux 那份。
 
 use std::{
@@ -31,6 +32,7 @@ pub fn remove() -> Result<()> {
     remove_upgrade()?;
     remove_probe()?;
     remove_exit()?;
+    remove_mihomo()?;
     if MACOS { launchd::remove() } else { systemd::remove() }
 }
 
@@ -79,6 +81,19 @@ pub fn remove_exit() -> Result<()> {
 
 pub fn exit_state() -> Option<State> {
     if MACOS { launchd::exit_state() } else { systemd::exit_state() }
+}
+
+/// mihomo 的服务：`<bin> -d /etc/lolinet/mihomo`，root
+pub fn install_mihomo(bin: &Path) -> Result<()> {
+    if MACOS { launchd::install_mihomo(bin) } else { systemd::install_mihomo(bin) }
+}
+
+pub fn remove_mihomo() -> Result<()> {
+    if MACOS { launchd::remove_mihomo() } else { systemd::remove_mihomo() }
+}
+
+pub fn mihomo_state() -> Option<State> {
+    if MACOS { launchd::mihomo_state() } else { systemd::mihomo_state() }
 }
 
 /// python 版探针的服务还在（`lolinet status` 提示换成内置的）
@@ -141,6 +156,8 @@ mod launchd {
     const LEGACY_PROBE_LABEL: &str = "co.lo-li.mesh-probe";
     const EXIT_LABEL: &str = "co.lo-li.lolinet-exit";
     const EXIT_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.lolinet-exit.plist";
+    const MIHOMO_LABEL: &str = "co.lo-li.lolinet-mihomo";
+    const MIHOMO_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.lolinet-mihomo.plist";
     pub(super) const LEGACY_PROBE_PLIST: &str = "/Library/LaunchDaemons/co.lo-li.mesh-probe.plist";
 
     fn load(label: &str, plist: &str) -> Result<()> {
@@ -293,6 +310,46 @@ mod launchd {
         state_of(EXIT_LABEL, "launchd co.lo-li.lolinet-exit")
     }
 
+    pub fn install_mihomo(bin: &Path) -> Result<()> {
+        fs::create_dir_all(LOG_DIR)?;
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- lolinet mihomo on 写的：mihomo（规则和出口由 lolinet 管理面下发），root 跑（TUN 要） -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>{MIHOMO_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{}</string><string>-d</string><string>{}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>16384</integer></dict>
+  <key>StandardOutPath</key><string>{LOG_DIR}/mihomo.log</string>
+  <key>StandardErrorPath</key><string>{LOG_DIR}/mihomo.log</string>
+</dict></plist>
+"#,
+            xml(&bin.to_string_lossy()),
+            crate::mihomo::DIR
+        );
+        write_file(MIHOMO_PLIST, plist.as_bytes(), 0o644)?;
+        load(MIHOMO_LABEL, MIHOMO_PLIST)
+    }
+
+    pub fn remove_mihomo() -> Result<()> {
+        run("launchctl", &["bootout", &format!("system/{MIHOMO_LABEL}")]);
+        if Path::new(MIHOMO_PLIST).exists() {
+            fs::remove_file(MIHOMO_PLIST)?;
+        }
+        Ok(())
+    }
+
+    pub fn mihomo_state() -> Option<State> {
+        state_of(MIHOMO_LABEL, "launchd co.lo-li.lolinet-mihomo")
+    }
+
+    /// plist 里的路径（可能带空格、&）
+    fn xml(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
     pub fn remove_legacy_probe() -> Result<bool> {
         let had = Path::new(LEGACY_PROBE_PLIST).exists();
         if had {
@@ -357,6 +414,8 @@ mod systemd {
     const LEGACY_PROBE_NAME: &str = "mesh-probe";
     const EXIT_NAME: &str = "lolinet-exit";
     const EXIT_UNIT: &str = "/etc/systemd/system/lolinet-exit.service";
+    const MIHOMO_NAME: &str = "lolinet-mihomo";
+    const MIHOMO_UNIT: &str = "/etc/systemd/system/lolinet-mihomo.service";
     pub(super) const LEGACY_PROBE_UNIT: &str = "/etc/systemd/system/mesh-probe.service";
 
     fn need_systemd() -> Result<()> {
@@ -568,6 +627,52 @@ WantedBy=multi-user.target
 
     pub fn exit_state() -> Option<State> {
         state_of(EXIT_NAME, "systemd lolinet-exit.service")
+    }
+
+    pub fn install_mihomo(bin: &Path) -> Result<()> {
+        need_systemd()?;
+        let bin = bin.to_string_lossy();
+        if bin.contains(char::is_whitespace) || bin.contains('"') {
+            bail!("mihomo 的路径里有空格或引号，systemd 单元里不好写：{bin}");
+        }
+        let unit = format!(
+            "# lolinet mihomo on 写的：mihomo（规则和出口由 lolinet 管理面下发），root 跑（TUN 要）
+[Unit]
+Description=mihomo (rules and exits from the lolinet manager)
+After=network-online.target {NAME}.service
+Wants=network-online.target
+
+[Service]
+ExecStart={bin} -d {}
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+",
+            crate::mihomo::DIR
+        );
+        write_file(MIHOMO_UNIT, unit.as_bytes(), 0o644)?;
+        for args in [&["daemon-reload"][..], &["enable", MIHOMO_NAME], &["restart", MIHOMO_NAME]] {
+            if !run("systemctl", args) {
+                bail!("systemctl {} 失败", args.join(" "));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn remove_mihomo() -> Result<()> {
+        run("systemctl", &["disable", "--now", MIHOMO_NAME]);
+        if Path::new(MIHOMO_UNIT).exists() {
+            fs::remove_file(MIHOMO_UNIT)?;
+            run("systemctl", &["daemon-reload"]);
+        }
+        Ok(())
+    }
+
+    pub fn mihomo_state() -> Option<State> {
+        state_of(MIHOMO_NAME, "systemd lolinet-mihomo.service")
     }
 
     pub fn remove_legacy_probe() -> Result<bool> {

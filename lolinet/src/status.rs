@@ -77,6 +77,14 @@ pub fn show() -> Result<()> {
         let ip = ip.split('/').next().unwrap_or("");
         println!("出口    socks5://{ip}:{} · {st}", e.port);
     }
+    if let Some(m) = crate::mihomo::installed() {
+        let st = match service::mihomo_state() {
+            Some(st) if st.running => "运行中",
+            Some(_) => "没在运行（sudo lolinet mihomo on）",
+            None => "服务没装（sudo lolinet mihomo on）",
+        };
+        println!("mihomo  {m} · {st}");
+    }
     // 没有地址的是控制台（network.issuer 那台 relay）的 Gateway 实例，不算节点
     let (relays, devices): (Vec<&Value>, Vec<&Value>) = peers
         .iter()

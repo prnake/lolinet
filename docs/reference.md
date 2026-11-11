@@ -31,6 +31,8 @@ Every command, setting, file and endpoint, in one place. For a walkthrough see [
 | `lolinet probe run` | The probe service's entry point |
 | `lolinet invite [--kind desktop\|userspace\|phone\|server] [--name N] [--manager URL[@IP]] [--json]` | Ask the network's manager for a pairing code for another machine or a phone; the address is assigned centrally. For a phone it prints a `<join>/m#CODE` link instead of a command. No root and no console account: the manager knows this node by its overlay address. `--manager` is needed only on devices paired before this existed; run as root, it is remembered |
 | `lolinet mihomo [--mode tun\|userspace] [-o FILE] [--manager URL[@IP]]` | This computer's mihomo config from the manager: overlay addresses through lolinet, the central reject / direct / exit rules and the exit nodes as providers that mihomo refreshes over the overlay every 10 minutes. The mode defaults to this node's |
+| `lolinet mihomo on [--bin PATH] [--mode tun\|userspace] [--manager URL[@IP]]` *root* | Fetch that config into `/etc/lolinet/mihomo/config.yaml`, check it with `mihomo -t`, and run mihomo as a service. `lolinet` doesn't ship mihomo: `--bin`, else the copy in `Lolidesk.app`, else one on the system |
+| `lolinet mihomo off` *root* | Stop and remove the mihomo service; `/etc/lolinet/mihomo/` (rule caches) stays |
 | `lolinet exit` | Whether this node is an exit node, its address and service state |
 | `lolinet exit on [--port 10180] [--allow CIDR]… [--lan]` *root* | Make this node an exit node: a SOCKS5 server (`CONNECT` and `UDP ASSOCIATE`) for the overlay, installed as a service. `--allow` limits who may use it (default the overlay's CIDR); `--lan` also lets users reach private addresses behind this node. Also registers it with the manager, if it can, so mihomo lists it |
 | `lolinet exit off` *root* | Stop and remove it, and take it off the manager's list |
@@ -70,7 +72,7 @@ The same binary called `easytier-core` or `easytier-cli` (by symlink or by name)
 | `/usr/local/bin/lolinet` | The binary |
 | `/etc/lolinet/loli.toml` | EasyTier config, mode 600. The last lines hold `# credential_id` and `# credential_expiry_unix`, which `lolinet status` reads |
 | `/etc/lolinet/lolinet.json` | Settings: `base_url`, `source`, `auto_upgrade`, and the manager `lolinet invite` asks (`manager`, `manager_ip`, from the pairing config's `# lolinet = {…}` line). Mode 644, no secrets |
-| `/var/log/lolinet/easytier.log` | Kernel log, 10 MB × 5 files |
+| `/var/log/lolinet/easytier.log` | Kernel log, 10 MB × 5 files. `lolinet run` without root (a container, a userspace node run by hand) writes to `$XDG_STATE_HOME/lolinet/` (default `~/.local/state/lolinet/`) instead |
 | `/var/log/lolinet/upgrade.log` | Upgrade log on macOS (journald on Linux). Written only on a switch or an error |
 | `/Library/LaunchDaemons/co.lo-li.lolinet.plist` | macOS service, RunAtLoad and KeepAlive |
 | `/Library/LaunchDaemons/co.lo-li.lolinet-upgrade.plist` | macOS upgrade job |
@@ -84,6 +86,15 @@ The exit node, when turned on. It runs `/usr/local/bin/lolinet exit run`, starts
 | Settings (`port`, `allow`, `lan`) | `/etc/lolinet/exit.json`, mode 644 | `/etc/lolinet/exit.json`, mode 644 |
 | Service | `/Library/LaunchDaemons/co.lo-li.lolinet-exit.plist` | `/etc/systemd/system/lolinet-exit.service` |
 | Log | `/var/log/lolinet/exit.log`, errors only | journald |
+
+mihomo, when turned on with `lolinet mihomo on`. It runs `<mihomo> -d /etc/lolinet/mihomo` as root (its TUN needs it):
+
+| Path | macOS | Linux |
+| :-- | :-- | :-- |
+| Config and mihomo's own caches | `/etc/lolinet/mihomo/` | `/etc/lolinet/mihomo/` |
+| Which binary and mode | `/etc/lolinet/mihomo.json` | `/etc/lolinet/mihomo.json` |
+| Service | `/Library/LaunchDaemons/co.lo-li.lolinet-mihomo.plist` | `/etc/systemd/system/lolinet-mihomo.service` |
+| Log | `/var/log/lolinet/mihomo.log` | journald |
 
 The public probe, when installed. It runs `/usr/local/bin/lolinet probe run`, starts as root and drops to `nobody` after reading its config:
 
