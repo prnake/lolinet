@@ -91,8 +91,14 @@ jobs:
         working-directory: desk
         run: |
           V=$(git describe --always)
+          # mihomo（版本和 sha256 钉在 desk/mihomo/mihomo.json）：lolinet mihomo on 用 app 里带的这份
+          case "${{ matrix.target }}" in aarch64-*) MP=darwin-arm64 ;; *) MP=darwin-amd64 ;; esac
+          export MIHOMO=$(sh scripts/fetch-mihomo.sh $MP "$PWD/.mihomo")
           sh scripts/bundle-app.sh target/${{ matrix.target }}/release/lolidesk-app target/${{ matrix.target }}/release/lolidesk "$GHOSTTY_LIB" app-out "$V"
-          du -sh app-out/Lolidesk.app && ls -l app-out/Lolidesk.app/Contents/MacOS app-out/Lolidesk.app/Contents/Frameworks
+          du -sh app-out/Lolidesk.app && ls -l app-out/Lolidesk.app/Contents/MacOS app-out/Lolidesk.app/Contents/Helpers app-out/Lolidesk.app/Contents/Frameworks
+          cat app-out/Lolidesk.app/Contents/Resources/mihomo-NOTICE.txt
+          # 跑得动的话（本机架构）看一眼确实是 mihomo
+          app-out/Lolidesk.app/Contents/Helpers/mihomo -v 2>/dev/null | head -1 || true
           echo "APP=app-out/Lolidesk.app" >> "$GITHUB_ENV"
 
       - name: Package

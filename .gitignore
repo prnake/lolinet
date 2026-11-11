@@ -20,4 +20,5 @@ loli.toml
 target/
 # lolidesk：取来的 libghostty-vt、打包出来的 app
 .ghostty/
+.mihomo/
 app-out/

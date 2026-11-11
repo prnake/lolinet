@@ -36,9 +36,15 @@ $(GHOSTTY_LIB):
 desk: $(GHOSTTY_LIB)
 	cd desk && LOLIDESK_VERSION=$(DESK_VERSION) cargo build --locked --release --workspace
 
-desk-app: $(GHOSTTY_LIB)
+# mihomo for Lolidesk.app (desk/mihomo/mihomo.json pins version and sha256); lolinet mihomo on uses the app's copy
+MIHOMO_BIN := $(CURDIR)/desk/.mihomo/mihomo
+
+$(MIHOMO_BIN):
+	sh desk/scripts/fetch-mihomo.sh $(GHOSTTY_PLATFORM) desk/.mihomo
+
+desk-app: $(GHOSTTY_LIB) $(MIHOMO_BIN)
 	cd desk && cargo build --locked --release -p lolidesk-app -p lolidesk
-	sh desk/scripts/bundle-app.sh desk/target/release/lolidesk-app desk/target/release/lolidesk $(GHOSTTY_LIB) desk/app-out
+	MIHOMO=$(MIHOMO_BIN) sh desk/scripts/bundle-app.sh desk/target/release/lolidesk-app desk/target/release/lolidesk $(GHOSTTY_LIB) desk/app-out
 
 web/node_modules: web/package-lock.json
 	cd web && npm ci

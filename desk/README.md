@@ -10,7 +10,8 @@ lolidesk: a remote terminal and remote desktop over the lolinet overlay. A Rust 
 | `core/` | library | Client side: connection and fingerprint pinning, remembered hosts, VideoToolbox decoding into NV12 pixel buffers |
 | `client/` | `lolidesk` | The one program: `lolidesk host …` (from `host/`) and the client side, command line and TUI |
 | `app/` | `lolidesk-app` → `Lolidesk.app` | Desktop app: GPUI + gpui-component, macOS only (a stub elsewhere) |
-| `scripts/` | | `fetch-ghostty.sh` (the pinned libghostty-vt for a platform), `bundle-app.sh` (Lolidesk.app, with `lolidesk` in `Contents/Helpers`: `Contents/MacOS/lolidesk` would overwrite `Lolidesk` on a case-insensitive disk) |
+| `scripts/` | | `fetch-ghostty.sh` (the pinned libghostty-vt for a platform), `fetch-mihomo.sh` (the pinned mihomo, `mihomo/mihomo.json`), `bundle-app.sh` (Lolidesk.app, with `lolidesk` in `Contents/Helpers`: `Contents/MacOS/lolidesk` would overwrite `Lolidesk` on a case-insensitive disk; with `MIHOMO=<path>` set, mihomo goes next to it) |
+| `mihomo/` | | `mihomo.json`: the mihomo release the app ships (version, per-platform URL and SHA-256 of the `.gz`, GPL-3.0, source link) |
 
 ## Build and check
 
@@ -59,4 +60,4 @@ The remote desktop can't be tested in CI: the runner has no Screen Recording per
 
 ## Packaging
 
-CI builds with `LOLIDESK_VERSION=$(git describe --always)`, so `--version` prints the commit, and packs `lolidesk-<macos|linux>-<aarch64|x86_64>.tar.gz` with `lolidesk`, `libghostty-vt.dylib` (`.so` on Linux) and `BUILD-INFO` at the root, plus `Lolidesk.app` on macOS (signed ad hoc, with its own copy of both). Every push to `main` that changes `desk/` (other than `.md` files) publishes a `lolidesk-<commit>` release with the manifest `lolidesk.json` once all four builds pass. It never takes `releases/latest`. `install.sh` installs from it and `lolinet upgrade` keeps an installed lolidesk at its version. See [Distribution](../docs/lolidesk.md#distribution).
+CI builds with `LOLIDESK_VERSION=$(git describe --always)`, so `--version` prints the commit, and packs `lolidesk-<macos|linux>-<aarch64|x86_64>.tar.gz` with `lolidesk`, `libghostty-vt.dylib` (`.so` on Linux) and `BUILD-INFO` at the root, plus `Lolidesk.app` on macOS (signed ad hoc, with its own copy of both, and mihomo in `Contents/Helpers/mihomo` with a GPL notice in `Contents/Resources/mihomo-NOTICE.txt`). Every push to `main` that changes `desk/` (other than `.md` files) publishes a `lolidesk-<commit>` release with the manifest `lolidesk.json` once all four builds pass. It never takes `releases/latest`. `install.sh` installs from it and `lolinet upgrade` keeps an installed lolidesk at its version. See [Distribution](../docs/lolidesk.md#distribution).

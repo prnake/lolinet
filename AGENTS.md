@@ -38,6 +38,7 @@ Devices in the field depend on these. Changing one needs a migration path, not j
 | EasyTier version | `easytier/build.env`, patch file names, `nodes.example.yaml` (`network.easytier`), README badges |
 | Design tokens | `web/src/styles/tokens.css` is the only source; `web/DESIGN.md` documents it; `#/design` shows it; the lolidesk app copies the values into `desk/app` |
 | libghostty-vt | `desk/ghostty/libghostty-vt.json` (Ghostty commit, per-platform URL and SHA-256) is the only pin; the C structs in `desk/ghostty` follow that commit's headers, and its layout test checks them |
+| mihomo in Lolidesk.app | `desk/mihomo/mihomo.json` is the only pin; `desk/scripts/bundle-app.sh` puts it at `Contents/Helpers/mihomo`, where `lolinet/src/mihomo.rs` (`find_bin`) looks. It is GPL-3.0: ship it unmodified, as a separate program, with the notice |
 
 ## Upgrading EasyTier
 
