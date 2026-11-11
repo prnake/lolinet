@@ -324,25 +324,34 @@ fn replace(m: &Manifest, tmp: &Path, dry_run: bool, auto: bool) -> Result<()> {
 }
 
 
-/// lolidesk.json 的地址。GitHub：最新的 lolidesk-* Release 里那份（API 按发布时间从新到旧列），没发布过就是 None；
+/// lolidesk.json 的地址。GitHub：最新发布的 lolidesk-* Release 里那份（见 newest_desk_tag），没发布过就是 None；
 /// 别的来源（准入站 dl/、清单 URL）：和 lolinet.json 同一个目录
 fn desk_manifest_url(m: &Manifest, github: Option<&str>, tmp: &Path) -> Result<Option<String>> {
     let Some(repo) = github else {
         return Ok(Some(sibling(&m.url, DESK_MANIFEST)));
     };
-    let api = format!("https://api.github.com/repos/{repo}/releases?per_page=30");
+    let api = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
     let path = tmp.join("releases.json");
     fetch(&api, &path)?;
     let v: Value = serde_json::from_slice(&fs::read(&path)?).with_context(|| format!("{api} 不是 JSON"))?;
+    Ok(newest_desk_tag(&v).map(|t| format!("https://github.com/{repo}/releases/download/{t}/{DESK_MANIFEST}")))
+}
+
+/// API 列出的 Release 里最新发布的 lolidesk-*：按 published_at 取最大的（ISO 8601，按字符串比就是按时间比）。
+/// 列表本身不按发布时间排，排在前面的可能是旧版。草稿、预发布不算；tag 里只能有字母、数字和 . _ -（要拼进 URL）
+fn newest_desk_tag(releases: &Value) -> Option<&str> {
     let flag = |r: &Value, k: &str| r.get(k).and_then(Value::as_bool).unwrap_or(false);
-    let tag = v
+    releases
         .as_array()
         .into_iter()
         .flatten()
         .filter(|r| !flag(r, "draft") && !flag(r, "prerelease"))
-        .filter_map(|r| r.get("tag_name").and_then(Value::as_str))
-        .find(|t| t.starts_with("lolidesk-"));
-    Ok(tag.map(|t| format!("https://github.com/{repo}/releases/download/{t}/{DESK_MANIFEST}")))
+        .filter_map(|r| Some((r.get("tag_name")?.as_str()?, r.get("published_at")?.as_str()?)))
+        .filter(|(t, _)| {
+            t.starts_with("lolidesk-") && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        })
+        .max_by(|a, b| a.1.cmp(b.1))
+        .map(|(t, _)| t)
 }
 
 /// 本机二进制自己报的版本：`<名字> <版本>` 里的版本，跑不起来就是 None
