@@ -310,9 +310,56 @@ impl Client {
             .context("控制流被主机关了")
     }
 
+    /// 在一条新开的控制流上问一次（这条连接已经 Hello 过，不用再 Hello），问完就关。
+    /// 给后加的请求用：旧主机不认识这条请求只会断掉这一条流，主控制流照常能用。
+    /// 主机断了这条流（不认识）回 [`TooOld`]。
+    pub async fn control_once(&self, req: ControlReq) -> Result<ControlResp> {
+        let (mut send, mut recv) = self.open(StreamKind::Control).await?;
+        proto::send(&mut send, &req).await?;
+        let resp = tokio::time::timeout(
+            Duration::from_secs(15),
+            proto::recv::<ControlResp>(&mut recv),
+        )
+        .await
+        .context("主机一直没回")?;
+        let _ = send.finish();
+        match resp {
+            Ok(Some(r)) => Ok(r),
+            // 主机读不懂就丢掉这条流：正常关（None）或者被重置，看主机怎么丢
+            Ok(None) => Err(TooOld.into()),
+            Err(e) if is_reset(&e) => Err(TooOld.into()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn rtt(&self) -> Duration {
         self.conn.rtt()
     }
+}
+
+/// 主机不认识这条请求（版本比客户端旧）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooOld;
+
+impl std::fmt::Display for TooOld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("主机的 lolidesk 版本太旧，不认识这条请求（升级主机）")
+    }
+}
+
+impl std::error::Error for TooOld {}
+
+/// 流被对方重置（主机丢了没 finish 的流）
+fn is_reset(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<quinn::ReadExactError>(),
+            Some(quinn::ReadExactError::ReadError(quinn::ReadError::Reset(_)))
+        ) || matches!(
+            c.downcast_ref::<quinn::ReadError>(),
+            Some(quinn::ReadError::Reset(_))
+        )
+    })
 }
 
 #[cfg(test)]

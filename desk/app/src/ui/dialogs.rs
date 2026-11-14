@@ -42,7 +42,9 @@ fn shell(dialog: Dialog, width: f32) -> Dialog {
         .centered()
 }
 
+/// 对话框的标题；`sub` 是空的就只有标题（能不说就不说）。
 pub(crate) fn header(title: &'static str, sub: impl Into<SharedString>) -> impl IntoElement {
+    let sub: SharedString = sub.into();
     div()
         .flex()
         .flex_col()
@@ -53,7 +55,9 @@ pub(crate) fn header(title: &'static str, sub: impl Into<SharedString>) -> impl 
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(title),
         )
-        .child(div().text_size(T_XS).text_color(fg2()).child(sub.into()))
+        .when(!sub.is_empty(), |d| {
+            d.child(div().text_size(T_XS).text_color(fg2()).child(sub))
+        })
 }
 
 pub(crate) fn field(label: &'static str, input: &Entity<InputState>) -> gpui_kit::Div {
@@ -306,12 +310,7 @@ impl Render for AddHostForm {
                 ),
             )
             .when(has_secret, |d| {
-                d.child(field("配对码或 token", &self.token)).child(
-                    div()
-                        .text_size(T_CAP)
-                        .text_color(fg3())
-                        .child("配对码：对方 lolidesk host code 打出来的，或者在对方的 Lolidesk 里发的。token：对方 lolidesk host token 打出来的，用它连就是那台电脑的主人。"),
-                )
+                d.child(field("配对码或 token", &self.token))
             });
         let primary = match self.secret(cx) {
             Secret::None => "请对方同意",
@@ -323,10 +322,7 @@ impl Render for AddHostForm {
         };
         match self.step {
             Step::Enter => body
-                .child(header(
-                    "添加主机",
-                    "填网里那台电脑的地址：那边会弹框问要不要同意，同意一次以后不用再问。网里在跑 lolidesk 的设备也会列在侧栏「网里的设备」里。",
-                ))
+                .child(header("添加主机", ""))
                 .child(field("地址", &self.addr))
                 .child(disclosure)
                 .children(error_line(&self.error))
@@ -334,7 +330,7 @@ impl Render for AddHostForm {
             Step::Verify { fp, .. } => body
                 .child(header(
                     "核对证书指纹",
-                    "和主机上 lolidesk host token 打出的「指纹」对一下，一样再信任。",
+                    "和主机上 lolidesk host token 打出的指纹对一下",
                 ))
                 .child(
                     div()

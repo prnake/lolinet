@@ -12,6 +12,7 @@ use gpui_kit::component::{
     input::{InputEvent, InputState},
     popover::Popover,
     spinner::Spinner,
+    tooltip::Tooltip,
 };
 use gpui_kit::{
     AnyElement, App, AppContext, ClipboardItem, Context, Div, Entity, FocusHandle, Focusable,
@@ -30,7 +31,7 @@ use crate::{
         network::qr,
         widgets::{
             Trigger, badge, caption, checkbox, dot, icon, icon_button, mono, pill, pill_busy,
-            pill_sm, switch,
+            pill_sm, switch, tint_button,
         },
     },
 };
@@ -92,14 +93,11 @@ pub fn render(model: &Entity<Model>, addr: SocketAddr, cx: &App) -> AnyElement {
     let mut body = div()
         .flex()
         .flex_col()
-        .gap(px(28.))
+        .gap(px(24.))
         .max_w(px(880.))
-        .pt(px(56.))
-        .px(px(56.))
-        .pb(px(56.));
+        .p(px(24.));
     match (&h.access, h.online()) {
         (Some(info), _) => {
-            body = body.child(headline(h, info, &host_name));
             body = body.children(sections(model, h, info, now));
         }
         (None, false) => {
@@ -140,64 +138,6 @@ pub fn render(model: &Entity<Model>, addr: SocketAddr, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn headline(h: &HostState, info: &AccessInfo, host_name: &str) -> Div {
-    let online = info.grants.iter().filter(|g| g.online > 0).count();
-    let (a, b) = if info.owner {
-        let who = if h.local {
-            "这台电脑".to_string()
-        } else {
-            host_name.to_string()
-        };
-        let a = if info.grants.is_empty() {
-            format!("{who}还没配对给别的设备。")
-        } else {
-            format!("{who}配对给了 {} 台设备。", info.grants.len())
-        };
-        let b = match (info.pending.len(), online) {
-            (0, 0) if info.grants.is_empty() => {
-                "网里的设备点「连接」时这里会问你；也可以发一个配对码。".to_string()
-            }
-            (0, n) => format!("{n} 台现在连着。"),
-            (p, n) => format!("{n} 台现在连着，{p} 个请求在等你同意。"),
-        };
-        (a, b)
-    } else {
-        let mine = info
-            .codes
-            .iter()
-            .filter(|c| c.created_by.is_some() && c.created_by == info.me)
-            .count();
-        let brought = info.grants.iter().filter(|g| g.code.is_some()).count();
-        (
-            format!("我在 {host_name} 上。"),
-            if mine == 0 {
-                "还没发过分享链接。".to_string()
-            } else {
-                format!("我发了 {mine} 个分享链接，经它们进来 {brought} 台设备。")
-            },
-        )
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .child(
-            div()
-                .text_size(T_2XL)
-                .line_height(px(40.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(a),
-        )
-        .child(
-            div()
-                .text_size(T_2XL)
-                .line_height(px(40.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(fg3())
-                .child(b),
-        )
-}
-
 fn sections(model: &Entity<Model>, h: &HostState, info: &AccessInfo, now: u64) -> Vec<AnyElement> {
     let addr = h.addr;
     let owner = info.owner;
@@ -205,8 +145,8 @@ fn sections(model: &Entity<Model>, h: &HostState, info: &AccessInfo, now: u64) -
     if owner && !info.pending.is_empty() {
         out.push(
             section(
-                "等你同意",
-                Some(format!("{} 个", info.pending.len())),
+                "请求",
+                Some(info.pending.len().to_string()),
                 card().border_color(warn_line()).children(
                     info.pending
                         .iter()
@@ -227,8 +167,8 @@ fn sections(model: &Entity<Model>, h: &HostState, info: &AccessInfo, now: u64) -
     if !g.approved.is_empty() {
         out.push(
             section(
-                "经主人同意",
-                Some(format!("{} 台", g.approved.len())),
+                "设备",
+                Some(g.approved.len().to_string()),
                 card().children(
                     g.approved
                         .iter()
@@ -261,28 +201,12 @@ fn sections(model: &Entity<Model>, h: &HostState, info: &AccessInfo, now: u64) -
         out.push(
             card()
                 .child(
-                    card_row(true).child(
-                        div()
-                            .text_size(T_SM)
-                            .text_color(fg3())
-                            .child("还没有设备配对。别的电脑在侧栏「网里的设备」里点「连接」，这里会弹框问你；或者点右上角「新配对码」。"),
-                    ),
+                    card_row(true)
+                        .child(div().text_size(T_SM).text_color(fg3()).child("还没有设备")),
                 )
                 .into_any_element(),
         );
     }
-    out.push(
-        div()
-            .px(px(4.))
-            .text_size(T_CAP)
-            .text_color(fg3())
-            .child(if owner {
-                "吊销一台设备：它马上断开，它发的分享链接和经那些链接进来的设备一起失效。吊销配对码：用它配对的设备一起失效。"
-            } else {
-                "我能吊销自己发的分享链接和经它们进来的设备。解除配对在侧栏这台主机的右键菜单里。"
-            })
-            .into_any_element(),
-    );
     out
 }
 
@@ -378,7 +302,7 @@ fn pending_row(model: &Entity<Model>, first: bool, p: &PendingInfo, now: u64) ->
                         .text_size(T_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .truncate()
-                        .child(format!("{} 想连这台", p.device.name)),
+                        .child(p.device.name.clone()),
                 )
                 .child(mono(sub, T_CAP, fg3()).truncate()),
         )
@@ -403,12 +327,12 @@ fn code_section(ctx: &RowCtx, c: &CodeInfo, under: &[&GrantInfo]) -> Div {
     let revoke = mine.then(|| {
         let (model, addr, id) = (ctx.model.clone(), ctx.addr, c.id.clone());
         let note = pairing::revoke_note(ctx.info, &c.id);
-        pill_sm(
+        tint_button(
             SharedString::from(format!("acc-rc-{}", c.id)),
+            ic::UNLINK,
             "吊销",
-            false,
+            bad(),
         )
-        .text_color(bad())
         .on_click(move |_, window, cx| {
             let (model, id) = (model.clone(), id.clone());
             open_confirm(
@@ -442,12 +366,7 @@ fn code_section(ctx: &RowCtx, c: &CodeInfo, under: &[&GrantInfo]) -> Div {
     let rows: Vec<AnyElement> = if under.is_empty() {
         vec![
             card_row(false)
-                .child(
-                    div()
-                        .text_size(T_XS)
-                        .text_color(fg3())
-                        .child("还没有设备用它配对"),
-                )
+                .child(div().text_size(T_XS).text_color(fg3()).child("还没用过"))
                 .into_any_element(),
         ]
     } else {
@@ -471,12 +390,12 @@ fn grant_row(ctx: &RowCtx, first: bool, g: &GrantInfo) -> AnyElement {
         let id = g.id.clone();
         let note = pairing::revoke_note(ctx.info, &g.id);
         let name = g.device.name.clone();
-        pill_sm(
+        tint_button(
             SharedString::from(format!("acc-rg-{}", g.id)),
+            ic::UNLINK,
             "吊销",
-            false,
+            bad(),
         )
-        .text_color(bad())
         .on_click(move |_, window, cx| {
             let (model, id) = (model.clone(), id.clone());
             open_confirm(
@@ -516,16 +435,41 @@ fn grant_row(ctx: &RowCtx, first: bool, g: &GrantInfo) -> AnyElement {
                                 .child(g.device.name.clone()),
                         )
                         .when(me, |d| d.child(badge("我", eye(), eye_wash())))
-                        .when(online, |d| d.child(mono("在线", T_CAP, eye())))
-                        .when_some(g.allow, |d, a| {
-                            d.child(badge(format!("只能：{}", a.summary()), warn(), warn_wash()))
-                        }),
+                        .when_some(g.allow, |d, a| d.child(caps(&g.id, a))),
                 )
                 .child(mono(pairing::grant_line(g, ctx.now), T_CAP, fg3()).truncate()),
         )
         .children(limit)
         .children(revoke)
         .into_any_element()
+}
+
+/// 限制了的设备能做什么：五个小图标，能做的亮、不能的暗，悬停看文字。
+fn caps(grant: &str, a: lolidesk_proto::Allow) -> impl IntoElement {
+    let items = [
+        (a.terminal, ic::TERMINAL),
+        (a.desktop, ic::MONITOR),
+        (a.control, ic::POINTER),
+        (a.cua, ic::SPARKLE),
+        (a.share, ic::DETACH),
+    ];
+    let tip: SharedString = format!("只能：{}", a.summary()).into();
+    div()
+        .id(SharedString::from(format!("acc-caps-{grant}")))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .px(px(6.))
+        .py(px(3.))
+        .rounded(R_PILL)
+        .bg(warn_wash())
+        .children(
+            items
+                .into_iter()
+                .map(|(on, path)| icon(path, 11., if on { warn() } else { fg4() })),
+        )
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
 }
 
 /// 「限制」：五个开关和「恢复默认」，改了马上发给主机。
@@ -535,16 +479,12 @@ fn limit_popover(model: Entity<Model>, addr: SocketAddr, grant: String) -> AnyEl
         .open_bg(ink4())
         .flex()
         .items_center()
-        .h(px(26.))
-        .px(px(12.))
-        .rounded(R_PILL)
-        .bg(ink3())
-        .border_1()
-        .border_color(line2())
-        .text_size(T_XS)
-        .font_weight(FontWeight::MEDIUM)
-        .hover(|s| s.bg(ink4()))
-        .child("限制");
+        .justify_center()
+        .size(px(28.))
+        .rounded(R_SM)
+        .hover(|s| s.bg(ink3()))
+        .tooltip(|window, cx| Tooltip::new("限制").build(window, cx))
+        .child(icon(ic::SLIDERS, 15., fg2()));
     Popover::new(id)
         .anchor(gpui_kit::Anchor::TopRight)
         .trigger(trigger)
@@ -900,27 +840,21 @@ impl NewCodeForm {
                 ),
             ))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(div().flex().child(
-                        checkbox("code-view", self.view_only, "只能看").on_click(cx.listener(
-                            |f, _, _, cx| {
+                div().flex().flex_col().gap(px(6.)).child(
+                    div().flex().child(
+                        checkbox("code-view", self.view_only, "只能看")
+                            .tooltip(|window, cx| {
+                                Tooltip::new(
+                                    "能看终端和桌面，不能操作键鼠、不能给 agent 用、不能再分享",
+                                )
+                                .build(window, cx)
+                            })
+                            .on_click(cx.listener(|f, _, _, cx| {
                                 f.view_only = !f.view_only;
                                 cx.notify()
-                            },
-                        )),
-                    ))
-                    .child(div().pl(px(24.)).text_size(T_CAP).text_color(fg3()).child(
-                        "用它配对的设备能看终端和桌面，不能操作键鼠、不能给 agent 用、不能再分享。",
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(T_CAP)
-                    .text_color(fg3())
-                    .child("过期和次数只管新的配对：已经配对上的设备不受影响，要断开就吊销。"),
+                            })),
+                    ),
+                ),
             )
     }
 
@@ -943,54 +877,47 @@ impl NewCodeForm {
             .flex_col()
             .gap(px(16.))
             .child(
-                div()
-                    .flex()
-                    .gap(px(18.))
-                    .child(qr(&url, 172.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(10.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.))
-                                    .child(caption("配对码"))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .child(
-                                                div()
-                                                    .font_family(MONO)
-                                                    .text_size(px(22.))
-                                                    .line_height(px(30.))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(eye())
-                                                    .child(c.secret.clone()),
-                                            )
-                                            .child(icon_button("code-copy", ic::COPY, "复制配对码").on_click(
-                                                cx.listener(move |f, _, _, cx| f.copy(code_text.clone(), cx)),
-                                            )),
-                                    )
-                                    .child(mono(
-                                        format!("{} · {}", c.info.id, notes.join(" · ")),
-                                        T_CAP,
-                                        fg3(),
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_size(T_XS)
-                                    .text_color(fg2())
-                                    .child("另一台电脑在 Lolidesk 里「＋ → 导入分享链接」，或者跑 lolidesk pair <链接>。也可以在它的「添加主机」里填这台的地址和配对码。"),
-                            ),
-                    ),
+                div().flex().gap(px(18.)).child(qr(&url, 172.)).child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(caption("配对码"))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .font_family(MONO)
+                                                .text_size(px(22.))
+                                                .line_height(px(30.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(eye())
+                                                .child(c.secret.clone()),
+                                        )
+                                        .child(
+                                            icon_button("code-copy", ic::COPY, "复制配对码")
+                                                .on_click(cx.listener(move |f, _, _, cx| {
+                                                    f.copy(code_text.clone(), cx)
+                                                })),
+                                        ),
+                                )
+                                .child(mono(
+                                    format!("{} · {}", c.info.id, notes.join(" · ")),
+                                    T_CAP,
+                                    fg3(),
+                                )),
+                        ),
+                ),
             )
             .child(
                 div()
@@ -1035,7 +962,7 @@ impl NewCodeForm {
                         div()
                             .text_size(T_XS)
                             .text_color(fg2())
-                            .child("码只显示这一次。不想要了就在「访问」里吊销它，用它配对的设备一起失效。"),
+                            .child("只显示这一次"),
                     ),
             )
     }
@@ -1052,7 +979,7 @@ impl Form for NewCodeForm {
 
 impl Render for NewCodeForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sub = "别的电脑用配对码或分享链接配对，不用你再点同意。";
+        let sub = "";
         let (body, footer): (AnyElement, AnyElement) = match &self.state {
             CodeState::Done(c) => (
                 self.done(c, cx).into_any_element(),
@@ -1121,7 +1048,9 @@ fn header_owned(title: String, sub: &'static str) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(title),
         )
-        .child(div().text_size(T_XS).text_color(fg2()).child(sub))
+        .when(!sub.is_empty(), |d| {
+            d.child(div().text_size(T_XS).text_color(fg2()).child(sub))
+        })
 }
 
 /// 打开「新配对码」/「分享这台…」。

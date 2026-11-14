@@ -59,6 +59,9 @@ struct Args {
     /// 只列出主机上的显示器（顺便检查屏幕录制权限）
     #[arg(long)]
     displays: bool,
+    /// 只列出主机上开着的窗口（远程桌面可以只推其中一个）
+    #[arg(long)]
+    windows: bool,
     /// 只列出主机上找得到的 agent
     #[arg(long)]
     launchers: bool,
@@ -328,7 +331,7 @@ fn main() -> Result<()> {
         }
     );
 
-    if args.sessions || args.displays || args.launchers || args.permissions {
+    if args.sessions || args.displays || args.windows || args.launchers || args.permissions {
         use lolidesk_proto::{ControlReq, ControlResp};
         if args.sessions {
             match rt.block_on(client.control(ControlReq::ListSessions))? {
@@ -371,6 +374,29 @@ fn main() -> Result<()> {
                 }
                 ControlResp::Error(e) => println!("主机：{e}"),
                 other => println!("{other:?}"),
+            }
+        }
+        if args.windows {
+            // 后加的请求：单独一条控制流问，旧主机不认识也不影响别的
+            match rt.block_on(client.control_once(ControlReq::ListWindows)) {
+                Ok(ControlResp::Windows(list)) if list.is_empty() => println!("没有开着的窗口"),
+                Ok(ControlResp::Windows(list)) => {
+                    for w in list {
+                        println!(
+                            "{}\t{}×{}\t显示器 {}\t{}\t{}{}",
+                            w.id,
+                            w.width,
+                            w.height,
+                            w.display,
+                            w.app,
+                            w.title,
+                            if w.minimized { "\t已最小化" } else { "" }
+                        );
+                    }
+                }
+                Ok(ControlResp::Error(e)) => println!("主机：{e}"),
+                Ok(other) => println!("{other:?}"),
+                Err(e) => println!("{e:#}"),
             }
         }
         if args.launchers {

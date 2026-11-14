@@ -16,6 +16,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lolidesk_proto::DeskInput;
 
+use crate::desktop::Area;
+
+/// 推着一个窗口时，远程点它之前它被别的窗口盖住了（这台电脑前的人点了别的）：先提上来，
+/// 不然点击落在盖着它的那个窗口上。提完等 WindowServer 换好层级
+fn bring_front(id: u32) {
+    if crate::desktop::is_front(id) {
+        return;
+    }
+    match crate::desktop::raise_window(id) {
+        Ok(()) => std::thread::sleep(std::time::Duration::from_millis(120)),
+        Err(e) => tracing::debug!("提不了窗口 {id}：{e:#}"),
+    }
+}
+
 /// 最近一次远程桌面里的人注入输入的时刻（Unix 毫秒）
 pub static VIEWER_LAST: AtomicU64 = AtomicU64::new(0);
 /// 最近一次 agent（computer use）注入输入的时刻
@@ -59,6 +73,10 @@ enum Msg {
     Input(DeskInput),
     /// 前面的都做完了就回一声
     Flush(tokio::sync::oneshot::Sender<()>),
+    /// 坐标换算改按这一块（推窗口时是窗口的框，窗口挪了跟着换）
+    Area(Area),
+    /// 推的是这个窗口：按下鼠标前它不在最前面就先提上来（None 是推整块显示器）
+    Window(Option<u32>),
 }
 
 pub struct Injector {
@@ -72,12 +90,20 @@ impl Injector {
             .name("input".into())
             .spawn(move || {
                 let mut inj = imp::Injector::new(display);
+                let mut window: Option<u32> = None;
                 while let Ok(m) = rx.recv() {
                     match m {
-                        Msg::Input(i) => inj.apply(&i),
+                        Msg::Input(i) => {
+                            if let (Some(id), DeskInput::Button { down: true, .. }) = (window, &i) {
+                                bring_front(id);
+                            }
+                            inj.apply(&i)
+                        }
                         Msg::Flush(done) => {
                             let _ = done.send(());
                         }
+                        Msg::Area(a) => inj.set_area(a),
+                        Msg::Window(w) => window = w,
                     }
                 }
                 inj.apply(&DeskInput::ReleaseAll);
@@ -87,6 +113,16 @@ impl Injector {
 
     pub fn apply(&self, i: DeskInput) {
         let _ = self.tx.send(Msg::Input(i));
+    }
+
+    /// 坐标按这一块换算（显示器的范围、窗口的框）
+    pub fn set_area(&self, a: Area) {
+        let _ = self.tx.send(Msg::Area(a));
+    }
+
+    /// 推的是这个窗口（None：整块显示器）
+    pub fn set_window(&self, w: Option<u32>) {
+        let _ = self.tx.send(Msg::Window(w));
     }
 
     /// 等前面排着的输入都做完（agent 做完马上截图，要看到结果）
@@ -117,6 +153,7 @@ mod imp {
             Self
         }
         pub fn apply(&mut self, _i: &DeskInput) {}
+        pub fn set_area(&mut self, _a: crate::desktop::Area) {}
     }
 }
 
@@ -357,6 +394,19 @@ mod imp {
 
         fn src(&self) -> Option<&CGEventSource> {
             self.src.as_deref()
+        }
+
+        /// 坐标改按这一块换算（推窗口：窗口的框）
+        pub fn set_area(&mut self, a: crate::desktop::Area) {
+            if a.w > 0.0 && a.h > 0.0 {
+                self.bounds = CGRect {
+                    origin: CGPoint { x: a.x, y: a.y },
+                    size: objc2_core_foundation::CGSize {
+                        width: a.w,
+                        height: a.h,
+                    },
+                };
+            }
         }
 
         fn point(&self, x: f32, y: f32) -> CGPoint {

@@ -143,6 +143,25 @@ pub fn display_name(name: &str, id: u32) -> String {
     }
 }
 
+/// 窗口的名字：标题，没有标题就用程序名。
+pub fn window_label(w: &lolidesk_proto::WindowInfo) -> String {
+    if w.title.trim().is_empty() {
+        w.app.clone()
+    } else {
+        w.title.clone()
+    }
+}
+
+/// 最多 `max` 个字，多的换成「…」（菜单、工具条上放不下长标题）。
+pub fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 // ---------------------------------------------------------------- 画面几何
 
 /// 窗口坐标里的矩形（逻辑像素）。
@@ -281,6 +300,26 @@ pub fn session_subtitle(s: &SessionInfo, host_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_names() {
+        let mut w = lolidesk_proto::WindowInfo {
+            id: 1,
+            app: "Ghostty".into(),
+            bundle: String::new(),
+            title: "  ".into(),
+            display: 1,
+            width: 10,
+            height: 10,
+            minimized: false,
+        };
+        assert_eq!(window_label(&w), "Ghostty");
+        w.title = "~/code".into();
+        assert_eq!(window_label(&w), "~/code");
+        assert_eq!(clip("远程桌面的窗口列表", 5), "远程桌面…");
+        assert_eq!(clip("abc", 3), "abc");
+        assert_eq!(clip("", 3), "");
+    }
 
     #[test]
     fn fingerprint_groups() {

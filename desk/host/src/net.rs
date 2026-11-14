@@ -17,8 +17,8 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use lolidesk_proto::{
-    self as proto, Allow, ControlReq, ControlResp, DeskEvent, DeskInput, DeskReq, DeviceInfo, Frag,
-    PendingInfo, Role, StreamKind, TermEvent, TermReq, VideoSettings, FRAG_KEY,
+    self as proto, Allow, ControlReq, ControlResp, DeskEvent, DeskInput, DeskReq, DeskTarget,
+    DeviceInfo, Frag, PendingInfo, Role, StreamKind, TermEvent, TermReq, VideoSettings, FRAG_KEY,
 };
 use quinn::{Connection, RecvStream, SendStream};
 
@@ -525,6 +525,16 @@ async fn control(
                 Ok(d) => ControlResp::Displays(d),
                 Err(e) => ControlResp::Error(format!("{e:#}")),
             },
+            // 窗口标题能看出人在干什么：能看这台桌面的才给
+            ControlReq::ListWindows if !shared.allow_for(&who).desktop => {
+                ControlResp::Error(closed(&who, "远程桌面", "desktop"))
+            }
+            ControlReq::ListWindows => {
+                match tokio::task::spawn_blocking(desktop::list_windows).await? {
+                    Ok(w) => ControlResp::Windows(w),
+                    Err(e) => ControlResp::Error(format!("{e:#}")),
+                }
+            }
             ControlReq::ListSessions => {
                 let sessions = shared.sessions.clone();
                 ControlResp::Sessions(tokio::task::spawn_blocking(move || sessions.list()).await?)
@@ -754,15 +764,261 @@ async fn terminal(mut send: SendStream, mut recv: RecvStream, shared: &Shared) -
     result
 }
 
+/// 推着的窗口关了、最小化了、藏起来了：改推它所在的显示器时告诉人的话（同 Vibe42）
+const WINDOW_GONE: &str = "窗口已关闭或已隐藏，已切换到整个屏幕";
+
+/// 正在推的：采集、推的是什么、实际参数（推窗口时 area 跟着窗口挪）
+struct Live {
+    capture: desktop::Capture,
+    target: DeskTarget,
+    actual: desktop::Actual,
+}
+
+/// 一条桌面流上的采集、输入和发帧。
+struct Desk<'a> {
+    send: &'a mut SendStream,
+    live: Option<Live>,
+    video: VideoSettings,
+    injector: Option<input::Injector>,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    force_key: Arc<AtomicBool>,
+    /// 推窗口时窗口大小在变：上一次看到的新大小（稳住了才重开采集）
+    resizing: Option<(u32, u32)>,
+}
+
+impl Desk<'_> {
+    async fn event(&mut self, ev: DeskEvent) -> Result<()> {
+        proto::send(self.send, &ev).await
+    }
+
+    /// 开采集（不发消息）
+    async fn capture(&self, target: DeskTarget) -> Result<desktop::Capture> {
+        let cfg = desktop::CaptureConfig {
+            target,
+            video: self.video,
+            force_key: self.force_key.clone(),
+        };
+        let tx = self.tx.clone();
+        let c = tokio::task::spawn_blocking(move || desktop::Capture::start(cfg, tx)).await??;
+        let a = c.actual();
+        tracing::info!(
+            ?target,
+            video = ?self.video,
+            w = a.width,
+            h = a.height,
+            fps = a.fps,
+            bitrate = a.bitrate,
+            "远程桌面开始"
+        );
+        Ok(c)
+    }
+
+    fn stop_live(&mut self) {
+        if let Some(l) = self.live.take() {
+            l.capture.stop();
+        }
+    }
+
+    /// 开起来了：输入按它换算，告诉客户端（`showing` 时先说推的是什么，再给 Ready）
+    async fn went_live(
+        &mut self,
+        c: desktop::Capture,
+        target: DeskTarget,
+        showing: Option<String>,
+    ) -> Result<()> {
+        let a = c.actual();
+        let inj = self
+            .injector
+            .get_or_insert_with(|| input::Injector::new(a.display));
+        inj.set_area(a.area);
+        inj.set_window(match target {
+            DeskTarget::Window(id) => Some(id),
+            DeskTarget::Display(_) => None,
+        });
+        self.live = Some(Live {
+            capture: c,
+            target,
+            actual: a,
+        });
+        self.resizing = None;
+        if let Some(note) = showing {
+            self.event(DeskEvent::Showing { target, note }).await?;
+        }
+        self.event(DeskEvent::Ready {
+            width: a.width,
+            height: a.height,
+            fps: a.fps,
+            bitrate: a.bitrate,
+        })
+        .await
+    }
+
+    /// 要推一个窗口：能操作这台桌面的话先把它提到最前面（最小化的恢复、程序激活），
+    /// 远程的键鼠才落在它上面；等它出现在屏幕上（最多 1.5 秒，恢复最小化有动画）。
+    async fn prepare_window(id: u32, control: bool) -> Result<()> {
+        if control {
+            if let Err(e) = tokio::task::spawn_blocking(move || desktop::raise_window(id)).await? {
+                tracing::debug!("提不了窗口 {id}：{e:#}");
+            }
+        }
+        for _ in 0..15 {
+            match tokio::task::spawn_blocking(move || desktop::window_state(id)).await? {
+                None => bail!("窗口不在了（关掉了？）"),
+                Some(s) if s.on_screen => return Ok(()),
+                Some(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        if control {
+            bail!("窗口没出现在屏幕上（程序没理恢复的请求，或者它在别的桌面空间）")
+        }
+        bail!("窗口不在屏幕上（最小化了、程序藏起来了），这台电脑没给你开放操作，恢复不了")
+    }
+
+    /// Start（旧客户端，只有显示器）/ Open：开始推
+    async fn open(
+        &mut self,
+        target: DeskTarget,
+        video: VideoSettings,
+        control: bool,
+        announce: bool,
+    ) -> Result<()> {
+        if self.live.is_some() {
+            return self.event(DeskEvent::Error("已经在推了".into())).await;
+        }
+        self.video = video;
+        let first = match target {
+            DeskTarget::Window(id) => match Self::prepare_window(id, control).await {
+                Ok(()) => self.capture(target).await,
+                Err(e) => Err(e),
+            },
+            DeskTarget::Display(_) => self.capture(target).await,
+        };
+        match first {
+            Ok(c) => {
+                let showing = announce.then(String::new);
+                self.went_live(c, target, showing).await
+            }
+            // 窗口打不开：改推主显示器，说为什么
+            Err(e) if matches!(target, DeskTarget::Window(_)) => {
+                tracing::info!("打不开窗口：{e:#}，改推主显示器");
+                let main = DeskTarget::Display(desktop::main_display());
+                match self.capture(main).await {
+                    Ok(c) => {
+                        let note = format!("打不开这个窗口（{e:#}），已切换到整个屏幕");
+                        self.went_live(c, main, Some(note)).await
+                    }
+                    Err(e) => self.fail(e).await,
+                }
+            }
+            Err(e) => self.fail(e).await,
+        }
+    }
+
+    async fn fail(&mut self, e: anyhow::Error) -> Result<()> {
+        tracing::warn!("采屏失败：{e:#}");
+        self.event(DeskEvent::Error(format!("{e:#}"))).await
+    }
+
+    /// 同一个东西按新参数重开（Configure、窗口大小变了）
+    async fn restart(&mut self) -> Result<()> {
+        let Some(target) = self.live.as_ref().map(|l| l.target) else {
+            return Ok(());
+        };
+        self.stop_live();
+        match self.capture(target).await {
+            Ok(c) => self.went_live(c, target, None).await,
+            Err(e) => self.fail(e).await,
+        }
+    }
+
+    /// Select：换推的东西。换不过去就接着推原来的（回 Error）
+    async fn select(&mut self, target: DeskTarget, control: bool) -> Result<()> {
+        let Some(old) = self.live.as_ref().map(|l| l.target) else {
+            return self.event(DeskEvent::Error("还没开始推".into())).await;
+        };
+        if let DeskTarget::Window(id) = target {
+            // 先看窗口能不能推，不行的话原来的接着推，不用停
+            if let Err(e) = Self::prepare_window(id, control).await {
+                return self
+                    .event(DeskEvent::Error(format!("打不开这个窗口：{e:#}")))
+                    .await;
+            }
+        }
+        if target == old {
+            self.force_key.store(true, Ordering::Relaxed);
+            let a = self.live.as_ref().map(|l| l.actual);
+            self.event(DeskEvent::Showing {
+                target,
+                note: String::new(),
+            })
+            .await?;
+            if let Some(a) = a {
+                self.event(DeskEvent::Ready {
+                    width: a.width,
+                    height: a.height,
+                    fps: a.fps,
+                    bitrate: a.bitrate,
+                })
+                .await?;
+            }
+            return Ok(());
+        }
+        self.stop_live();
+        match self.capture(target).await {
+            Ok(c) => self.went_live(c, target, Some(String::new())).await,
+            Err(e) => {
+                let why = format!("换不过去：{e:#}");
+                match self.capture(old).await {
+                    Ok(c) => {
+                        self.event(DeskEvent::Error(why)).await?;
+                        self.went_live(c, old, Some(String::new())).await
+                    }
+                    Err(e2) => self.fail(e2.context(why)).await,
+                }
+            }
+        }
+    }
+
+    /// 推窗口时每秒一次：窗口挪了、变大小了、没了
+    async fn watch_window(&mut self) -> Result<()> {
+        let Some((id, area, source, display)) = self.live.as_ref().and_then(|l| match l.target {
+            DeskTarget::Window(id) => Some((id, l.actual.area, l.actual.source, l.actual.display)),
+            DeskTarget::Display(_) => None,
+        }) else {
+            return Ok(());
+        };
+        let now = tokio::task::spawn_blocking(move || desktop::window_state(id)).await?;
+        match desktop::watch(area, source, &mut self.resizing, now) {
+            desktop::Watch::Keep => Ok(()),
+            desktop::Watch::Move(a) => {
+                if let Some(l) = self.live.as_mut() {
+                    l.actual.area = a;
+                }
+                if let Some(inj) = &self.injector {
+                    inj.set_area(a);
+                }
+                Ok(())
+            }
+            desktop::Watch::Restart => self.restart().await,
+            desktop::Watch::Lost => {
+                let to = DeskTarget::Display(now.map_or(display, |s| s.display));
+                tracing::info!(id, ?to, "推着的窗口没了，改推显示器");
+                self.stop_live();
+                match self.capture(to).await {
+                    Ok(c) => self.went_live(c, to, Some(WINDOW_GONE.into())).await,
+                    Err(e) => self.fail(e).await,
+                }
+            }
+        }
+    }
+}
+
 async fn desktop_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     conn: Connection,
     can_control: impl Fn() -> bool,
 ) -> Result<()> {
-    let mut capture: Option<desktop::Capture> = None;
-    let mut display = 0u32;
-    let mut injector: Option<input::Injector> = None;
     // 发送任务只有一个，跨重开采集复用；采集只管往 tx 里塞编好的帧
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
     let dropped = Arc::new(AtomicU64::new(0));
@@ -773,36 +1029,67 @@ async fn desktop_stream(
         dropped.clone(),
         force_key.clone(),
     ));
+    // 请求在自己的任务里读：主循环还要每秒看一眼推着的窗口，读到一半的消息不能被打断
+    let (req_tx, mut reqs) = tokio::sync::mpsc::channel::<Result<DeskReq>>(64);
+    let reader = tokio::spawn(async move {
+        loop {
+            let r = proto::recv::<DeskReq>(&mut recv).await;
+            let end = !matches!(r, Ok(Some(_)));
+            let sent = match r {
+                Ok(Some(req)) => req_tx.send(Ok(req)).await,
+                Ok(None) => break,
+                Err(e) => req_tx.send(Err(e)).await,
+            };
+            if end || sent.is_err() {
+                break;
+            }
+        }
+    });
+    let mut desk = Desk {
+        send: &mut send,
+        live: None,
+        video: VideoSettings::default(),
+        injector: None,
+        tx,
+        force_key: force_key.clone(),
+        resizing: None,
+    };
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result: Result<()> = async {
-        while let Some(req) = proto::recv::<DeskReq>(&mut recv).await? {
-            match req {
-                DeskReq::Start { display: id, video } => {
-                    if capture.is_some() {
-                        proto::send(&mut send, &DeskEvent::Error("已经在推了".into())).await?;
-                        continue;
-                    }
-                    display = id;
-                    match start_capture(display, video, &force_key, tx.clone(), &mut send).await? {
-                        Some(c) => {
-                            injector = Some(input::Injector::new(display));
-                            capture = Some(c);
-                        }
-                        None => continue,
-                    }
+        loop {
+            let watching = desk
+                .live
+                .as_ref()
+                .is_some_and(|l| matches!(l.target, DeskTarget::Window(_)));
+            let req = tokio::select! {
+                r = reqs.recv() => match r {
+                    Some(r) => r?,
+                    None => break,
+                },
+                _ = tick.tick(), if watching => {
+                    desk.watch_window().await?;
+                    continue;
                 }
+            };
+            match req {
+                DeskReq::Start { display, video } => {
+                    desk.open(DeskTarget::Display(display), video, can_control(), false)
+                        .await?
+                }
+                DeskReq::Open { target, video } => {
+                    desk.open(target, video, can_control(), true).await?
+                }
+                DeskReq::Select(target) => desk.select(target, can_control()).await?,
                 DeskReq::Configure(video) => {
-                    let Some(old) = capture.take() else {
-                        continue;
-                    };
-                    old.stop();
-                    capture =
-                        start_capture(display, video, &force_key, tx.clone(), &mut send).await?;
+                    desk.video = video;
+                    desk.restart().await?;
                 }
                 DeskReq::Stop => break,
                 DeskReq::Keyframe => force_key.store(true, Ordering::Relaxed),
                 DeskReq::Input(i) => {
                     // 只看不控（allow.json 的 control 关了）：输入丢掉
-                    if let Some(inj) = injector.as_ref().filter(|_| can_control()) {
+                    if let Some(inj) = desk.injector.as_ref().filter(|_| can_control()) {
                         // 远程桌面里有人在操作：agent 的 computer use 先让着（input::person_active）
                         if !matches!(i, DeskInput::ReleaseAll) {
                             input::VIEWER_LAST.store(input::now_ms(), Ordering::Relaxed);
@@ -815,63 +1102,15 @@ async fn desktop_stream(
         Ok(())
     }
     .await;
-    if let Some(c) = capture.take() {
-        c.stop();
-    }
-    if let Some(inj) = injector.take() {
+    desk.stop_live();
+    if let Some(inj) = desk.injector.take() {
         inj.apply(DeskInput::ReleaseAll);
     }
+    reader.abort();
     sender.abort();
     let _ = proto::send(&mut send, &DeskEvent::Stopped("结束".into())).await;
     tracing::info!(dropped = dropped.load(Ordering::Relaxed), "远程桌面结束");
     result
-}
-
-/// 开采集，成功就回 Ready（实际参数），失败回 Error。
-async fn start_capture(
-    display: u32,
-    video: VideoSettings,
-    force_key: &Arc<AtomicBool>,
-    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
-    send: &mut SendStream,
-) -> Result<Option<desktop::Capture>> {
-    let cfg = desktop::CaptureConfig {
-        display,
-        video,
-        force_key: force_key.clone(),
-    };
-    let started = tokio::task::spawn_blocking(move || desktop::Capture::start(cfg, tx)).await?;
-    match started {
-        Ok(c) => {
-            let a = c.actual();
-            let display_id = display;
-            tracing::info!(
-                display_id,
-                ?video,
-                w = a.width,
-                h = a.height,
-                fps = a.fps,
-                bitrate = a.bitrate,
-                "远程桌面开始"
-            );
-            proto::send(
-                send,
-                &DeskEvent::Ready {
-                    width: a.width,
-                    height: a.height,
-                    fps: a.fps,
-                    bitrate: a.bitrate,
-                },
-            )
-            .await?;
-            Ok(Some(c))
-        }
-        Err(e) => {
-            tracing::warn!("采屏失败：{e:#}");
-            proto::send(send, &DeskEvent::Error(format!("{e:#}"))).await?;
-            Ok(None)
-        }
-    }
 }
 
 /// 一帧切成若干 datagram。发送缓冲放不下整帧就整帧丢（发一半等于白发），

@@ -67,9 +67,8 @@ impl Service for Real {
     }
 
     fn install(&self, program: &Path) -> Result<String> {
-        // 从「下载」里直接开的：macOS 把 app 挪到一个临时位置跑，装进服务的路径重启后就没了
-        if program.to_string_lossy().contains("/AppTranslocation/") {
-            bail!("Lolidesk 是从下载的位置直接开的：先把它拖进「应用程序」，再开一次");
+        if not_installed_yet(program) {
+            bail!("Lolidesk 还在下载的位置或安装盘里：先把它拖进「应用程序」，再从那里打开");
         }
         run_helper(program, "install")
     }
@@ -206,10 +205,47 @@ pub fn probe_candidates(
         .collect()
 }
 
+/// 这个程序还没装好，不能装进服务（服务记的是程序的路径，这两种过后就没了）：
+/// - 从「下载」里直接开的：macOS 把 app 挪到一个临时位置跑（App Translocation）；
+/// - 从 DMG 里直接开的：app 旁边是 DMG 里那个 Applications 链接（desk/scripts/bundle-dmg.sh），推出 DMG 路径就没了。
+fn not_installed_yet(program: &Path) -> bool {
+    if program.to_string_lossy().contains("/AppTranslocation/") {
+        return true;
+    }
+    let Some(app) = program
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+    else {
+        return false;
+    };
+    app.parent()
+        .map(|dir| dir.join("Applications"))
+        .and_then(|l| std::fs::read_link(l).ok())
+        .is_some_and(|to| to == Path::new("/Applications"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lolinet::Peer;
+
+    #[cfg(unix)]
+    #[test]
+    fn not_installed_from_dmg_or_translocation() {
+        let tmp = std::env::temp_dir().join(format!("lolidesk-dmg-{}", std::process::id()));
+        let helper = tmp.join("Lolidesk.app/Contents/Helpers/lolidesk");
+        std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        // 装好的（旁边没有 Applications 链接）可以装进服务
+        assert!(!not_installed_yet(&helper));
+        assert!(!not_installed_yet(Path::new("/usr/local/bin/lolidesk")));
+        // DMG 里：旁边有指向 /Applications 的链接
+        std::os::unix::fs::symlink("/Applications", tmp.join("Applications")).unwrap();
+        assert!(not_installed_yet(&helper));
+        std::fs::remove_dir_all(&tmp).unwrap();
+        assert!(not_installed_yet(Path::new(
+            "/private/var/folders/x/AppTranslocation/ABC/d/Lolidesk.app/Contents/Helpers/lolidesk"
+        )));
+    }
 
     fn peer(name: &str, ip: &str, relay: bool) -> Peer {
         Peer {

@@ -49,6 +49,50 @@ pub fn pill(
     label: impl Into<SharedString>,
     primary: bool,
 ) -> Stateful<Div> {
+    pill_base(id, primary).child(label.into())
+}
+
+/// 前面带图标的胶囊按钮。
+pub fn icon_pill(
+    id: impl Into<ElementId>,
+    path: &'static str,
+    label: impl Into<SharedString>,
+    primary: bool,
+) -> Stateful<Div> {
+    let ink = if primary { solid_ink() } else { fg() };
+    pill_base(id, primary)
+        .gap(px(7.))
+        .pl(px(12.))
+        .child(icon(path, 15., ink))
+        .child(label.into())
+}
+
+/// 和次要胶囊一样高、一样描边的方形图标按钮（卡片里的操作），悬停有提示。
+pub fn square_button(
+    id: impl Into<ElementId>,
+    path: &'static str,
+    tip: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let tip: SharedString = tip.into();
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(32.))
+        .rounded(R_SM)
+        .bg(ink3())
+        .border_1()
+        .border_color(line2())
+        .cursor_pointer()
+        .hover(|s| s.bg(ink4()))
+        .active(|s| s.opacity(0.85))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .child(icon(path, 16., fg()))
+}
+
+fn pill_base(id: impl Into<ElementId>, primary: bool) -> Stateful<Div> {
     let b = div()
         .id(id)
         .flex()
@@ -60,8 +104,7 @@ pub fn pill(
         .rounded(R_PILL)
         .text_size(T_SM)
         .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .child(label.into());
+        .cursor_pointer();
     if primary {
         b.bg(solid())
             .text_color(solid_ink())
@@ -194,6 +237,29 @@ pub fn icon_button(
         .active(|s| s.bg(ink4()))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .child(hover_icon(group, path, 16., fg2(), fg()))
+}
+
+/// 28×28 的方形图标按钮，图标是给定的颜色（比如吊销是红的），提示可以是算出来的。
+pub fn tint_button(
+    id: impl Into<ElementId>,
+    path: &'static str,
+    tip: impl Into<SharedString>,
+    color: Hsla,
+) -> Stateful<Div> {
+    let tip: SharedString = tip.into();
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(28.))
+        .rounded(R_SM)
+        .cursor_pointer()
+        .hover(|s| s.bg(ink3()))
+        .active(|s| s.bg(ink4()))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .child(icon(path, 15., color))
 }
 
 /// 图标：组（`group`）悬停时换颜色。GPUI 的 SVG 不继承文字颜色，所以要自己设。

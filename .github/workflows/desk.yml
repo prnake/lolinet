@@ -4,7 +4,7 @@
 # 终端两端都用 libghostty-vt（运行时载入），版本钉在 desk/ghostty/libghostty-vt.json，由 desk/scripts/fetch-ghostty.sh 取。
 # 独立发包，不编进 lolinet：lolinet 保持小体积的静态二进制（build.yml 的 Verify 会查）。
 # PR 和 main 上都跑：fmt、clippy、测试、编译，再在回环上实跑终端会话（含主机重启后会话带着历史回来）；产物是 artifact。
-# 推到 main 编过了就自动发一个 lolidesk-<版本> 的 GitHub Release（带清单 lolidesk.json；这个 tag 已经有了就跳过），
+# 推到 main 编过了就自动发一个 lolidesk-<版本> 的 GitHub Release（带清单 lolidesk.json 和 macOS 的 DMG；这个 tag 已经有了就跳过），
 # 再用 dist.yml 原样同步到准入站 dl/。main 上只改了 .md 不跑，免得发一版内容没变的。在 main 上手动运行并勾 release 也发，用来补发。
 # 它不能占 latest：设备按 releases/latest 找 lolinet.json，别的 Release 抢了 latest 会让自动升级找不到清单。
 # 设备上装了的 lolidesk 由 lolinet upgrade 按 lolidesk.json 更新，比的是 --version：编译时 LOLIDESK_VERSION 设成 git describe。
@@ -123,6 +123,25 @@ jobs:
           # 跑得动的话（本机架构）看一眼确实是 mihomo
           app-out/Lolidesk.app/Contents/Helpers/mihomo -v 2>/dev/null | head -1 || true
           echo "APP=app-out/Lolidesk.app" >> "$GITHUB_ENV"
+      # DMG：打开是一个窗口，把 Lolidesk 拖进 Applications 就装好了（desk/scripts/bundle-dmg.sh，dmgbuild 钉了版本和 sha256，要 uv）
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: runner.os == 'macOS'
+      - name: DMG
+        if: runner.os == 'macOS'
+        working-directory: desk
+        run: |
+          case "${{ matrix.target }}" in aarch64-*) A=arm64 ;; *) A=x86_64 ;; esac
+          DMG="Lolidesk-macos-$A.dmg"
+          sh scripts/bundle-dmg.sh "$APP" "$PWD/$DMG"
+          # 挂上看一眼：app、指向 /Applications 的链接、背景和布局都在；拖出去的 app 签名完好（没被写上 FinderInfo 之类）
+          mkdir dmg-mnt && hdiutil attach -nobrowse -readonly -mountpoint dmg-mnt "$DMG"
+          ls -la dmg-mnt
+          [ "$(readlink dmg-mnt/Applications)" = /Applications ] || { echo "DMG 里没有 Applications 链接"; exit 1; }
+          [ -s dmg-mnt/.background.tiff ] && [ -s dmg-mnt/.DS_Store ] || { echo "DMG 里没有背景或布局"; exit 1; }
+          ditto dmg-mnt/Lolidesk.app dmg-copy/Lolidesk.app
+          codesign --verify --strict --deep dmg-copy/Lolidesk.app
+          hdiutil detach dmg-mnt
+          du -h "$DMG" && shasum -a 256 "$DMG"
 
       - name: Package
         working-directory: desk
@@ -173,6 +192,10 @@ jobs:
           # 错的 token 必须被拒
           if ./pkg/lolidesk 127.0.0.1 --token 00000000 --sessions -y >/dev/null 2>&1; then echo "错的 token 没被拒"; exit 1; fi
           ./pkg/lolidesk 127.0.0.1 --sessions
+          # 窗口列表是后加的请求，在单独一条控制流上问（runner 没有屏幕录制权限时主机回错，不弹框）；
+          # 问完主控制流照常：后面的 --launchers 要列得出来
+          ./pkg/lolidesk 127.0.0.1 --windows --launchers | tee windows.out
+          grep -q '终端' windows.out || { cat windows.out host.log; echo "问过窗口之后控制流不对"; exit 1; }
           # 会话存盘：开一个会话、跑条命令、断开；主机收到 SIGTERM 会存盘，重启后会话带着历史回来
           ( sleep 2; printf 'echo MARK-$((20+22))\n'; sleep 2; printf '\035' ) | ./pkg/lolidesk 127.0.0.1 > /dev/null 2>&1 || true
           ID=$(./pkg/lolidesk 127.0.0.1 --sessions | awk -F'\t' '/^#/{sub("#","",$1); print $1}' | tail -1)
@@ -204,7 +227,9 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: lolidesk-${{ matrix.name }}
-          path: desk/lolidesk-*.tar.gz
+          path: |
+            desk/lolidesk-*.tar.gz
+            desk/Lolidesk-macos-*.dmg
           if-no-files-found: error
 
   # 推到 main 自动发；手动运行要勾 release。PR 不发
@@ -236,10 +261,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           # 同一个提交重跑（或者先手动发过）就不再发；准入站照样再同步一次
           if gh release view "$TAG" >/dev/null 2>&1; then echo "已经有 ${TAG}，跳过"; exit 0; fi
-          (cd out && for f in lolidesk-*.tar.gz; do sha256sum "$f" > "$f.sha256"; done && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          (cd out && for f in lolidesk-*.tar.gz Lolidesk-macos-*.dmg; do sha256sum "$f" > "$f.sha256"; done && sha256sum *.tar.gz *.dmg > SHA256SUMS && cat SHA256SUMS)
           BEFORE=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
-          gh release create "$TAG" out/*.tar.gz out/*.sha256 out/SHA256SUMS out/lolidesk.json --target "$GITHUB_SHA" --latest=false --title "lolidesk $V" \
-            --notes "lolidesk ${V}：lolidesk（一个程序：lolidesk host 让这台电脑能被连，lolidesk <主机> 连别人）和终端核心 libghostty-vt。macOS 的包里还有图形客户端 Lolidesk.app（ad-hoc 签名，第一次打开要右键 → 打开）；Linux 的包里是 lolidesk-app（解开后直接跑，远程桌面还看不了）。macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 的主机只有终端）。独立发包，不编进 lolinet。"
+          gh release create "$TAG" out/*.tar.gz out/*.dmg out/*.sha256 out/SHA256SUMS out/lolidesk.json --target "$GITHUB_SHA" --latest=false --title "lolidesk $V" \
+            --notes "lolidesk ${V}：lolidesk（一个程序：lolidesk host 让这台电脑能被连，lolidesk <主机> 连别人）和终端核心 libghostty-vt。macOS 上装图形客户端 Lolidesk.app：下 Lolidesk-macos-arm64.dmg（Apple 芯片）或 Lolidesk-macos-x86_64.dmg（Intel），打开后把 Lolidesk 拖进 Applications；它是 ad-hoc 签名，第一次打开要到 系统设置 → 隐私与安全性 点「仍要打开」。macOS 的 tar 包里也有同一个 Lolidesk.app；Linux 的包里是 lolidesk-app（解开后直接跑，远程桌面还看不了）。macOS arm64 / x86_64、Linux x86_64 / arm64（Linux 的主机只有终端）。独立发包，不编进 lolinet。"
           # releases/latest 还得是 lolinet 的那一版
           AFTER=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
           [ "$AFTER" = "$BEFORE" ] || { echo "releases/latest 从 ${BEFORE:-无} 变成了 $AFTER"; exit 1; }

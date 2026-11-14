@@ -1,9 +1,11 @@
 //! 远程桌面的权限引导：主机缺屏幕录制、辅助功能时，侧栏里那台主机下面（窄的）和远程桌面顶上（宽的）各一张卡片。
-//! 每个没开的权限一行，开了变绿（模型每 2 秒问一次主机）；屏幕录制开了以后要重启主机服务才生效。
+//! 每个权限一行：图标、名字、「设置」（开了是绿勾，模型每 2 秒问一次主机）；为什么要、在哪儿开都在悬停提示里。
+//! 屏幕录制开了以后要重启主机服务才生效：最后一行「重启」。
 
 use gpui_kit::{
-    AnyElement, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
+    AnyElement, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, component::tooltip::Tooltip, div, prelude::FluentBuilder,
+    px,
 };
 use lolidesk_proto::PermissionKind;
 
@@ -11,7 +13,7 @@ use crate::{
     assets::ic,
     model::{HostState, Model},
     theme::*,
-    ui::widgets::{icon, mono, pill_busy, pill_sm},
+    ui::widgets::{icon, pill_busy, pill_sm},
 };
 
 struct Row {
@@ -50,136 +52,60 @@ pub fn card(h: &HostState, model: &Entity<Model>, wide: bool) -> Option<AnyEleme
     }
     let key = format!("{}-{}", h.addr, if wide { "w" } else { "n" });
     let addr = h.addr;
-
-    let title = div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(icon(ic::SHIELD, 15., warn()))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(if wide { T_MD } else { T_SM })
-                .font_weight(FontWeight::MEDIUM)
-                .child(format!("远程桌面还差 {steps} 步")),
-        );
-    let lead = wide.then(|| {
-        div()
-            .text_size(T_XS)
-            .text_color(fg3())
-            .child(format!(
-                "在 {} 的「系统设置 → 隐私与安全性」里给 lolidesk 打开。授权跟着主机上跑服务的那个 lolidesk 走。",
-                h.title()
-            ))
-    });
+    // 在哪儿开、开给谁：只在「设置」的悬停提示里说
+    let where_tip: SharedString = format!(
+        "在 {} 的系统设置 → 隐私与安全性里给 lolidesk 打开（主机上跑服务的那个）",
+        h.title()
+    )
+    .into();
 
     let row_els: Vec<AnyElement> = rows
         .into_iter()
         .map(|r| {
             let model = model.clone();
             let kind = r.kind;
-            let button = (!r.granted).then(|| {
+            let why: SharedString = r.why.into();
+            let tip = where_tip.clone();
+            let end = if r.granted {
+                icon(ic::CHECK, 14., eye()).into_any_element()
+            } else {
                 pill_sm(
                     SharedString::from(format!("perm-open-{key}-{kind:?}")),
-                    "在主机上打开设置",
+                    "设置",
                     false,
                 )
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                 .on_click(move |_, _, cx| {
                     model.update(cx, |m, cx| m.open_permission(addr, kind, cx))
                 })
-            });
-            let (state, color): (&str, Hsla) = if r.granted {
-                ("已开", eye())
-            } else {
-                ("没开", warn())
+                .into_any_element()
             };
-            let mark = if r.granted {
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .size(px(18.))
-                    .rounded_full()
-                    .bg(eye_wash())
-                    .border_1()
-                    .border_color(eye_line())
-                    .child(icon(ic::CHECK, 11., eye()))
-            } else {
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .size(px(18.))
-                    .child(icon(r.path, 15., warn()))
-            };
-            if wide {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .h(px(36.))
-                    .child(mark)
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(64.))
-                            .text_size(T_SM)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(r.name),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(T_XS)
-                            .text_color(fg3())
-                            .child(r.why),
-                    )
-                    .child(match button {
-                        Some(b) => b.into_any_element(),
-                        None => mono(state, T_CAP, color).into_any_element(),
-                    })
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(mark)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(T_SM)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(r.name),
-                            )
-                            .child(mono(state, T_CAP, color)),
-                    )
-                    .child(
-                        div()
-                            .pl(px(26.))
-                            .text_size(T_CAP)
-                            .text_color(fg3())
-                            .child(r.why),
-                    )
-                    .children(button.map(|b| div().flex().pl(px(26.)).child(b)))
-                    .into_any_element()
-            }
+            div()
+                .id(SharedString::from(format!("perm-row-{key}-{kind:?}")))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .h(px(if wide { 36. } else { 30. }))
+                .tooltip(move |window, cx| Tooltip::new(why.clone()).build(window, cx))
+                .child(icon(r.path, 15., if r.granted { eye() } else { warn() }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(T_SM)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(r.name),
+                )
+                .child(end)
+                .into_any_element()
         })
         .collect();
 
+    // 屏幕录制开了（或点过设置）：重启主机服务才生效
     let restart = h.guide_offers_restart().then(|| {
         let model = model.clone();
-        let note = if h.guide.restart {
+        let tip = if h.guide.restart {
             "屏幕录制开了，重启主机服务才生效"
         } else {
             "勾上 lolidesk 以后，重启主机服务才生效"
@@ -191,33 +117,20 @@ pub fn card(h: &HostState, model: &Entity<Model>, wide: bool) -> Option<AnyEleme
                 .px(px(12.))
                 .text_size(T_XS)
         } else {
-            pill_sm(id, "重启主机服务", h.guide.restart)
+            pill_sm(id, "重启", h.guide.restart)
+                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                 .on_click(move |_, _, cx| model.update(cx, |m, cx| m.restart_host(addr, cx)))
         };
-        let text = div()
-            .text_size(if wide { T_XS } else { T_CAP })
-            .text_color(fg2())
-            .child(note);
-        let body = if wide {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .child(div().flex_1().min_w_0().child(text))
-                .child(button)
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(text)
-                .child(div().flex().child(button))
-        };
         div()
-            .pt(px(if wide { 10. } else { 12. }))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .h(px(if wide { 36. } else { 30. }))
             .border_t_1()
             .border_color(line1())
-            .child(body)
+            .child(icon(ic::REFRESH, 15., fg2()))
+            .child(div().flex_1().text_size(T_SM).child("主机服务"))
+            .child(button)
     });
 
     let card = div()
@@ -228,26 +141,11 @@ pub fn card(h: &HostState, model: &Entity<Model>, wide: bool) -> Option<AnyEleme
         .bg(ink2())
         .border_1()
         .border_color(warn_line())
-        .when(wide, |d| {
-            d.gap(px(6.))
-                .px(px(18.))
-                .py(px(14.))
-                .w_full()
-                .max_w(px(760.))
-        })
+        .when(wide, |d| d.px(px(14.)).py(px(4.)).w_full().max_w(px(420.)))
         .when(!wide, |d| {
-            d.gap(px(12.)).mx(px(2.)).mt(px(4.)).mb(px(4.)).p(px(12.))
+            d.mx(px(2.)).mt(px(4.)).mb(px(4.)).px(px(10.)).py(px(2.))
         })
-        .child(title)
-        .children(lead)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(if wide { 0. } else { 12. }))
-                .when(wide, |d| d.pt(px(4.)))
-                .children(row_els),
-        )
+        .children(row_els)
         .children(restart);
     Some(card.into_any_element())
 }

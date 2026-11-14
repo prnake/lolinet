@@ -19,7 +19,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use lolidesk_proto::{bitrate, target_size, DisplayInfo, VideoFrame};
+use lolidesk_proto::{bitrate, target_size, DeskTarget, DisplayInfo, VideoFrame};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
@@ -45,7 +45,11 @@ use screencapturekit::prelude::*;
 use screencapturekit::stream::configuration::PixelFormat;
 use tokio::sync::mpsc::Sender;
 
-use super::{clamp_fps, Actual, CaptureConfig};
+use super::{
+    clamp_fps,
+    mac_window::{area_of, sc_area},
+    Actual, Area, CaptureConfig,
+};
 
 type OSStatus = i32;
 
@@ -65,7 +69,7 @@ fn display_mode(id: u32, points: (u32, u32)) -> ((u32, u32), u16) {
     }
 }
 
-fn ensure_permission() -> Result<()> {
+pub(super) fn ensure_permission() -> Result<()> {
     if unsafe { CGPreflightScreenCaptureAccess() } {
         return Ok(());
     }
@@ -422,38 +426,121 @@ unsafe impl Send for SendStream {}
 pub struct Capture {
     stream: SendStream,
     inner: Arc<Inner>,
+    area: Area,
+    source: (u32, u32),
+    display: u32,
+}
+
+/// 显示器的刷新率（内建屏是 0：ProMotion 可变刷新，按 120 算）
+fn refresh_of(id: u32) -> u16 {
+    let (_, refresh) = display_mode(id, (0, 0));
+    if refresh == 0 && builtin(id) {
+        120
+    } else {
+        refresh
+    }
+}
+
+/// 要采的那一块：过滤器、来源的原生像素、在全局坐标里的位置、所在的显示器
+struct Source {
+    filter: SCContentFilter,
+    px: (u32, u32),
+    area: Area,
+    display: u32,
+    window: bool,
+}
+
+fn source(content: &SCShareableContent, target: DeskTarget) -> Result<Source> {
+    match target {
+        DeskTarget::Display(id) => {
+            let display = content
+                .displays()
+                .into_iter()
+                .find(|d| d.display_id() == id)
+                .with_context(|| format!("没有显示器 {id}"))?;
+            let (px, _) = display_mode(id, (display.width(), display.height()));
+            let filter = SCContentFilter::create()
+                .with_display(&display)
+                .with_excluding_windows(&[])
+                .build()
+                .context("SCContentFilter")?;
+            Ok(Source {
+                filter,
+                px,
+                area: area_of(unsafe { objc2_core_graphics::CGDisplayBounds(id) }),
+                display: id,
+                window: false,
+            })
+        }
+        DeskTarget::Window(id) => {
+            let w = content
+                .windows()
+                .into_iter()
+                .find(|w| w.window_id() == id)
+                .context("窗口不在了（关掉了？）")?;
+            if !w.is_on_screen() {
+                bail!("窗口不在屏幕上（最小化了、程序藏起来了，或者在别的桌面空间）");
+            }
+            let filter = SCContentFilter::create()
+                .with_window(&w)
+                .build()
+                .context("SCContentFilter")?;
+            // 窗口的框（全局坐标，点）；内容的大小和点到像素的倍数按过滤器说的（ScreenCaptureKit 按它出原生像素）
+            let area = sc_area(w.frame());
+            let rect = filter.content_rect();
+            let (cw, ch) = if rect.size.width > 0.0 && rect.size.height > 0.0 {
+                (rect.size.width, rect.size.height)
+            } else {
+                (area.w, area.h)
+            };
+            let screens = super::mac_window::screens();
+            let screen = super::screen_of(&area, &screens);
+            let scale = match filter.point_pixel_scale() as f64 {
+                s if s > 0.0 => s,
+                _ => screen.map_or(1.0, |s| s.scale),
+            };
+            let display = screen.map_or(0, |s| s.id);
+            Ok(Source {
+                filter,
+                px: (
+                    ((cw * scale).round() as u32).max(2),
+                    ((ch * scale).round() as u32).max(2),
+                ),
+                area,
+                display,
+                window: true,
+            })
+        }
+    }
 }
 
 impl Capture {
     pub fn start(cfg: CaptureConfig, tx: Sender<Vec<u8>>) -> Result<Self> {
         ensure_permission()?;
-        let content = SCShareableContent::get().context("SCShareableContent")?;
-        let display = content
-            .displays()
-            .into_iter()
-            .find(|d| d.display_id() == cfg.display)
-            .with_context(|| format!("没有显示器 {}", cfg.display))?;
-        let ((pw, ph), refresh) = display_mode(cfg.display, (display.width(), display.height()));
-        let refresh = if refresh == 0 && builtin(cfg.display) {
-            120
-        } else {
-            refresh
-        };
+        let content = SCShareableContent::create()
+            .with_on_screen_windows_only(false)
+            .get()
+            .context("SCShareableContent")?;
+        let src = source(&content, cfg.target)?;
+        let (pw, ph) = src.px;
+        let refresh = refresh_of(src.display);
         let (w, h) = target_size(cfg.video.long_edge, pw, ph);
         let fps = clamp_fps(cfg.video.fps, refresh);
         let br = bitrate(cfg.video.quality, w, h, fps);
-        let filter = SCContentFilter::create()
-            .with_display(&display)
-            .with_excluding_windows(&[])
-            .build()
-            .context("SCContentFilter")?;
-        let config = SCStreamConfiguration::new()
+        let filter = src.filter;
+        let mut config = SCStreamConfiguration::new()
             .with_width(w)
             .with_height(h)
             .with_pixel_format(PixelFormat::BGRA)
             .with_fps(fps as u32)
             .with_queue_depth(3)
             .with_shows_cursor(false);
+        if src.window {
+            // 只要窗口本身（不带阴影）：画面的边就是窗口的框，输入按框换算才对得上
+            if let Err(e) = config.set_ignores_shadows_single_window(true) {
+                tracing::debug!("去不掉窗口阴影：{e}");
+            }
+        }
         cfg.force_key.store(true, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             tx,
@@ -481,6 +568,9 @@ impl Capture {
         Ok(Self {
             stream: SendStream(stream),
             inner,
+            area: src.area,
+            source: src.px,
+            display: src.display,
         })
     }
 
@@ -490,6 +580,9 @@ impl Capture {
             height: self.inner.size.1,
             fps: self.inner.fps as u8,
             bitrate: self.inner.bitrate,
+            area: self.area,
+            source: self.source,
+            display: self.display,
         }
     }
 

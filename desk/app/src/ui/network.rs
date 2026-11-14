@@ -10,12 +10,13 @@ use gpui_kit::component::{
     WindowExt as _,
     input::{InputEvent, InputState},
     spinner::Spinner,
+    tooltip::Tooltip,
 };
 use gpui_kit::{
     AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Div, Entity, FocusHandle,
     Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, fill, point,
-    prelude::FluentBuilder, px, size,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, fill,
+    point, prelude::FluentBuilder, px, size,
 };
 
 use crate::{
@@ -180,11 +181,9 @@ impl Render for NetworkPage {
         let mut body = div()
             .flex()
             .flex_col()
-            .gap(px(28.))
+            .gap(px(24.))
             .max_w(px(880.))
-            .pt(px(56.))
-            .px(px(56.))
-            .pb(px(56.));
+            .p(px(24.));
         match &status {
             None => {
                 body = body.child(
@@ -202,7 +201,6 @@ impl Render for NetworkPage {
                 )
             }
             Some(st) => {
-                body = body.child(headline(st));
                 match &st.kernel {
                     Kernel::Up { node, peers } => {
                         body = body
@@ -263,6 +261,10 @@ impl NetworkPage {
             pill_busy("net-join", "正在加入…", true).into_any_element()
         } else {
             pill("net-join", "加入", true)
+                .tooltip(|window, cx| {
+                    Tooltip::new("要管理员密码；lolinet 和 lolidesk 装进 /usr/local/bin")
+                        .build(window, cx)
+                })
                 .on_click(cx.listener(|this, _, _, cx| this.join(cx)))
                 .into_any_element()
         };
@@ -273,104 +275,35 @@ impl NetworkPage {
         card()
             .gap(px(18.))
             .p(px(22.))
-            .child(header(
-                "把这台电脑加进来",
-                "在网里任意一台机器上跑 lolinet invite（或者在它的 Lolidesk.app 里点「邀请」），把配对命令粘贴到这里。",
-            ))
             .child(field("配对命令", &self.line))
             .child(
                 div()
                     .flex()
                     .gap(px(12.))
-                    .child(field("或者分开填：准入站", &self.base).flex_1().min_w_0())
+                    .child(field("准入站", &self.base).flex_1().min_w_0())
                     .child(field("配对码", &self.code).w(px(200.)).flex_none()),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div().flex().child(
-                            checkbox("net-userspace", self.userspace, "无 TUN（userspace）")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.userspace = !this.userspace;
-                                    cx.notify()
-                                })),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .pl(px(24.))
-                            .text_size(T_CAP)
-                            .text_color(fg3())
-                            .child("不建网卡：本机程序经 127.0.0.1:18080 的 SOCKS5 进网。容器里、或者 mihomo 之类已经占着 TUN 时用。"),
-                    ),
+                div().flex().child(
+                    checkbox("net-userspace", self.userspace, "无 TUN")
+                        .tooltip(|window, cx| {
+                            Tooltip::new("不建网卡：本机程序经 127.0.0.1:18080 的 SOCKS5 进网（容器里、或者 TUN 已被占着时用）")
+                                .build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.userspace = !this.userspace;
+                            cx.notify()
+                        })),
+                ),
             )
             .children(preview)
             .children(error_line(&self.error))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(T_CAP)
-                            .text_color(fg3())
-                            .child("系统会弹框要管理员密码。lolinet 和 lolidesk 会装进 /usr/local/bin。"),
-                    )
-                    .child(go),
-            )
+            .child(div().flex().justify_end().child(go))
             .children(out)
     }
 }
 
 /// 页面最上面两行大字（和首页一样的口气）。
-fn headline(st: &Status) -> Div {
-    let (a, b) = match &st.kernel {
-        Kernel::Up { peers, .. } => {
-            let direct = peers.iter().filter(|p| p.direct).count();
-            (
-                "这台电脑在网里。".to_string(),
-                if peers.is_empty() {
-                    "还没有别的节点在线。".to_string()
-                } else {
-                    format!("{} 台在线，{direct} 台直连。", peers.len())
-                },
-            )
-        }
-        Kernel::Down(_) => (
-            "lolinet 没在运行。".to_string(),
-            "终端里跑 sudo lolinet restart 再看。".to_string(),
-        ),
-        Kernel::Missing | Kernel::NotJoined => (
-            "这台电脑还不在网里。".to_string(),
-            "粘贴别人给的配对命令，就能进来。".to_string(),
-        ),
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .child(
-            div()
-                .text_size(T_2XL)
-                .line_height(px(40.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(a),
-        )
-        .child(
-            div()
-                .text_size(T_2XL)
-                .line_height(px(40.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(fg3())
-                .child(b),
-        )
-}
-
 /// 一节：小标题（右边可以有一行等宽字）+ 内容。
 fn section(title: &'static str, right: Option<String>, body: impl IntoElement) -> Div {
     div()
@@ -443,14 +376,9 @@ fn node_card(
     model: &Entity<Model>,
 ) -> Div {
     let exit = st.exit;
-    let mode = if node.userspace {
-        format!("{} · 本机程序经 socks5://127.0.0.1:18080 进网", node.ip)
-    } else {
-        node.ip.clone()
-    };
     let busy = matches!(job, Some(NetJob::Exit(_)));
     let on = exit.is_some();
-    let exit_note = match exit {
+    let exit_note: SharedString = match exit {
         Some(port) => format!(
             "网里别的机器可以经这台上网：socks5://{}:{port}，只对内网开",
             node.ip
@@ -459,7 +387,8 @@ fn node_card(
             "开了以后，网里别的机器可以经这台上网（SOCKS5，端口 {}，只对内网开）",
             lolinet::EXIT_PORT
         ),
-    };
+    }
+    .into();
     let toggle = {
         let model = model.clone();
         switch("net-exit", on, busy).when(!busy, |s| {
@@ -475,13 +404,14 @@ fn node_card(
     // 分流：mihomo 当系统服务跑，规则（直连、拒绝、从哪台出去）由管理面的「分流」页下发
     let mihomo_busy = matches!(job, Some(NetJob::Mihomo(_)));
     let mihomo_on = st.mihomo.is_some();
-    let mihomo_note = match &st.mihomo {
+    let mihomo_note: SharedString = match &st.mihomo {
         Some(mode) => format!(
             "这台的流量按管理面「分流」页的规则走（mihomo，{}），规则每 10 分钟经内网取",
             if mode == "userspace" { "无 TUN 模式" } else { "TUN 模式" }
         ),
         None => "开了以后这台的流量按管理面「分流」页走：网内走 lolinet，有的直连、有的拒绝、有的从指定的机器出去".into(),
-    };
+    }
+    .into();
     let mihomo_toggle = {
         let model = model.clone();
         switch("net-mihomo", mihomo_on, mihomo_busy).when(!mihomo_busy && !busy, |s| {
@@ -494,45 +424,51 @@ fn node_card(
         .child(
             card_row(true)
                 .child(tile(ic::COMPUTER))
-                .child(two_lines(
+                .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .font_family(MONO)
                         .text_size(T_MD)
                         .font_weight(FontWeight::MEDIUM)
                         .truncate()
                         .child(node.name.clone()),
-                    mono(mode, T_CAP, fg3()).truncate(),
-                ))
+                )
+                .child(mono(node.ip.clone(), T_XS, fg2()))
                 .child(badge(
                     if node.userspace { "无 TUN" } else { "TUN" },
                     fg2(),
                     ink3(),
                 ))
-                .child(badge("在线", eye(), eye_wash())),
+                .child(dot(eye(), 7.)),
         )
         .child(
             card_row(false)
+                .id("net-exit-row")
+                .tooltip(move |window, cx| Tooltip::new(exit_note.clone()).build(window, cx))
                 .child(tile(ic::GLOBE))
-                .child(two_lines(
+                .child(
                     div()
+                        .flex_1()
                         .text_size(T_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .child("出口节点"),
-                    div().text_size(T_XS).text_color(fg3()).child(exit_note),
-                ))
+                )
                 .when(busy, |r| r.child(Spinner::new().color(fg3())))
                 .child(toggle),
         )
         .child(
             card_row(false)
-                .child(tile(ic::GLOBE))
-                .child(two_lines(
+                .id("net-mihomo-row")
+                .tooltip(move |window, cx| Tooltip::new(mihomo_note.clone()).build(window, cx))
+                .child(tile(ic::SPLIT))
+                .child(
                     div()
+                        .flex_1()
                         .text_size(T_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .child("分流"),
-                    div().text_size(T_XS).text_color(fg3()).child(mihomo_note),
-                ))
+                )
                 .when(mihomo_busy, |r| r.child(Spinner::new().color(fg3())))
                 .child(mihomo_toggle),
         )
@@ -548,7 +484,7 @@ fn peers_section(peers: &[Peer]) -> Div {
                 div()
                     .text_size(T_SM)
                     .text_color(fg3())
-                    .child("还没有别的节点在线。点右上角「邀请」把别的设备加进来。"),
+                    .child("没有别的节点"),
             ),
         )
     } else {
@@ -648,7 +584,7 @@ fn cli_section(
         div()
             .text_size(T_XS)
             .text_color(fg3())
-            .child("加入网络时装上")
+            .child("入网时装")
             .into_any_element()
     };
     let desk_state = match (&sh.lolidesk, &sh.helper) {
@@ -723,37 +659,21 @@ fn cli_section(
         .as_ref()
         .filter(|(j, ok, _)| matches!(j, NetJob::InstallCli | NetJob::InstallMenu) && !ok)
         .map(|(_, _, text)| card_row(false).child(output_box(false, text).flex_1()));
-    let note = if !sh.lolinet {
-        "lolinet 在加入网络时由安装脚本装上（见上面的「加入网络」）。"
-    } else {
-        "装好以后，app 里能做的在终端里也能做：lolinet status、lolinet invite、lolidesk <主机>。"
-    };
     section(
         "命令行",
         None,
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                card()
-                    .child(row(
-                        true,
-                        "lolinet",
-                        lolinet::BIN.to_string(),
-                        lolinet_state,
-                    ))
-                    .child(row(false, "lolidesk", desk_path, desk_state))
-                    .children(menu_state.map(|st| row(false, "菜单", menu_path, st)))
-                    .children(failed),
-            )
-            .child(
-                div()
-                    .px(px(4.))
-                    .text_size(T_CAP)
-                    .text_color(fg3())
-                    .child(note),
-            ),
+        div().flex().flex_col().gap(px(8.)).child(
+            card()
+                .child(row(
+                    true,
+                    "lolinet",
+                    lolinet::BIN.to_string(),
+                    lolinet_state,
+                ))
+                .child(row(false, "lolidesk", desk_path, desk_state))
+                .children(menu_state.map(|st| row(false, "菜单", menu_path, st)))
+                .children(failed),
+        ),
     )
 }
 
@@ -1005,10 +925,7 @@ impl Render for InviteForm {
             .flex()
             .flex_col()
             .gap(px(18.))
-            .child(header(
-                "邀请一台设备",
-                "配对码由内网的管理面发，新设备的地址由中心分配。",
-            ))
+            .child(header("邀请一台设备", ""))
             .child(seg)
             .child(body)
             .child(footer)

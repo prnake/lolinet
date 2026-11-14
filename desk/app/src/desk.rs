@@ -23,7 +23,8 @@ use lolidesk_core::{
     net::Client,
 };
 use lolidesk_proto::{
-    self as proto, DeskEvent, DeskInput, DeskReq, Frag, StreamKind, VideoFrame, VideoSettings,
+    self as proto, DeskEvent, DeskInput, DeskReq, DeskTarget, Frag, StreamKind, VideoFrame,
+    VideoSettings,
 };
 use tokio::{
     sync::{Notify, mpsc},
@@ -47,6 +48,11 @@ pub enum DeskStreamEvent {
     },
     Stopped(String),
     Error(String),
+    /// 主机现在推的是这个（Open / Select 之后；窗口没了改推显示器时 note 说为什么）
+    Showing {
+        target: DeskTarget,
+        note: String,
+    },
     /// 流结束了（之后不会再有事件）
     Closed,
 }
@@ -123,10 +129,11 @@ pub struct DeskStream {
 }
 
 impl DeskStream {
-    /// 开始一次远程桌面。事件从返回的接收端读（最后一个是 Closed）。
+    /// 开始一次远程桌面：一块显示器（Start，哪个版本的主机都认），或者一个窗口（Open，
+    /// 只对列得出窗口的主机）。事件从返回的接收端读（最后一个是 Closed）。
     pub fn start(
         client: Arc<Client>,
-        display: u32,
+        target: DeskTarget,
         video: VideoSettings,
     ) -> (Self, mpsc::UnboundedReceiver<DeskStreamEvent>) {
         let (tx, req_rx) = mpsc::unbounded_channel::<DeskReq>();
@@ -150,7 +157,7 @@ impl DeskStream {
             let shared = shared.clone();
             let client = client.clone();
             runtime::spawn(async move {
-                let r = stream_loop(&client, display, video, req_rx, &ev_tx).await;
+                let r = stream_loop(&client, target, video, req_rx, &ev_tx).await;
                 if let Err(e) = r {
                     let _ = ev_tx.send(DeskStreamEvent::Error(error_text(&e)));
                 }
@@ -188,6 +195,11 @@ impl DeskStream {
         self.tx.send(DeskReq::Configure(video));
     }
 
+    /// 在这条流上换推的东西（主机回 Showing + Ready，换不了回 Error）
+    pub fn select(&self, target: DeskTarget) {
+        self.tx.send(DeskReq::Select(target));
+    }
+
     pub fn keyframe(&self) {
         self.tx.send(DeskReq::Keyframe);
     }
@@ -223,13 +235,17 @@ impl Drop for DeskStream {
 
 async fn stream_loop(
     client: &Client,
-    display: u32,
+    target: DeskTarget,
     video: VideoSettings,
     mut req_rx: mpsc::UnboundedReceiver<DeskReq>,
     ev_tx: &mpsc::UnboundedSender<DeskStreamEvent>,
 ) -> Result<()> {
     let (mut send, mut recv) = client.open(StreamKind::Desktop).await?;
-    proto::send(&mut send, &DeskReq::Start { display, video }).await?;
+    let first = match target {
+        DeskTarget::Display(display) => DeskReq::Start { display, video },
+        DeskTarget::Window(_) => DeskReq::Open { target, video },
+    };
+    proto::send(&mut send, &first).await?;
     loop {
         tokio::select! {
             ev = proto::recv::<DeskEvent>(&mut recv) => match ev? {
@@ -243,6 +259,9 @@ async fn stream_loop(
                 }
                 Some(DeskEvent::Error(e)) => {
                     let _ = ev_tx.send(DeskStreamEvent::Error(e));
+                }
+                Some(DeskEvent::Showing { target, note }) => {
+                    let _ = ev_tx.send(DeskStreamEvent::Showing { target, note });
                 }
             },
             req = req_rx.recv() => {
