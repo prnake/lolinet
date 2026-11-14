@@ -9,11 +9,13 @@ use gpui_kit::component::{
     WindowExt as _,
     input::{InputEvent, InputState},
     spinner::Spinner,
+    tooltip::Tooltip,
 };
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, anchored, deferred, div, point, prelude::FluentBuilder, px,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, anchored, deferred, div, point,
+    prelude::FluentBuilder, px,
 };
 use lolidesk_core::net;
 use lolidesk_proto::{PAIR_WAIT_SECS, PairLink};
@@ -27,7 +29,7 @@ use crate::{
     theme::*,
     ui::{
         dialogs::{self, Form, error_line, field, header},
-        widgets::{caption, icon, mono, pill},
+        widgets::{badge, caption, icon, mono, pill},
     },
 };
 
@@ -36,7 +38,7 @@ const CONSENT_PRIORITY: usize = 60;
 
 // ---------------------------------------------------------------- 有设备请求连这台
 
-/// 本机有配对请求时整个窗口上的框：「「name」（地址，系统）想连这台电脑」，同意 / 拒绝。排着队一个一个问。
+/// 本机有配对请求时整个窗口上的框：设备名和地址、它能做什么（图标）、倒计时，同意 / 拒绝。排着队一个一个问。
 pub fn consent_overlay(model: &Entity<Model>, window: &Window, cx: &App) -> Option<AnyElement> {
     let m = model.read(cx);
     let p = m.consent.first()?.clone();
@@ -44,30 +46,65 @@ pub fn consent_overlay(model: &Entity<Model>, window: &Window, cx: &App) -> Opti
     let allow = m
         .local_host()
         .and_then(|h| h.welcome.as_ref())
-        .map(|w| w.allow.summary());
+        .map(|w| w.allow);
     let id = p.id;
     let waited = pairing::now().saturating_sub(p.since);
     let left = PAIR_WAIT_SECS.saturating_sub(waited);
-    let ip = pairing::ip_of(&p.addr);
-    let who = if p.device.os.is_empty() {
-        ip.clone()
-    } else {
-        format!("{ip}，{}", p.device.os)
-    };
-    let detail = [p.device.kind.as_str(), p.device.version.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ");
+    let who = [
+        pairing::ip_of(&p.addr),
+        p.device.os.clone(),
+        [p.device.kind.as_str(), p.device.version.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ");
     let (m1, m2) = (model.clone(), model.clone());
+    // 同意以后它能做什么：五个图标，能做的亮，悬停看是什么
+    let caps = allow.map(|a| {
+        let items = [
+            (a.terminal, ic::TERMINAL, "终端"),
+            (a.desktop, ic::MONITOR, "看桌面"),
+            (a.control, ic::POINTER, "操作桌面"),
+            (a.cua, ic::SPARKLE, "agent"),
+            (a.share, ic::DETACH, "分享"),
+        ];
+        div()
+            .flex()
+            .gap(px(8.))
+            .children(items.into_iter().enumerate().map(|(i, (on, path, name))| {
+                let tip: SharedString = if on {
+                    name.into()
+                } else {
+                    format!("不能{name}").into()
+                };
+                div()
+                    .id(("consent-cap", i))
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .h(px(40.))
+                    .rounded(R_SM)
+                    .bg(ink1())
+                    .border_1()
+                    .border_color(line1())
+                    .child(icon(path, 18., if on { fg() } else { fg4() }))
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            }))
+    });
     let card = div()
         .id("consent")
         .occlude()
         .flex()
         .flex_col()
         .gap(px(18.))
-        .w(px(440.))
-        .p(px(24.))
+        .w(px(400.))
+        .p(px(22.))
         .rounded(R_LG)
         .bg(ink2())
         .border_1()
@@ -82,7 +119,7 @@ pub fn consent_overlay(model: &Entity<Model>, window: &Window, cx: &App) -> Opti
         .child(
             div()
                 .flex()
-                .items_start()
+                .items_center()
                 .gap(px(14.))
                 .child(
                     div()
@@ -106,56 +143,39 @@ pub fn consent_overlay(model: &Entity<Model>, window: &Window, cx: &App) -> Opti
                         .gap(px(3.))
                         .child(
                             div()
+                                .font_family(MONO)
                                 .text_size(T_LG)
-                                .line_height(px(22.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("「{}」（{who}）想连这台电脑", p.device.name)),
+                                .truncate()
+                                .child(p.device.name.clone()),
                         )
-                        .when(!detail.is_empty(), |d| {
-                            d.child(mono(format!("lolidesk {detail}"), T_CAP, fg3()))
-                        })
-                        .child(
-                            div().pt(px(4.)).text_size(T_XS).text_color(fg2()).child(
-                                "网里的一台设备点了「连接」。同意一次，以后它再连不用再问。",
-                            ),
-                        ),
-                ),
-        )
-        .children(allow.map(|a| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .px(px(14.))
-                .py(px(12.))
-                .rounded(R_SM)
-                .bg(ink1())
-                .border_1()
-                .border_color(line1())
-                .child(caption("同意以后它能"))
-                .child(div().text_size(T_SM).child(a))
+                        .child(mono(who, T_CAP, fg3()).truncate()),
+                )
+                // 还剩几秒（到了就算拒绝）
                 .child(
                     div()
-                        .text_size(T_CAP)
-                        .text_color(fg3())
-                        .child("在「本机 → 访问」里随时限制、吊销。"),
-                )
-        }))
+                        .id("consent-left")
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(36.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(warn_line())
+                        .child(mono(left.to_string(), T_XS, warn()))
+                        .tooltip(|window, cx| Tooltip::new("到时不答就算拒绝").build(window, cx)),
+                ),
+        )
+        .children(caps)
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(mono(format!("{} 秒内不答就算拒绝", left), T_CAP, fg3()).flex_1())
-                .when(queued > 0, |d| {
-                    d.child(mono(format!("还有 {queued} 个请求"), T_CAP, warn()))
-                }),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(8.))
+                .child(div().flex_1().when(queued > 0, |d| {
+                    d.child(badge(format!("+{queued}"), warn(), warn_wash()))
+                }))
                 .child(
                     pill("consent-deny", "拒绝", false)
                         .on_click(move |_, _, cx| m1.update(cx, |m, cx| m.decide(id, false, cx))),
@@ -294,16 +314,10 @@ impl Render for PairForm {
         let (title, sub) = if consent {
             (
                 format!("正在请 {name} 同意…"),
-                format!(
-                    "在那台电脑上点「同意」。最多等 {} 分钟；同意过一次，以后连它不用再问。",
-                    PAIR_WAIT_SECS / 60
-                ),
+                format!("最多等 {} 分钟", PAIR_WAIT_SECS / 60),
             )
         } else {
-            (
-                format!("正在和 {name} 配对…"),
-                "用配对码配对，不用对方再点同意。".to_string(),
-            )
+            (format!("正在和 {name} 配对…"), String::new())
         };
         let status: AnyElement = match &self.state {
             PairState::Busy => div()
@@ -399,7 +413,9 @@ impl Render for PairForm {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )
-                    .child(div().text_size(T_XS).text_color(fg2()).child(sub)),
+                    .when(!sub.is_empty(), |d| {
+                        d.child(div().text_size(T_XS).text_color(fg2()).child(sub))
+                    }),
             )
             .child(status)
             .child(fp)
@@ -595,10 +611,7 @@ impl Render for ImportForm {
             .flex()
             .flex_col()
             .gap(px(18.))
-            .child(header(
-                "导入分享链接",
-                "对方在 Lolidesk 里「新配对码」或「分享这台…」发的，或者 lolidesk host code / lolidesk share 打出来的链接。用它配对不用对方再点同意。",
-            ))
+            .child(header("导入分享链接", ""))
             .child(field("分享链接", &self.link))
             .children(preview)
             .children(error_line(&self.error))

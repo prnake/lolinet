@@ -32,6 +32,18 @@ fn icon_svg(name: &str) -> Option<&'static str> {
         "sparkle" => icon!(
             r#"<path d="M12 3.5c.6 3.9 2.6 5.9 6.5 6.5-3.9.6-5.9 2.6-6.5 6.5-.6-3.9-2.6-5.9-6.5-6.5 3.9-.6 5.9-2.6 6.5-6.5z"/><path d="M18.5 16.5v4"/><path d="M16.5 18.5h4"/>"#
         ),
+        // 限制：两根滑杆
+        "sliders" => icon!(
+            r#"<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>"#
+        ),
+        // 吊销：断开的链
+        "unlink" => icon!(
+            r#"<path d="m18.8 12.3 1.7-1.7a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="m5.2 11.7-1.7 1.7a5 5 0 0 0 7.1 7.1l1.7-1.7"/><path d="M8 2v3M2 8h3M16 19v3M19 16h3"/>"#
+        ),
+        // 分流：一条路分成两条
+        "split" => icon!(
+            r#"<path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.87L3 3"/><path d="m15 9 6-6"/>"#
+        ),
         "power" => icon!(r#"<path d="M12 3.5v8"/><path d="M6.6 6.9a7.5 7.5 0 1 0 10.8 0"/>"#),
         "refresh" => {
             icon!(r#"<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>"#)
@@ -131,6 +143,9 @@ pub mod ic {
     pub const SHIELD: &str = "ld/shield.svg";
     pub const POINTER: &str = "ld/pointer.svg";
     pub const KEY: &str = "ld/key.svg";
+    pub const SPLIT: &str = "ld/split.svg";
+    pub const SLIDERS: &str = "ld/sliders.svg";
+    pub const UNLINK: &str = "ld/unlink.svg";
     pub const WIN_MIN: &str = "ld/win-min.svg";
     pub const WIN_MAX: &str = "ld/win-max.svg";
     pub const WIN_RESTORE: &str = "ld/win-restore.svg";
@@ -194,6 +209,9 @@ mod tests {
             "shield",
             "pointer",
             "key",
+            "split",
+            "sliders",
+            "unlink",
             "win-min",
             "win-max",
             "win-restore",

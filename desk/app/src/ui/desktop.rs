@@ -463,7 +463,7 @@ impl DeskPane {
                             .text_size(T_LG)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(fg())
-                            .child("远程桌面已结束"),
+                            .child("已结束"),
                     )
                     .when_some(self.error.clone(), |s, e| {
                         s.child(
@@ -499,7 +499,7 @@ impl DeskPane {
                                     .text_size(T_LG)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(fg())
-                                    .child("打不开远程桌面"),
+                                    .child("打不开"),
                             ),
                     )
                     .child(
@@ -513,38 +513,23 @@ impl DeskPane {
                     .into_any_element(),
             );
         }
-        // 还没有画面（刚打开、断了等重连）：看板娘跑着，下面一条来回的细线和这一步在做什么
+        // 还没有画面（刚打开、断了等重连）：看板娘跑着，下面一条来回的细线和一个词
         let waiting = if self.suspended {
-            Some(("连接断了，重新连接中…", "连上后接着推这块画面", warn()))
+            Some(("重新连接", warn()))
         } else if self.pending.is_none() && self.encoding.is_none() {
             Some(match self.target {
-                DeskTarget::Window(_) => ("正在打开窗口…", "主机在准备这个窗口的画面", fg2()),
-                DeskTarget::Display(_) => ("正在打开远程桌面…", "主机在采屏、编码第一帧", fg2()),
+                DeskTarget::Window(_) => ("打开窗口", fg2()),
+                DeskTarget::Display(_) => ("连接中", fg2()),
             })
         } else {
             None
         };
-        if let Some((title, sub, line)) = waiting {
+        if let Some((title, line)) = waiting {
             return Some(
                 base.when(self.suspended, |b| b.bg(scrim()))
-                    .child(mascot::running("desk-run", 128.))
-                    .child(mascot::progress("desk-prog", 200., line))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(4.))
-                            .pt(px(4.))
-                            .child(
-                                div()
-                                    .text_size(T_LG)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(fg())
-                                    .child(title),
-                            )
-                            .child(div().text_size(T_XS).text_color(fg3()).child(sub)),
-                    )
+                    .child(mascot::running("desk-run", 120.))
+                    .child(mascot::progress("desk-prog", 160., line))
+                    .child(div().text_size(T_SM).text_color(fg2()).child(title))
                     .into_any_element(),
             );
         }
@@ -570,8 +555,8 @@ impl DeskPane {
 impl Render for DeskPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.stage.read(cx).focus.is_focused(window);
-        let right = if self.unsupported {
-            div()
+        let right: gpui_kit::AnyElement = if self.unsupported {
+            div().into_any_element()
         } else if focused {
             div()
                 .flex()
@@ -585,11 +570,17 @@ impl Render for DeskPane {
                 .border_color(eye_line())
                 .child(icon(ic::KEYBOARD, 13., eye()))
                 .child(div().text_size(T_CAP).text_color(eye()).child("键盘在远端"))
+                .into_any_element()
         } else {
+            // 键盘还在这边：一个暗的键盘图标，悬停才说怎么交出去
             div()
-                .text_size(T_CAP)
-                .text_color(fg3())
-                .child("点画面把键盘交给远端")
+                .id("desk-kbd-hint")
+                .flex()
+                .items_center()
+                .px(px(6.))
+                .child(icon(ic::KEYBOARD, 14., fg4()))
+                .tooltip(|window, cx| Tooltip::new("点画面把键盘交给远端").build(window, cx))
+                .into_any_element()
         };
         let status = self.status();
         let stage_focus = self.stage.read(cx).focus.clone();

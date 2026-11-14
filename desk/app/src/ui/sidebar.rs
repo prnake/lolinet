@@ -264,16 +264,6 @@ impl Render for Sidebar {
                                     .pb(px(6.))
                                     .child(caption("主机")),
                             )
-                            .when(trees.is_empty(), |s| {
-                                s.child(
-                                    div()
-                                        .px(px(8.))
-                                        .py(px(4.))
-                                        .text_size(T_XS)
-                                        .text_color(fg3())
-                                        .child("还没有主机。点右上角 ＋ 添加。"),
-                                )
-                            })
                             .children(trees)
                             .when(!found.is_empty(), |s| {
                                 s.child(
@@ -301,7 +291,7 @@ impl Render for Sidebar {
                     .border_t_1()
                     .border_color(line1())
                     .child(dot(if online > 0 { eye() } else { fg4() }, 6.))
-                    .child(mono(format!("{online} / {total} 在线"), T_CAP, fg3()).flex_1())
+                    .child(mono(format!("{online} / {total}"), T_CAP, fg3()).flex_1())
                     .child(mono(crate::VERSION, T_CAP, fg4())),
             )
     }
@@ -391,13 +381,61 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
                 .truncate()
                 .child(h.title())
         };
+        // 远程桌面有问题（列不出显示器、缺权限）：一个琥珀色的屏幕图标，原因在提示里
+        let desk_problem: Option<SharedString> = online
+            .then(|| {
+                h.displays_error.clone().or_else(|| {
+                    (h.perms.is_some() && h.guide_steps() > 0).then(|| "远程桌面缺权限".to_string())
+                })
+            })
+            .flatten()
+            .map(Into::into);
+        // 没连上：出错原因、第几次重连、几秒后，都在状态的提示里
+        let status_tip: Option<SharedString> = if let Some(st) = local_state
+            .as_ref()
+            .filter(|s| !online && **s != LocalState::Normal)
+        {
+            Some(local_text(st))
+        } else if !online {
+            let note = retry_note(h);
+            match (h.error.is_empty(), note) {
+                (true, None) => None,
+                (true, Some(n)) => Some(n),
+                (false, None) => Some(h.error.clone()),
+                (false, Some(n)) => Some(format!("{} · {n}", h.error)),
+            }
+        } else {
+            None
+        }
+        .filter(|t| !t.is_empty())
+        .map(Into::into);
         side_row(("host", ix), false)
             .h(px(34.))
             .child(icon(chevron, 12., fg3()))
             .child(icon(ic::COMPUTER, 15., if local { fg() } else { fg2() }))
             .child(title)
-            .child(mono(status, T_CAP, fg3()).flex_none())
-            .child(dot(color, 6.))
+            .when_some(desk_problem, |r, tip| {
+                r.child(
+                    div()
+                        .id(("host-warn", ix))
+                        .flex_none()
+                        .child(icon(ic::MONITOR, 13., warn()))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+                )
+            })
+            .child(
+                div()
+                    .id(("host-st", ix))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(mono(status, T_CAP, fg3()))
+                    .child(dot(color, 6.))
+                    .when_some(status_tip, |d, tip| {
+                        d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    }),
+            )
             .on_click(move |_, _, cx| {
                 model.update(cx, |m, cx| match link {
                     Link::Online => m.toggle_expanded(addr, cx),
@@ -422,28 +460,11 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
         return tree.into_any_element();
     }
     let mut body = div().flex().flex_col().pl(px(14.)).pb(px(6.)).gap(px(1.));
-    let note = retry_note(h);
-    let local_note = local_state
+    if let Some(st) = local_state
         .as_ref()
-        .filter(|s| !online && **s != LocalState::Normal);
-    if let Some(st) = local_note {
-        body = body.child(local_card(st, ctx));
-    } else if !online && (!h.error.is_empty() || note.is_some()) {
-        // 不再重试的是红字；还在重连的是安静的灰字，带次数和倒计时
-        let failed = h.link == Link::Failed;
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .px(px(10.))
-                .pt(px(2.))
-                .pb(px(6.))
-                .text_size(T_CAP)
-                .text_color(if failed { bad() } else { fg3() })
-                .when(!h.error.is_empty(), |d| d.child(h.error.clone()))
-                .when_some(note, |d, n| d.child(mono(n, T_CAP, warn()))),
-        );
+        .filter(|s| !online && **s != LocalState::Normal)
+    {
+        body = body.children(local_card(st, ctx));
     }
     // 远程桌面还缺权限：引导卡片放在最上面
     let guide = online
@@ -474,31 +495,6 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
             for d in &h.displays {
                 body = body.child(display_row(addr, d, ctx));
             }
-            // 卡片已经在说缺屏幕录制了，列不出显示器的那条就不重复
-            if let Some(e) = h.displays_error.as_ref().filter(|_| !guiding) {
-                body = body.child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .mx(px(2.))
-                        .mt(px(4.))
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(R_SM)
-                        .bg(warn_wash())
-                        .border_1()
-                        .border_color(warn_line())
-                        .child(icon(ic::MONITOR, 14., warn()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(T_CAP)
-                                .text_color(warn())
-                                .child(e.clone()),
-                        ),
-                );
-            }
             // 窗口（照 Vibe42）：点一个只推那个窗口
             if h.wants_windows() {
                 body = body.children(windows_section(h, ctx, guiding));
@@ -509,30 +505,15 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
     tree.into_any_element()
 }
 
-/// 「窗口」和它下面的：窗口，或者一行说明（读取中、读不了、没有窗口、主机太旧）。
+/// 「窗口」和它下面的窗口。读取中、读不了、主机太旧都在标题行右边（图标），原因在提示里。
 fn windows_section(h: &HostState, ctx: &TreeCtx, guiding: bool) -> Vec<AnyElement> {
-    let mut out = vec![windows_header(h, ctx)];
-    if !h.show_windows {
-        return out;
-    }
-    match &h.windows_state {
-        WindowList::NotYet => out.push(windows_note("正在读取窗口…".into(), fg3(), true)),
-        // 权限卡片、列不出显示器的那条已经在说为什么了（多半是同一个原因）：不重复
-        WindowList::Failed(_) if guiding || h.displays_error.is_some() => {}
-        WindowList::Failed(e) => out.push(windows_note(
-            format!("窗口列表读取失败：{e}"),
-            warn(),
-            false,
-        )),
-        WindowList::Unsupported => out.push(windows_note(
-            "主机的 lolidesk 版本太旧，升级后能在这里看到和切换窗口".into(),
-            fg4(),
-            false,
-        )),
-        WindowList::Ready if h.windows.is_empty() => {
-            out.push(windows_note("没有打开的窗口".into(), fg4(), false))
-        }
-        WindowList::Ready => out.extend(h.windows.iter().map(|w| window_row(h.addr, w, ctx))),
+    let mut out = vec![windows_header(
+        h,
+        ctx,
+        guiding || h.displays_error.is_some(),
+    )];
+    if h.show_windows && matches!(h.windows_state, WindowList::Ready) {
+        out.extend(h.windows.iter().map(|w| window_row(h.addr, w, ctx)));
     }
     out
 }
@@ -671,53 +652,20 @@ fn host_menu(menu: PopupMenu, model: &Entity<Model>, i: &MenuInfo) -> PopupMenu 
 }
 
 /// 本机没在跑时的说明：正在开、开不了（重试）、关着（开启）。
-fn local_card(st: &LocalState, ctx: &TreeCtx) -> AnyElement {
-    let text = local_text(st);
-    let (color, button) = match st {
-        LocalState::Normal => return div().into_any_element(),
-        LocalState::Starting => (fg2(), None),
-        LocalState::Off => (fg3(), Some("开启")),
-        LocalState::NotRunning(_) => (fg3(), Some("重试")),
-        LocalState::Failed(_) => (bad(), Some("重试")),
+fn local_card(st: &LocalState, ctx: &TreeCtx) -> Option<AnyElement> {
+    let label = match st {
+        LocalState::Normal | LocalState::Starting => return None,
+        LocalState::Off => "开启",
+        LocalState::NotRunning(_) | LocalState::Failed(_) => "重试",
     };
     let model = ctx.model.clone();
     let enable = *st == LocalState::Off;
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .mx(px(2.))
-        .mt(px(2.))
-        .mb(px(4.))
-        .px(px(10.))
-        .py(px(8.))
-        .rounded(R_SM)
-        .bg(ink2())
-        .border_1()
-        .border_color(if matches!(st, LocalState::Failed(_)) {
-            bad_line()
-        } else {
-            line1()
-        })
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(px(8.))
-                .when(matches!(st, LocalState::Starting), |d| {
-                    d.child(Spinner::new().color(fg3()))
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(T_CAP)
-                        .text_color(color)
-                        .child(text),
-                ),
-        )
-        .children(button.map(|label| {
-            div().flex().child(
+    Some(
+        div()
+            .flex()
+            .px(px(10.))
+            .py(px(4.))
+            .child(
                 pill_sm("local-retry", label, false).on_click(move |_, _, cx| {
                     model.update(cx, |m, cx| {
                         if enable {
@@ -728,8 +676,8 @@ fn local_card(st: &LocalState, ctx: &TreeCtx) -> AnyElement {
                     })
                 }),
             )
-        }))
-        .into_any_element()
+            .into_any_element(),
+    )
 }
 
 /// 本机下面的「访问」：配对了几台设备，几个请求在等。
@@ -738,17 +686,21 @@ fn access_row(h: &HostState, ctx: &TreeCtx) -> AnyElement {
     let selected = ctx.selection == Selection::Access(addr);
     let model = ctx.model.clone();
     let pending = h.access.as_ref().map_or(0, |a| a.pending.len());
-    let count = h
-        .paired_count()
-        .map(|n| format!("{n} 台设备"))
-        .unwrap_or_default();
+    let devices = h.paired_count();
+    let tip: SharedString = match (devices, pending) {
+        (Some(n), 0) => format!("配对了 {n} 台设备"),
+        (Some(n), p) => format!("配对了 {n} 台设备 · {p} 个请求在等"),
+        (None, p) => format!("{p} 个请求在等"),
+    }
+    .into();
     side_row("local-access", selected)
         .child(icon(ic::SHIELD, 14., if selected { fg() } else { fg2() }))
         .child(div().flex_1().min_w_0().text_size(T_SM).child("访问"))
         .when(pending > 0, |r| {
-            r.child(badge(format!("{pending} 个请求"), warn(), warn_wash()))
+            r.child(badge(pending.to_string(), warn(), warn_wash()))
         })
-        .child(mono(count, T_CAP, fg3()).flex_none())
+        .children(devices.map(|n| mono(n.to_string(), T_CAP, fg3()).flex_none()))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(move |_, _, cx| model.update(cx, |m, cx| m.select(Selection::Access(addr), cx)))
         .into_any_element()
 }
@@ -1039,18 +991,27 @@ fn display_row(addr: SocketAddr, d: &DisplayInfo, ctx: &TreeCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// 「窗口」：点一下展开 / 收起这台主机的窗口列表（收起来就不问主机）。
-fn windows_header(h: &HostState, ctx: &TreeCtx) -> AnyElement {
+/// 「窗口」：点一下展开 / 收起这台主机的窗口列表（收起来就不问主机）。右边是窗口数，
+/// 或者读取中的转圈、读不了 / 主机太旧的图标。`quiet`：权限卡片、主机行的图标已经在说为什么了，读不了就不再标。
+fn windows_header(h: &HostState, ctx: &TreeCtx, quiet: bool) -> AnyElement {
     let addr = h.addr;
     let model = ctx.model.clone();
-    let count = match (&h.windows_state, h.show_windows) {
-        (WindowList::Ready, _) => format!("{}", h.windows.len()),
-        _ => String::new(),
+    let tip: SharedString = match &h.windows_state {
+        WindowList::Unsupported => "主机的 lolidesk 太旧，升级后能切换窗口".into(),
+        WindowList::Failed(e) if !quiet => format!("读不了窗口：{e}").into(),
+        _ if h.show_windows => "收起".into(),
+        _ => "展开：只推一个窗口".into(),
     };
-    let tip: SharedString = if h.show_windows {
-        "收起窗口".into()
-    } else {
-        "展开窗口：只看、只操作远端的一个窗口".into()
+    let end: Option<AnyElement> = match &h.windows_state {
+        WindowList::Ready => {
+            Some(mono(h.windows.len().to_string(), T_CAP, fg4()).into_any_element())
+        }
+        WindowList::NotYet if h.show_windows => {
+            Some(Spinner::new().color(fg4()).into_any_element())
+        }
+        WindowList::Failed(_) if !quiet => Some(icon(ic::WARNING, 12., warn()).into_any_element()),
+        WindowList::Unsupported => Some(icon(ic::WARNING, 12., fg4()).into_any_element()),
+        _ => None,
     };
     div()
         .id(SharedString::from(format!("wins-{addr}")))
@@ -1074,31 +1035,9 @@ fn windows_header(h: &HostState, ctx: &TreeCtx) -> AnyElement {
             fg3(),
         ))
         .child(caption("窗口").flex_1())
-        .when(!count.is_empty(), |r| {
-            r.child(mono(count, T_CAP, fg4()).flex_none())
-        })
+        .children(end)
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(move |_, _, cx| model.update(cx, |m, cx| m.toggle_windows(addr, cx)))
-        .into_any_element()
-}
-
-/// 窗口列表下面的一行说明（读取中、读不了、没有窗口、主机太旧）
-fn windows_note(text: String, color: gpui_kit::Hsla, loading: bool) -> AnyElement {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .px(px(10.))
-        .py(px(4.))
-        .when(loading, |d| d.child(Spinner::new().color(fg3())))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(T_CAP)
-                .text_color(color)
-                .child(text),
-        )
         .into_any_element()
 }
 
@@ -1172,22 +1111,4 @@ fn window_row(addr: SocketAddr, w: &WindowInfo, ctx: &TreeCtx) -> AnyElement {
             model.update(cx, |m, cx| m.start_window(addr, id, window, cx))
         })
         .into_any_element()
-}
-
-/// 给首页用：主机卡片上的状态徽章（本机没在跑时按本机的说法）。
-pub fn status_badge(h: &HostState, local: Option<&LocalState>) -> impl IntoElement {
-    match local.filter(|_| !h.online()) {
-        Some(LocalState::Starting) => return badge("开启中", warn(), warn_wash()),
-        Some(LocalState::Off) => return badge("关着", fg3(), ink3()),
-        Some(LocalState::NotRunning(_)) => return badge("没在跑", fg3(), ink3()),
-        Some(LocalState::Failed(_)) => return badge("开不了", bad(), bad_wash()),
-        _ => {}
-    }
-    match h.link {
-        Link::Online if h.local => badge("在线", eye(), eye_wash()),
-        Link::Online => badge(format!("在线 · {}", rtt_label(h.rtt_ms)), eye(), eye_wash()),
-        Link::Connecting | Link::Reconnecting => badge("连接中", warn(), warn_wash()),
-        Link::Failed => badge("连不上", bad(), bad_wash()),
-        Link::Offline => badge("离线", fg3(), ink3()),
-    }
 }

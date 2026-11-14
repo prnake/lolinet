@@ -29,18 +29,15 @@ def draw(scale: int) -> Image.Image:
     ImageDraw.Draw(glow).ellipse((s(330), s(110), s(580), s(320)), fill=(206, 255, 28, 22))
     im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(s(60))))
     d = ImageDraw.Draw(im)
-    bold = ImageFont.truetype(FONT, s(20), index=1)
     small = ImageFont.truetype(FONT, s(12), index=0)
-    d.text((s(250), s(40)), "把 Lolidesk 拖到 Applications", font=bold, fill=FG)
-    d.text((s(250), s(72)), "拖过去就装好了，以后从「应用程序」或启动台打开。", font=small, fill=FG3)
     for cx, cy in (APP, APPS):
         d.rounded_rectangle((s(cx - 78), s(cy - 82), s(cx + 78), s(cy + 90)), radius=s(22), fill=SLOT, outline=SLOT_LINE, width=s(1))
     # 箭头
     y, x0, x1 = s(APP[1]), s(432), s(478)
     d.line((x0, y, x1 - s(4), y), fill=EYE, width=s(4))
     d.polygon([(x1 + s(4), y), (x1 - s(8), y - s(9)), (x1 - s(8), y + s(9))], fill=EYE)
-    d.text((s(250), s(344)), "第一次打开时 macOS 可能会拦住它（这一版还没有 Apple 的公证）：", font=small, fill=FG3)
-    d.text((s(250), s(366)), "系统设置 → 隐私与安全性 → 往下找到 Lolidesk → 仍要打开", font=small, fill=FG)
+    # 只说一件箭头说不清的事：没公证，第一次打开要放行
+    d.text((s(262), s(356)), "首次打开：系统设置 → 隐私与安全性 → 仍要打开", font=small, fill=FG3)
     # 看板娘站在左边
     girl = Image.open(MASCOT).convert("RGBA")
     h = s(300)
