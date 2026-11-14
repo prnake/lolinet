@@ -25,6 +25,10 @@ fn icon_svg(name: &str) -> Option<&'static str> {
             r#"<rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M9 20h6"/><path d="M12 16v4"/>"#
         ),
         "plus" => icon!(r#"<path d="M12 5v14"/><path d="M5 12h14"/>"#),
+        // 远程桌面上的一个窗口：带标题栏和两个圆点
+        "window" => icon!(
+            r#"<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M3 9h18"/><path d="M6.5 6.8h.01M9.2 6.8h.01" stroke-width="2.2"/>"#
+        ),
         "sparkle" => icon!(
             r#"<path d="M12 3.5c.6 3.9 2.6 5.9 6.5 6.5-3.9.6-5.9 2.6-6.5 6.5-.6-3.9-2.6-5.9-6.5-6.5 3.9-.6 5.9-2.6 6.5-6.5z"/><path d="M18.5 16.5v4"/><path d="M16.5 18.5h4"/>"#
         ),
@@ -100,6 +104,7 @@ fn icon_svg(name: &str) -> Option<&'static str> {
 pub mod ic {
     pub const TERMINAL: &str = "ld/terminal.svg";
     pub const MONITOR: &str = "ld/monitor.svg";
+    pub const WINDOW: &str = "ld/window.svg";
     pub const PLUS: &str = "ld/plus.svg";
     pub const SPARKLE: &str = "ld/sparkle.svg";
     pub const POWER: &str = "ld/power.svg";

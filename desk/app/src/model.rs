@@ -36,8 +36,8 @@ use lolidesk_core::{
     net::{self, Client, Welcome},
 };
 use lolidesk_proto::{
-    AccessInfo, Allow, CodeInfo, ControlReq, ControlResp, DeviceInfo, DisplayInfo, Launcher,
-    PairLink, PendingInfo, PermissionKind, Role, SessionInfo, VideoSettings,
+    AccessInfo, Allow, CodeInfo, ControlReq, ControlResp, DeskTarget, DeviceInfo, DisplayInfo,
+    Launcher, PairLink, PendingInfo, PermissionKind, Role, SessionInfo, VideoSettings, WindowInfo,
 };
 
 use crate::{
@@ -54,6 +54,9 @@ use crate::{
 
 /// 本机主机默认的回环地址（主机目录里没有 `local` 时）
 pub const LOCAL_ADDR: &str = "127.0.0.1:10190";
+
+/// 侧栏里展开着的窗口列表多少秒问一次主机
+const WINDOWS_EVERY: u64 = 3;
 
 /// 主机连接的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +86,12 @@ pub struct HostState {
     pub displays: Vec<DisplayInfo>,
     /// 列显示器失败（比如没有屏幕录制权限）
     pub displays_error: Option<String>,
+    /// 主机上开着的窗口（侧栏「窗口」下面；远程桌面可以只推一个）
+    pub windows: Vec<WindowInfo>,
+    pub windows_state: WindowList,
+    /// 侧栏里窗口列表展开着（收起来就不问主机）
+    pub show_windows: bool,
+    windows_loading: bool,
     pub launchers: Vec<Launcher>,
     pub rtt_ms: f64,
     pub expanded: bool,
@@ -99,6 +108,19 @@ pub struct HostState {
     pub access: Option<AccessInfo>,
     pub access_error: Option<String>,
     access_loading: bool,
+}
+
+/// 主机的窗口列表问到哪了。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WindowList {
+    /// 这次连接里还没问到
+    #[default]
+    NotYet,
+    Ready,
+    /// 主机说列不了（没有屏幕录制权限……）
+    Failed(String),
+    /// 主机版本太旧，不认识 ListWindows（也就不会推窗口、不会在流上换）
+    Unsupported,
 }
 
 /// 主机的屏幕录制、辅助功能权限。
@@ -136,6 +158,10 @@ impl HostState {
             sessions: Vec::new(),
             displays: Vec::new(),
             displays_error: None,
+            windows: Vec::new(),
+            windows_state: WindowList::NotYet,
+            show_windows: true,
+            windows_loading: false,
             launchers: Vec::new(),
             rtt_ms: 0.0,
             expanded: true,
@@ -259,6 +285,43 @@ impl HostState {
             .iter()
             .find(|d| d.primary)
             .or_else(|| self.displays.first())
+    }
+
+    /// 侧栏要列窗口：有远程桌面，主机给看（窗口标题也算桌面上的东西）
+    pub fn wants_windows(&self) -> bool {
+        self.welcome
+            .as_ref()
+            .is_some_and(|w| w.desktop && w.allow.desktop)
+    }
+
+    /// 主机认得窗口那几条（Open、Select）：问到过窗口列表
+    pub fn can_select(&self) -> bool {
+        self.windows_state == WindowList::Ready
+    }
+
+    pub fn window(&self, id: u32) -> Option<&WindowInfo> {
+        self.windows.iter().find(|w| w.id == id)
+    }
+
+    /// 窗口在的那块显示器（列表里没有就主显示器）
+    pub fn display_for(&self, w: &WindowInfo) -> Option<&DisplayInfo> {
+        self.displays
+            .iter()
+            .find(|d| d.id == w.display)
+            .or_else(|| self.primary_display())
+    }
+
+    /// 快照、测试用：窗口列表问到了
+    pub fn set_windows_for_test(&mut self, windows: Vec<WindowInfo>) {
+        self.windows = windows;
+        self.windows_state = WindowList::Ready;
+    }
+
+    /// 换了连接：窗口重新问
+    fn reset_windows(&mut self) {
+        self.windows.clear();
+        self.windows_state = WindowList::NotYet;
+        self.windows_loading = false;
     }
 
     /// 快照、测试用：直接设成在线的样子（没有连接）。
@@ -649,6 +712,7 @@ impl Model {
                 h.retry.reset();
                 h.error.clear();
                 h.reset_perms();
+                h.reset_windows();
                 h.rtt_ms = client.rtt().as_secs_f64() * 1000.0;
                 h.welcome = Some(client.welcome.clone());
                 h.expanded = true;
@@ -897,6 +961,7 @@ impl Model {
         }
         h.error = format!("连接断了：{why}");
         h.reset_perms();
+        h.reset_windows();
         if h.wanted {
             h.link = Link::Reconnecting;
             h.retry.schedule(Instant::now());
@@ -1083,6 +1148,7 @@ impl Model {
             h.sessions.clear();
             h.displays.clear();
             h.displays_error = None;
+            h.reset_windows();
             h.launchers.clear();
             h.reset_perms();
         }
@@ -1115,6 +1181,66 @@ impl Model {
         }
     }
 
+    /// 侧栏里展开 / 收起一台主机的窗口列表（展开时马上问一次）
+    pub fn toggle_windows(&mut self, addr: SocketAddr, cx: &mut Context<Self>) {
+        let Some(h) = self.host_mut(addr) else { return };
+        h.show_windows = !h.show_windows;
+        let show = h.show_windows;
+        cx.notify();
+        if show {
+            self.refresh_windows(addr, cx);
+        }
+    }
+
+    /// 在后台问主机开着哪些窗口。单独开一条控制流问：旧主机不认识只断那一条。
+    pub fn refresh_windows(&mut self, addr: SocketAddr, cx: &mut Context<Self>) {
+        let Some(h) = self.host_mut(addr) else { return };
+        let (Some(client), true) = (h.client.clone(), h.online() && h.wants_windows()) else {
+            return;
+        };
+        // 主机太旧：这次连接里不再问
+        if h.windows_loading || h.windows_state == WindowList::Unsupported {
+            return;
+        }
+        h.windows_loading = true;
+        let epoch = h.epoch;
+        cx.spawn(async move |this, cx| {
+            let r = runtime::run(async move {
+                match client.control_once(ControlReq::ListWindows).await {
+                    Ok(ControlResp::Windows(w)) => Ok(Ok(w)),
+                    Ok(ControlResp::Error(e)) => Ok(Err(e)),
+                    Ok(other) => bail!("回应不对：{other:?}"),
+                    Err(e) => Err(e),
+                }
+            })
+            .await;
+            let _ = this.update(cx, |m, cx| {
+                let Some(h) = m.host_gen_mut(addr, epoch) else {
+                    return;
+                };
+                h.windows_loading = false;
+                let (windows, state) = match r {
+                    Ok(Ok(w)) => (w, WindowList::Ready),
+                    Ok(Err(e)) => (Vec::new(), WindowList::Failed(e)),
+                    Err(e) if e.downcast_ref::<net::TooOld>().is_some() => {
+                        (Vec::new(), WindowList::Unsupported)
+                    }
+                    // 网络上的错：这次不算，留着上次的，下次再问
+                    Err(e) => {
+                        tracing::debug!("问窗口：{e:#}");
+                        return;
+                    }
+                };
+                if h.windows != windows || h.windows_state != state {
+                    h.windows = windows;
+                    h.windows_state = state;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// 在后台拉会话列表；`all` 时连显示器和 agent 一起拉。
     pub fn refresh(&mut self, addr: SocketAddr, all: bool, cx: &mut Context<Self>) {
         let Some(h) = self.host(addr) else {
@@ -1127,6 +1253,7 @@ impl Model {
         let desktop = h.has_desktop();
         if all && desktop {
             self.refresh_perms(addr, cx);
+            self.refresh_windows(addr, cx);
         }
         cx.spawn(async move |this, cx| {
             let c = client.clone();
@@ -1221,6 +1348,18 @@ impl Model {
         };
         if n.is_multiple_of(net_every) {
             self.refresh_net(cx);
+        }
+        // 侧栏里展开着的窗口列表：窗口在前台时每 3 秒问一次（开了、关了、改了标题）
+        if n.is_multiple_of(WINDOWS_EVERY) && self.window_active {
+            let showing: Vec<SocketAddr> = self
+                .hosts
+                .iter()
+                .filter(|h| h.online() && h.expanded && h.show_windows && h.wants_windows())
+                .map(|h| h.addr)
+                .collect();
+            for a in showing {
+                self.refresh_windows(a, cx);
+            }
         }
         if !n.is_multiple_of(2) {
             return;
@@ -1719,10 +1858,11 @@ impl Model {
                 }
                 let turned_on = h.set_perms(p);
                 cx.notify();
-                // 屏幕录制刚开：显示器可能列得出来了
+                // 屏幕录制刚开：显示器、窗口可能列得出来了
                 if turned_on {
                     m.refresh(addr, false, cx);
                     m.refresh_displays(addr, cx);
+                    m.refresh_windows(addr, cx);
                 }
             });
         })
@@ -2132,27 +2272,83 @@ impl Model {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(d) = &self.desk {
-            let d = d.read(cx);
-            if d.host == addr && d.display.id == display && !d.is_stopped() {
+        self.open_desk(addr, DeskTarget::Display(display), window, cx);
+    }
+
+    /// 只推主机上的一个窗口（侧栏「窗口」下面点的）。
+    pub fn start_window(
+        &mut self,
+        addr: SocketAddr,
+        id: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_desk(addr, DeskTarget::Window(id), window, cx);
+    }
+
+    /// 远程桌面推这个：已经在推就切过去；同一台主机开着、主机认得 Select 就在流上换（画面不断），
+    /// 不然重开一个。
+    pub fn open_desk(
+        &mut self,
+        addr: SocketAddr,
+        target: DeskTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(h) = self.host(addr) else { return };
+        // 推什么：显示器的信息，窗口的话还有窗口（帧率按它所在显示器的刷新率夹）
+        let (info, win) = match target {
+            DeskTarget::Display(id) => match h.displays.iter().find(|d| d.id == id) {
+                Some(d) => (d.clone(), None),
+                None => return,
+            },
+            DeskTarget::Window(id) => {
+                let Some(w) = h.window(id).cloned() else {
+                    return;
+                };
+                let Some(d) = h.display_for(&w).cloned() else {
+                    self.toast(ToastKind::Error, "主机没列出显示器，开不了远程桌面", cx);
+                    return;
+                };
+                (d, Some(w))
+            }
+        };
+        let can_select = h.can_select();
+        let title = h.title();
+        let client = h.client.clone();
+        if let Some(d) = self.desk.clone() {
+            let p = d.read(cx);
+            // 断着等重连的也算开着（重连上会接着推）
+            let open = p.host == addr && !p.is_stopped();
+            if open && p.shows(target) {
+                self.select(Selection::Desk, cx);
+                return;
+            }
+            if open && !p.suspended && can_select {
+                d.update(cx, |p, cx| p.select(target, info, win, cx));
                 self.select(Selection::Desk, cx);
                 return;
             }
         }
         self.stop_desk(cx);
-        let Some(h) = self.host(addr) else { return };
-        let Some(client) = h.client.clone() else {
-            self.toast(ToastKind::Error, format!("{} 没连上", h.title()), cx);
+        let Some(client) = client else {
+            self.toast(ToastKind::Error, format!("{title} 没连上"), cx);
             return;
         };
-        let Some(info) = h.displays.iter().find(|d| d.id == display).cloned() else {
-            return;
-        };
-        let title = h.title();
         let video = self.video_for(&info);
         let model = cx.weak_entity();
-        let pane =
-            cx.new(|cx| DeskPane::new(model, addr, title, info, Some((client, video)), window, cx));
+        let pane = cx.new(|cx| {
+            DeskPane::new(
+                model,
+                addr,
+                title,
+                info,
+                win,
+                Some((client, video)),
+                window,
+                cx,
+            )
+        });
         self.desk = Some(pane);
         self.selection = Selection::Desk;
         cx.notify();

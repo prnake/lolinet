@@ -14,6 +14,9 @@
 //! 控制流上能查这两个授权、在主机上打开设置页、重启主机服务（屏幕录制要重启才生效）。
 //! 终端两端都是 libghostty-vt：主机的终端是会话的唯一真相，客户端收它的 Mirror 帧（转义序列）照着画，
 //! 自己按当前模式给按键编码，把字节发回来。
+//! 窗口（照 Vibe42 的 `desktop.windows` / `window-select`）：[`ControlReq::ListWindows`] 列主机上开着的窗口，
+//! 远程桌面可以只推一个窗口（[`DeskTarget::Window`]），流上 [`DeskReq::Select`] 在显示器和窗口之间换。
+//! 这几条是后加的：旧主机不认识，客户端在单独的控制流上问 ListWindows（旧主机只断那一条流），问到了才发 Open / Select。
 //! ALPN 不变：版本不一致时由 Hello 回一个看得懂的 Denied，而不是 TLS 握手失败。
 //! `Hello` 和 `Denied` 的位置、字段永远不改，旧客户端连新主机（或反过来）才拿得到这句话。
 
@@ -113,6 +116,9 @@ pub enum ControlReq {
         grant: String,
         allow: Option<Allow>,
     },
+    /// 主机上开着的窗口（远程桌面可以只推其中一个）→ [`ControlResp::Windows`]。
+    /// 旧主机不认识：要在单独的控制流上问（`Client::control_once`），别弄断主控制流
+    ListWindows,
 }
 
 /// 等主人同意最多多久
@@ -376,6 +382,8 @@ pub enum ControlResp {
         secret: String,
         addr: String,
     },
+    /// 开着的窗口，按程序名、再按窗口编号排（列表不跟着前后顺序跳）
+    Windows(Vec<WindowInfo>),
 }
 
 /// 主机开放的能力。远程桌面和 computer use 用的是同一份屏幕录制、辅助功能授权，这里只是主机愿不愿意给。
@@ -494,6 +502,33 @@ pub struct DisplayInfo {
     pub refresh: u16,
     pub primary: bool,
     pub name: String,
+}
+
+/// 主机上一个开着的窗口（侧栏「窗口」下面的一行）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowInfo {
+    /// 系统的窗口编号（macOS 的 CGWindowID）：[`DeskTarget::Window`] 用它
+    pub id: u32,
+    /// 程序的名字（访达、Safari……）
+    pub app: String,
+    /// 程序的 bundle id，不知道是空
+    pub bundle: String,
+    /// 窗口标题，没有是空
+    pub title: String,
+    /// 窗口在哪块显示器上（中心点所在的那块；帧率按它的刷新率夹）
+    pub display: u32,
+    /// 原生像素
+    pub width: u32,
+    pub height: u32,
+    /// 最小化了：选它时主机先把它恢复（要能操作这台桌面）
+    pub minimized: bool,
+}
+
+/// 远程桌面推什么：一整块显示器，或者一个窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DeskTarget {
+    Display(u32),
+    Window(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -701,6 +736,15 @@ pub enum DeskReq {
     /// 换分辨率 / 帧率 / 画质：主机重开采集和编码器，再发一次 Ready。
     Configure(VideoSettings),
     Input(DeskInput),
+    /// 新版的 Start：可以直接推一个窗口。窗口打不开时主机改推主显示器（Showing 里说为什么）。
+    /// 只发给列得出窗口的主机（旧主机不认识）
+    Open {
+        target: DeskTarget,
+        video: VideoSettings,
+    },
+    /// 换推的东西（显示器 ↔ 窗口）：主机重开采集，回 Showing 和新的 Ready；
+    /// 换不了回 Error，接着推原来的
+    Select(DeskTarget),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -715,6 +759,12 @@ pub enum DeskEvent {
     },
     Stopped(String),
     Error(String),
+    /// 主机现在推的是这个（Open / Select 之后；推着的窗口关了、藏起来了，主机改推它所在的显示器时）。
+    /// `note` 不空是要告诉人的话（「窗口已关闭或已隐藏，已切换到整个屏幕」）
+    Showing {
+        target: DeskTarget,
+        note: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1122,6 +1172,51 @@ mod tests {
             }
         ));
         assert_eq!(postcard::to_stdvec(&ControlResp::Ok).unwrap(), [7]);
+    }
+
+    /// 窗口那几条是后加的：在各自枚举的末尾，前面的编号不动
+    #[test]
+    fn window_messages() {
+        assert_eq!(postcard::to_stdvec(&ControlReq::ListWindows).unwrap(), [13]);
+        let w = WindowInfo {
+            id: 4242,
+            app: "Safari".into(),
+            bundle: "com.apple.Safari".into(),
+            title: "lolinet — GitHub".into(),
+            display: 1,
+            width: 2400,
+            height: 1600,
+            minimized: false,
+        };
+        let bytes = postcard::to_stdvec(&ControlResp::Windows(vec![w.clone()])).unwrap();
+        assert_eq!(bytes[0], 11);
+        assert!(
+            matches!(postcard::from_bytes::<ControlResp>(&bytes).unwrap(), ControlResp::Windows(v) if v == [w])
+        );
+        // 旧的 DeskReq 编号不变，Open / Select 在后面
+        assert_eq!(postcard::to_stdvec(&DeskReq::Stop).unwrap(), [1]);
+        assert_eq!(
+            postcard::to_stdvec(&DeskReq::Select(DeskTarget::Window(7))).unwrap(),
+            [6, 1, 7]
+        );
+        let open = DeskReq::Open {
+            target: DeskTarget::Display(1),
+            video: VideoSettings::default(),
+        };
+        let bytes = postcard::to_stdvec(&open).unwrap();
+        assert_eq!(&bytes[..3], [5, 0, 1]);
+        assert!(matches!(
+            postcard::from_bytes::<DeskReq>(&bytes).unwrap(),
+            DeskReq::Open {
+                target: DeskTarget::Display(1),
+                ..
+            }
+        ));
+        let ev = DeskEvent::Showing {
+            target: DeskTarget::Display(2),
+            note: "x".into(),
+        };
+        assert_eq!(postcard::to_stdvec(&ev).unwrap(), [3, 0, 2, 1, b'x']);
     }
 
     #[test]

@@ -40,11 +40,11 @@ mod gui {
     };
     use lolidesk_app::{
         assets::AppAssets,
-        desk::DeskSender,
+        desk::{DeskSender, DeskStreamEvent},
         lolinet::{
             Invite, InviteKind, JoinTarget, Kernel, Lolinet, Node, Peer, Shell, Status as NetStatus,
         },
-        model::{HostState, Model, Perms, Selection},
+        model::{HostState, Model, Perms, Selection, WindowList},
         prefs::Prefs,
         ui::{
             app::{Workspace, init},
@@ -56,7 +56,8 @@ mod gui {
     };
     use lolidesk_core::{decode::Frame, net::Welcome};
     use lolidesk_proto::{
-        DeskInput, DeskReq, DisplayInfo, Launcher, MouseButton as PButton, SessionInfo,
+        DeskInput, DeskReq, DeskTarget, DisplayInfo, Launcher, MouseButton as PButton, SessionInfo,
+        WindowInfo,
     };
     #[cfg(target_os = "macos")]
     use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
@@ -118,6 +119,7 @@ mod gui {
             ("desktop", desktop),
             #[cfg(target_os = "macos")]
             ("desktop_menu", desktop_menu),
+            ("desktop_windows", desktop_windows),
             ("desktop_states", desktop_states),
             ("new_menu", new_menu),
             ("permissions", permissions),
@@ -457,6 +459,7 @@ mod gui {
                     "desktop".into(),
                     d,
                     None,
+                    None,
                     window,
                     cx,
                 )
@@ -612,6 +615,148 @@ mod gui {
         shot(&mut cx, handle, out, "desktop-menu");
     }
 
+    fn win(id: u32, app: &str, title: &str, minimized: bool) -> WindowInfo {
+        WindowInfo {
+            id,
+            app: app.into(),
+            bundle: String::new(),
+            title: title.into(),
+            display: 1,
+            width: 2400,
+            height: 1560,
+            minimized,
+        }
+    }
+
+    /// 侧栏里的窗口（照 Vibe42）：列表、只推一个窗口、窗口没了改推显示器、收起来。
+    fn desktop_windows(out: &Option<PathBuf>) {
+        let mut cx = context();
+        let model = fake_model(&mut cx);
+        let windows = vec![
+            win(4120, "Safari", "lolinet — GitHub", false),
+            win(4133, "Safari", "远程桌面的窗口列表 · Vibe42 文档", false),
+            win(512, "访达", "下载", false),
+            win(77, "备忘录", "待办", true),
+            win(901, "Ghostty", "", false),
+        ];
+        let host = addr("10.188.1.2:10190");
+        model.update(&mut cx, |m, _| {
+            m.hosts[0].set_windows_for_test(windows.clone());
+            // 旧主机：不认识窗口列表，说一句
+            m.hosts[1].windows_state = WindowList::Unsupported;
+        });
+        let (handle, _) = open(&mut cx, model.clone());
+        shot(&mut cx, handle, out, "sidebar-windows");
+
+        // 只推一个窗口：侧栏那一行亮、顶栏是窗口标题
+        let frame_img = fake_frame(1600, 1040);
+        let pane = with_window(&mut cx, handle, |window, cx| {
+            let d = model.read(cx).hosts[0].displays[0].clone();
+            let pane = cx.new(|cx| {
+                DeskPane::new(
+                    model.downgrade(),
+                    host,
+                    "desktop".into(),
+                    d,
+                    Some(windows[0].clone()),
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            pane.update(cx, |p, cx| {
+                p.set_playing_for_test(
+                    Encoding {
+                        width: 1600,
+                        height: 1040,
+                        fps: 60,
+                        bitrate: 18_000_000,
+                    },
+                    StatsSnapshot::default(),
+                    Some(frame_img),
+                    cx,
+                )
+            });
+            model.update(cx, |m, cx| {
+                m.desk = Some(pane.clone());
+                m.selection = Selection::Desk;
+                cx.notify();
+            });
+            pane
+        });
+        let (target, size) = pane.read_with(&cx, |p, _| (p.target, p.source_size()));
+        assert_eq!(target, DeskTarget::Window(4120));
+        // 分辨率选项按窗口的大小
+        assert_eq!(size, (2400, 1560));
+        shot(&mut cx, handle, out, "desktop-window");
+        #[cfg(target_os = "macos")]
+        {
+            // 工具条上的「显示器和窗口」：显示器、分隔线、窗口
+            with_window(&mut cx, handle, |window, cx| window.click("tb-display", cx));
+            cx.advance_clock(std::time::Duration::from_secs(1));
+            shot(&mut cx, handle, out, "desktop-window-menu");
+            with_window(&mut cx, handle, |window, cx| window.press("escape", cx));
+        }
+
+        // 主机说窗口关了、改推了显示器：跟着换，弹一条
+        with_window(&mut cx, handle, |_, cx| {
+            pane.update(cx, |p, cx| {
+                p.event_for_test(
+                    DeskStreamEvent::Showing {
+                        target: DeskTarget::Display(1),
+                        note: "窗口已关闭或已隐藏，已切换到整个屏幕".into(),
+                    },
+                    cx,
+                );
+                p.event_for_test(
+                    DeskStreamEvent::Ready {
+                        width: 1920,
+                        height: 1246,
+                        fps: 60,
+                        bitrate: 25_000_000,
+                    },
+                    cx,
+                );
+            })
+        });
+        cx.advance_clock(std::time::Duration::from_millis(600));
+        let (target, window, size, display) = pane.read_with(&cx, |p, _| {
+            (p.target, p.window.clone(), p.source_size(), p.display.id)
+        });
+        assert_eq!(target, DeskTarget::Display(1));
+        assert!(window.is_none());
+        assert_eq!((display, size), (1, (3024, 1964)));
+        shot(&mut cx, handle, out, "desktop-window-closed");
+
+        // 收起窗口列表（收起来就不问主机），再展开：点侧栏「窗口」那一行（普通的 div 按 id 找不到，同 home 按位置点）
+        let header = point(px(100.), px(413.));
+        let click = |cx: &mut HeadlessAppContext| {
+            with_window(cx, handle, |window, cx| {
+                window.pointer_move(header, None, cx);
+                window.pointer_down(header, MouseButton::Left, cx);
+                window.pointer_up(header, MouseButton::Left, cx);
+            });
+            frame(cx, handle);
+        };
+        click(&mut cx);
+        assert!(model.read_with(&cx, |m, _| !m.hosts[0].show_windows));
+        shot(&mut cx, handle, out, "sidebar-windows-collapsed");
+        click(&mut cx);
+        assert!(model.read_with(&cx, |m, _| m.hosts[0].show_windows));
+
+        // 断线等重连时再点正在看的那块显示器：还是这一个（重连上接着推），不能把它关掉
+        with_window(&mut cx, handle, |_, cx| {
+            pane.update(cx, |p, cx| p.suspend(cx))
+        });
+        with_window(&mut cx, handle, |window, cx| {
+            model.update(cx, |m, cx| m.start_desk(host, 1, window, cx))
+        });
+        frame(&mut cx, handle);
+        let now = model.read_with(&cx, |m, _| m.desk.as_ref().map(|d| d.entity_id()));
+        assert_eq!(now, Some(pane.entity_id()), "等重连的远程桌面被关掉了");
+        assert!(pane.read_with(&cx, |p, _| p.suspended && !p.is_stopped()));
+    }
+
     fn desktop_states(out: &Option<PathBuf>) {
         let mut cx = context();
         let model = fake_model(&mut cx);
@@ -625,6 +770,7 @@ mod gui {
                     addr("10.188.1.2:10190"),
                     "desktop".into(),
                     d,
+                    None,
                     None,
                     window,
                     cx,

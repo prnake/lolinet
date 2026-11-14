@@ -1,5 +1,6 @@
-//! 侧栏：字标和「＋」（添加主机、导入分享链接）、最上面固定的「网络」、主机树（最上面是本机：访问、会话、新建、显示器；
-//! 别的主机：权限引导、会话、新建、显示器）、网里的设备（点「连接」请对方同意）、底部的在线数和版本。
+//! 侧栏：字标和「＋」（添加主机、导入分享链接）、最上面固定的「网络」、主机树（最上面是本机：访问、会话、新建、显示器、窗口；
+//! 别的主机：权限引导、会话、新建、显示器、窗口）、网里的设备（点「连接」请对方同意）、底部的在线数和版本。
+//! 窗口（照 Vibe42）：主机上开着的窗口，点一个远程桌面就只推它（已经开着就在流上换过去）；正在推的标绿点。
 //! 缓存的视图：只在模型变了（`observe`）时重画，画面一帧一帧来时不动。
 
 use std::net::SocketAddr;
@@ -14,12 +15,12 @@ use gpui_kit::{
     MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, div, prelude::FluentBuilder, px,
 };
-use lolidesk_proto::{DisplayInfo, Launcher, SessionInfo};
+use lolidesk_proto::{DeskTarget, DisplayInfo, Launcher, SessionInfo, WindowInfo};
 
 use crate::{
     assets::ic,
-    labels::{display_name, is_agent, rtt_label, session_name, session_subtitle},
-    model::{HostState, Link, LocalState, Model, Selection},
+    labels::{display_name, is_agent, rtt_label, session_name, session_subtitle, window_label},
+    model::{HostState, Link, LocalState, Model, Selection, WindowList},
     service::Found,
     term::TermStart,
     theme::*,
@@ -121,7 +122,12 @@ impl Render for Sidebar {
             .collect();
         let desk = m.desk.as_ref().map(|d| {
             let d = d.read(cx);
-            (d.host, d.display.id, !d.is_stopped())
+            DeskNow {
+                host: d.host,
+                target: d.target,
+                live: !d.is_stopped(),
+                pending: d.pending.as_ref().map(|p| p.target),
+            }
         });
         let stage_focus = m
             .desk
@@ -301,11 +307,30 @@ impl Render for Sidebar {
     }
 }
 
+/// 开着的远程桌面推的是什么（侧栏标出哪一行在推、哪一行正在换过去）
+#[derive(Clone, Copy)]
+struct DeskNow {
+    host: SocketAddr,
+    target: DeskTarget,
+    live: bool,
+    pending: Option<DeskTarget>,
+}
+
+impl DeskNow {
+    fn streaming(&self, host: SocketAddr, t: DeskTarget) -> bool {
+        self.host == host && self.live && self.pending.is_none() && self.target == t
+    }
+
+    fn opening(&self, host: SocketAddr, t: DeskTarget) -> bool {
+        self.host == host && self.live && self.pending == Some(t)
+    }
+}
+
 struct TreeCtx<'a> {
     model: &'a Entity<Model>,
     selection: Selection,
     open: &'a [OpenTerm],
-    desk: Option<(SocketAddr, u32, bool)>,
+    desk: Option<DeskNow>,
     /// 本机主机怎么样了；偏好「让网里的设备能连这台」
     local: Option<LocalState>,
     local_pref: bool,
@@ -474,10 +499,42 @@ fn host_tree(ix: usize, h: &HostState, ctx: &TreeCtx) -> AnyElement {
                         ),
                 );
             }
+            // 窗口（照 Vibe42）：点一个只推那个窗口
+            if h.wants_windows() {
+                body = body.children(windows_section(h, ctx, guiding));
+            }
         }
     }
     tree = tree.child(body);
     tree.into_any_element()
+}
+
+/// 「窗口」和它下面的：窗口，或者一行说明（读取中、读不了、没有窗口、主机太旧）。
+fn windows_section(h: &HostState, ctx: &TreeCtx, guiding: bool) -> Vec<AnyElement> {
+    let mut out = vec![windows_header(h, ctx)];
+    if !h.show_windows {
+        return out;
+    }
+    match &h.windows_state {
+        WindowList::NotYet => out.push(windows_note("正在读取窗口…".into(), fg3(), true)),
+        // 权限卡片、列不出显示器的那条已经在说为什么了（多半是同一个原因）：不重复
+        WindowList::Failed(_) if guiding || h.displays_error.is_some() => {}
+        WindowList::Failed(e) => out.push(windows_note(
+            format!("窗口列表读取失败：{e}"),
+            warn(),
+            false,
+        )),
+        WindowList::Unsupported => out.push(windows_note(
+            "主机的 lolidesk 版本太旧，升级后能在这里看到和切换窗口".into(),
+            fg4(),
+            false,
+        )),
+        WindowList::Ready if h.windows.is_empty() => {
+            out.push(windows_note("没有打开的窗口".into(), fg4(), false))
+        }
+        WindowList::Ready => out.extend(h.windows.iter().map(|w| window_row(h.addr, w, ctx))),
+    }
+    out
 }
 
 /// 右键菜单要知道的。
@@ -955,10 +1012,10 @@ fn new_row(ix: usize, addr: SocketAddr, launchers: &[Launcher], ctx: &TreeCtx) -
 }
 
 fn display_row(addr: SocketAddr, d: &DisplayInfo, ctx: &TreeCtx) -> AnyElement {
-    let streaming = ctx
-        .desk
-        .is_some_and(|(h, id, live)| h == addr && id == d.id && live);
-    let selected = streaming && ctx.selection == Selection::Desk;
+    let target = DeskTarget::Display(d.id);
+    let streaming = ctx.desk.is_some_and(|n| n.streaming(addr, target));
+    let opening = ctx.desk.is_some_and(|n| n.opening(addr, target));
+    let selected = (streaming || opening) && ctx.selection == Selection::Desk;
     let model = ctx.model.clone();
     let id = d.id;
     side_row(SharedString::from(format!("disp-{addr}-{id}")), selected)
@@ -976,8 +1033,144 @@ fn display_row(addr: SocketAddr, d: &DisplayInfo, ctx: &TreeCtx) -> AnyElement {
                 .child(display_name(&d.name, d.id)),
         )
         .child(mono(format!("{}×{}", d.width, d.height), T_CAP, fg3()).flex_none())
+        .when(opening, |r| r.child(Spinner::new().color(fg3())))
         .when(streaming, |r| r.child(dot(eye(), 5.)))
         .on_click(move |_, window, cx| model.update(cx, |m, cx| m.start_desk(addr, id, window, cx)))
+        .into_any_element()
+}
+
+/// 「窗口」：点一下展开 / 收起这台主机的窗口列表（收起来就不问主机）。
+fn windows_header(h: &HostState, ctx: &TreeCtx) -> AnyElement {
+    let addr = h.addr;
+    let model = ctx.model.clone();
+    let count = match (&h.windows_state, h.show_windows) {
+        (WindowList::Ready, _) => format!("{}", h.windows.len()),
+        _ => String::new(),
+    };
+    let tip: SharedString = if h.show_windows {
+        "收起窗口".into()
+    } else {
+        "展开窗口：只看、只操作远端的一个窗口".into()
+    };
+    div()
+        .id(SharedString::from(format!("wins-{addr}")))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(26.))
+        .mt(px(4.))
+        .px(px(10.))
+        .rounded(R_SM)
+        .cursor_pointer()
+        .hover(|s| s.bg(ink2()))
+        .child(icon(
+            if h.show_windows {
+                ic::CHEVRON_DOWN
+            } else {
+                ic::CHEVRON_RIGHT
+            },
+            11.,
+            fg3(),
+        ))
+        .child(caption("窗口").flex_1())
+        .when(!count.is_empty(), |r| {
+            r.child(mono(count, T_CAP, fg4()).flex_none())
+        })
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(move |_, _, cx| model.update(cx, |m, cx| m.toggle_windows(addr, cx)))
+        .into_any_element()
+}
+
+/// 窗口列表下面的一行说明（读取中、读不了、没有窗口、主机太旧）
+fn windows_note(text: String, color: gpui_kit::Hsla, loading: bool) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(4.))
+        .when(loading, |d| d.child(Spinner::new().color(fg3())))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(T_CAP)
+                .text_color(color)
+                .child(text),
+        )
+        .into_any_element()
+}
+
+/// 主机上的一个窗口：标题（没有就程序名）和程序名；最小化的标出来。点了只推这个窗口。
+fn window_row(addr: SocketAddr, w: &WindowInfo, ctx: &TreeCtx) -> AnyElement {
+    let target = DeskTarget::Window(w.id);
+    let streaming = ctx.desk.is_some_and(|n| n.streaming(addr, target));
+    let opening = ctx.desk.is_some_and(|n| n.opening(addr, target));
+    let selected = (streaming || opening) && ctx.selection == Selection::Desk;
+    let model = ctx.model.clone();
+    let id = w.id;
+    let name = window_label(w);
+    let sub = if w.title.trim().is_empty() {
+        String::new()
+    } else {
+        w.app.clone()
+    };
+    let tip: SharedString = format!(
+        "{}{}\n{}×{} · 窗口 #{}{}",
+        w.app,
+        if w.title.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", w.title)
+        },
+        w.width,
+        w.height,
+        w.id,
+        if w.minimized {
+            " · 已最小化（打开时先恢复）"
+        } else {
+            ""
+        }
+    )
+    .into();
+    let color = if streaming {
+        eye()
+    } else if w.minimized {
+        fg4()
+    } else {
+        fg2()
+    };
+    side_row(SharedString::from(format!("win-{addr}-{id}")), selected)
+        .h(px(40.))
+        .child(icon(ic::WINDOW, 14., color))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .text_size(T_SM)
+                        .when(w.minimized, |d| d.text_color(fg2()))
+                        .truncate()
+                        .child(name),
+                )
+                .when(!sub.is_empty(), |d| {
+                    d.child(mono(sub, T_CAP, fg3()).truncate())
+                }),
+        )
+        .when(w.minimized, |r| {
+            r.child(badge("已最小化", fg3(), ink3()).flex_none())
+        })
+        .when(opening, |r| r.child(Spinner::new().color(fg3())))
+        .when(streaming, |r| r.child(dot(eye(), 5.)))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(move |_, window, cx| {
+            model.update(cx, |m, cx| m.start_window(addr, id, window, cx))
+        })
         .into_any_element()
 }
 

@@ -173,6 +173,10 @@ jobs:
           # 错的 token 必须被拒
           if ./pkg/lolidesk 127.0.0.1 --token 00000000 --sessions -y >/dev/null 2>&1; then echo "错的 token 没被拒"; exit 1; fi
           ./pkg/lolidesk 127.0.0.1 --sessions
+          # 窗口列表是后加的请求，在单独一条控制流上问（runner 没有屏幕录制权限时主机回错，不弹框）；
+          # 问完主控制流照常：后面的 --launchers 要列得出来
+          ./pkg/lolidesk 127.0.0.1 --windows --launchers | tee windows.out
+          grep -q '终端' windows.out || { cat windows.out host.log; echo "问过窗口之后控制流不对"; exit 1; }
           # 会话存盘：开一个会话、跑条命令、断开；主机收到 SIGTERM 会存盘，重启后会话带着历史回来
           ( sleep 2; printf 'echo MARK-$((20+22))\n'; sleep 2; printf '\035' ) | ./pkg/lolidesk 127.0.0.1 > /dev/null 2>&1 || true
           ID=$(./pkg/lolidesk 127.0.0.1 --sessions | awk -F'\t' '/^#/{sub("#","",$1); print $1}' | tail -1)
