@@ -8,6 +8,7 @@
 #   Contents/Frameworks/libghostty-vt.dylib    终端核心（两个程序都从这里载入）
 #   Contents/Helpers/mihomo                    设了 MIHOMO=<mihomo 可执行文件> 才有（desk/scripts/fetch-mihomo.sh 取）：
 #                                              独立的程序，lolinet mihomo on 用；旁边 Resources/mihomo-NOTICE.txt 写版本、许可和源码
+#   Contents/Resources/AppIcon.icns            图标（看板娘，desk/app/macos/AppIcon.icns）
 #   Contents/Info.plist                        登记 lolidesk:// （分享链接）：点了链接，系统把它交给 app
 set -eu
 
@@ -30,6 +31,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Frameworks
 cp "$bin" "$app/Contents/MacOS/Lolidesk"
 cp "$cli" "$app/Contents/Helpers/lolidesk"
 cp "$lib" "$app/Contents/Frameworks/libghostty-vt.dylib"
+cp "$here/../app/macos/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 chmod 755 "$app/Contents/MacOS/Lolidesk" "$app/Contents/Helpers/lolidesk"
 if [ -n "$mihomo" ]; then
   cp "$mihomo" "$app/Contents/Helpers/mihomo"
@@ -55,6 +57,7 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundleName</key><string>Lolidesk</string>
   <key>CFBundleDisplayName</key><string>Lolidesk</string>
   <key>CFBundleExecutable</key><string>Lolidesk</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>co.lo-li.lolidesk.app</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

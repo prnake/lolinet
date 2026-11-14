@@ -4,6 +4,7 @@
 #   make lolinet        lolinet for this machine → .build/out/lolinet-<os>-<arch>.tar.gz
 #   make desk           lolidesk (host and client in one) → desk/target/release/ (--version prints git describe, as in CI), libghostty-vt → desk/.ghostty/
 #   make desk-app       desktop app (GPUI): Lolidesk.app on macOS, the Linux package layout on Linux → desk/app-out/
+#   make desk-dmg       macOS: desk-app, then a drag-to-Applications disk image → desk/app-out/Lolidesk.dmg (needs uv)
 #   make web            local console (web/dist) and public probe page (web/dist-probe)
 #   make check          web + scripts + desk checks
 #   make check-sni CORE=path/to/easytier-core   prove the WSS SNI patch works on a built binary
@@ -18,7 +19,7 @@ endif
 PYTHON ?= python3
 PY_SOURCES = join/deploy.py lolinet/release.py easytier/check_sni.py $(wildcard probe/*.py scripts/*.py web/agent/*.py)
 
-.PHONY: all lolinet desk desk-app web check check-web check-scripts check-desk check-sni clean
+.PHONY: all lolinet desk desk-app desk-dmg web check check-web check-scripts check-desk check-sni clean
 
 all: lolinet
 
@@ -46,7 +47,13 @@ ifneq ($(filter darwin-%,$(GHOSTTY_PLATFORM)),)
 desk-app: $(GHOSTTY_LIB) $(MIHOMO_BIN)
 	cd desk && cargo build --locked --release -p lolidesk-app -p lolidesk
 	MIHOMO=$(MIHOMO_BIN) sh desk/scripts/bundle-app.sh desk/target/release/lolidesk-app desk/target/release/lolidesk $(GHOSTTY_LIB) desk/app-out
+
+desk-dmg: desk-app
+	sh desk/scripts/bundle-dmg.sh desk/app-out/Lolidesk.app desk/app-out/Lolidesk.dmg
 else
+desk-dmg:
+	@echo "desk-dmg is macOS only" >&2; exit 1
+
 # Linux: the same layout as the release package (lolidesk, libghostty-vt.so, BUILD-INFO, lolidesk-app,
 # lolidesk.desktop, lolidesk.svg) → desk/app-out/lolidesk/. Needs GPUI's system packages (desk/README.md).
 desk-app: $(GHOSTTY_LIB)
