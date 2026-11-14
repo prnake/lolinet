@@ -1185,7 +1185,7 @@ pub fn status_badge(h: &HostState, local: Option<&LocalState>) -> impl IntoEleme
     }
     match h.link {
         Link::Online if h.local => badge("在线", eye(), eye_wash()),
-        Link::Online => badge(rtt_label(h.rtt_ms), eye(), eye_wash()),
+        Link::Online => badge(format!("在线 · {}", rtt_label(h.rtt_ms)), eye(), eye_wash()),
         Link::Connecting | Link::Reconnecting => badge("连接中", warn(), warn_wash()),
         Link::Failed => badge("连不上", bad(), bad_wash()),
         Link::Offline => badge("离线", fg3(), ink3()),

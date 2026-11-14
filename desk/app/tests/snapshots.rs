@@ -523,6 +523,24 @@ mod gui {
         let model = fake_model(&mut cx);
         let (handle, _) = open(&mut cx, model.clone());
         shot(&mut cx, handle, out, "home");
+        // 连不上的那台改成正在连：卡片上是「连接中…」和来回滑的细线；连不上时按钮是「重试」
+        let label = |cx: &mut HeadlessAppContext| {
+            model.read_with(cx, |m, _| {
+                m.hosts.iter().map(|h| h.link).collect::<Vec<_>>()
+            })
+        };
+        assert!(label(&mut cx).contains(&lolidesk_app::model::Link::Failed));
+        with_window(&mut cx, handle, |_, cx| {
+            model.update(cx, |m, cx| {
+                for h in m.hosts.iter_mut() {
+                    if h.link == lolidesk_app::model::Link::Failed {
+                        h.link = lolidesk_app::model::Link::Connecting;
+                    }
+                }
+                cx.notify();
+            })
+        });
+        shot(&mut cx, handle, out, "home-connecting");
         // 出错的通知
         with_window(&mut cx, handle, |_, cx| {
             model.update(cx, |m, cx| {
@@ -784,6 +802,14 @@ mod gui {
             pane
         });
         shot(&mut cx, handle, out, "desktop-opening");
+        // 打不开（主机回了错）：想事情的看板娘、「打不开远程桌面」和原因
+        with_window(&mut cx, handle, |_, cx| {
+            pane.update(cx, |p, cx| {
+                p.error = Some("主机没有屏幕录制权限".into());
+                cx.notify();
+            })
+        });
+        shot(&mut cx, handle, out, "desktop-error");
         // 主机停了：「远程桌面已结束」+ 重新连接
         with_window(&mut cx, handle, |_, cx| {
             pane.update(cx, |p, cx| {

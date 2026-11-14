@@ -7,6 +7,7 @@ pub mod desktop;
 pub mod dialogs;
 pub mod grid;
 pub mod home;
+pub mod mascot;
 pub mod network;
 pub mod pair;
 pub mod permissions;

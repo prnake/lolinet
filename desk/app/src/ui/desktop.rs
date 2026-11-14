@@ -18,11 +18,11 @@ use gpui_kit::component::{
     tooltip::Tooltip,
 };
 use gpui_kit::{
-    Anchor, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton as GMouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent,
-    SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
-    WeakEntity, Window, canvas, div, prelude::FluentBuilder, px,
+    Anchor, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent,
+    MouseButton as GMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+    Pixels, Render, ScrollEvent, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
+    Subscription, Task, WeakEntity, Window, canvas, div, prelude::FluentBuilder, px,
 };
 #[cfg(target_os = "macos")]
 use gpui_kit::{ObjectFit, surface};
@@ -41,7 +41,10 @@ use crate::{
     },
     model::{Model, ToastKind},
     theme::*,
-    ui::widgets::{Trigger, dot, icon, mono, pill, vdivider},
+    ui::{
+        mascot::{self, Pose},
+        widgets::{Trigger, dot, icon, mono, pill, vdivider},
+    },
     video::StatsSnapshot,
 };
 
@@ -454,10 +457,12 @@ impl DeskPane {
             let (host, target) = (self.host, self.target);
             return Some(
                 base.bg(void())
+                    .child(mascot::pose(Pose::Sleep, 150.))
                     .child(
                         div()
-                            .text_size(T_SM)
-                            .text_color(fg2())
+                            .text_size(T_LG)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(fg())
                             .child("远程桌面已结束"),
                     )
                     .when_some(self.error.clone(), |s, e| {
@@ -482,7 +487,21 @@ impl DeskPane {
         }
         if let Some(e) = self.error.as_ref().filter(|_| !self.suspended) {
             return Some(
-                base.child(icon(ic::WARNING, 28., warn()))
+                base.child(mascot::pose(Pose::Think, 150.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(icon(ic::WARNING, 16., warn()))
+                            .child(
+                                div()
+                                    .text_size(T_LG)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(fg())
+                                    .child("打不开远程桌面"),
+                            ),
+                    )
                     .child(
                         div()
                             .max_w(px(520.))
@@ -494,18 +513,47 @@ impl DeskPane {
                     .into_any_element(),
             );
         }
-        let opening = |t: DeskTarget| match t {
-            DeskTarget::Window(_) => "正在打开窗口…",
-            DeskTarget::Display(_) => "正在切换显示器…",
+        // 还没有画面（刚打开、断了等重连）：看板娘跑着，下面一条来回的细线和这一步在做什么
+        let waiting = if self.suspended {
+            Some(("连接断了，重新连接中…", "连上后接着推这块画面", warn()))
+        } else if self.pending.is_none() && self.encoding.is_none() {
+            Some(match self.target {
+                DeskTarget::Window(_) => ("正在打开窗口…", "主机在准备这个窗口的画面", fg2()),
+                DeskTarget::Display(_) => ("正在打开远程桌面…", "主机在采屏、编码第一帧", fg2()),
+            })
+        } else {
+            None
         };
-        let text = if self.suspended {
-            "连接断了，重新连接中…"
-        } else if let Some(p) = &self.pending {
-            opening(p.target)
-        } else if self.encoding.is_none() && matches!(self.target, DeskTarget::Window(_)) {
-            "正在打开窗口…"
-        } else if self.encoding.is_none() {
-            "正在打开远程桌面…"
+        if let Some((title, sub, line)) = waiting {
+            return Some(
+                base.when(self.suspended, |b| b.bg(scrim()))
+                    .child(mascot::running("desk-run", 128.))
+                    .child(mascot::progress("desk-prog", 200., line))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(4.))
+                            .pt(px(4.))
+                            .child(
+                                div()
+                                    .text_size(T_LG)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(fg())
+                                    .child(title),
+                            )
+                            .child(div().text_size(T_XS).text_color(fg3()).child(sub)),
+                    )
+                    .into_any_element(),
+            );
+        }
+        // 已经有画面，只是在换（显示器、窗口、参数）：画面上一个小转圈就够了
+        let text = if let Some(p) = &self.pending {
+            match p.target {
+                DeskTarget::Window(_) => "正在打开窗口…",
+                DeskTarget::Display(_) => "正在切换显示器…",
+            }
         } else if self.reconfiguring {
             "正在换画面参数…"
         } else {
@@ -1269,6 +1317,16 @@ fn stats_view(s: StatsSnapshot, enc: Option<Encoding>, live: bool) -> impl IntoE
             .justify_end()
             .child(mono(text, T_XS, fg2()).whitespace_nowrap())
     };
+    // 还没收到画面时没有帧率和码率可说：写「—」，不写 0（看着像画面卡住了）
+    let (fps, mbps) = match enc {
+        Some(_) => (format!("{:.0} fps", s.fps), format!("{:.1} Mbps", s.mbps)),
+        None => ("— fps".to_string(), "— Mbps".to_string()),
+    };
+    let rtt = if s.rtt_ms > 0.0 {
+        format!("{:.0} ms", s.rtt_ms)
+    } else {
+        "— ms".to_string()
+    };
     div()
         .id("tb-stats")
         .flex()
@@ -1278,7 +1336,7 @@ fn stats_view(s: StatsSnapshot, enc: Option<Encoding>, live: bool) -> impl IntoE
         .h(px(32.))
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .child(dot(color, 6.))
-        .child(cell(format!("{:.0} fps", s.fps), 46.))
-        .child(cell(format!("{:.1} Mbps", s.mbps), 70.))
-        .child(cell(format!("{:.0} ms", s.rtt_ms), 44.))
+        .child(cell(fps, 46.))
+        .child(cell(mbps, 70.))
+        .child(cell(rtt, 44.))
 }

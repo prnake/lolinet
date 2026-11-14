@@ -136,7 +136,19 @@ pub mod ic {
     pub const WIN_RESTORE: &str = "ld/win-restore.svg";
 }
 
-/// 应用的资源：先找自己的图标，再交给 gpui-kit 的。
+/// 看板娘的图（`mascot/<名字>.png`，透明底，按显示大小的两倍存）：用 Codex（OpenAI 的生图模型）画的，
+/// 品红底抠成透明。`run` 是 8 帧跑步横着拼成的一条，见 [`crate::ui::mascot`]。
+fn mascot_png(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "hero" => include_bytes!("../assets/mascot/hero.png"),
+        "think" => include_bytes!("../assets/mascot/think.png"),
+        "sleep" => include_bytes!("../assets/mascot/sleep.png"),
+        "run" => include_bytes!("../assets/mascot/run.png"),
+        _ => return None,
+    })
+}
+
+/// 应用的资源：先找自己的图标和看板娘，再交给 gpui-kit 的。
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
@@ -146,6 +158,12 @@ impl AssetSource for AppAssets {
             .and_then(|p| p.strip_suffix(".svg"))
         {
             return Ok(icon_svg(name).map(|s| Cow::Borrowed(s.as_bytes())));
+        }
+        if let Some(name) = path
+            .strip_prefix("mascot/")
+            .and_then(|p| p.strip_suffix(".png"))
+        {
+            return Ok(mascot_png(name).map(Cow::Borrowed));
         }
         gpui_kit::assets::Assets.load(path)
     }
